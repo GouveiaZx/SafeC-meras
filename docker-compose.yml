@@ -1,0 +1,163 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database (Supabase local)
+  postgres:
+    image: postgres:15
+    container_name: newcam-postgres
+    environment:
+      POSTGRES_DB: newcam
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d
+    networks:
+      - newcam-network
+
+  # Redis for caching and sessions
+  redis:
+    image: redis:7-alpine
+    container_name: newcam-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - newcam-network
+
+  # MinIO for local S3-compatible storage (development)
+  minio:
+    image: minio/minio:latest
+    container_name: newcam-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - newcam-network
+
+  # ZLMediaKit - New Enhanced Media Server
+  zlmediakit:
+    image: zlmediakit/zlmediakit:master
+    container_name: newcam-zlmediakit
+    restart: unless-stopped
+    shm_size: 2gb
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+      memlock:
+        soft: -1
+        hard: -1
+    environment:
+      - GOGC=50  
+      - GOMAXPROCS=4 
+      - LOG_LEVEL=debug
+      - TZ=America/Sao_Paulo
+    volumes:
+      - ./docker/zlmediakit/config.ini:/opt/media/conf/config.ini:ro
+      - ./storage/recordings:/opt/media/bin/www/record/proxy
+      - ./storage/www:/opt/media/bin/www
+    ports:
+      - "9902:80"    # API ZLM (HTTP)
+      - "1935:1935"  # RTMP
+      - "8000:80"    # HTTP-HLS
+      - "554:554"    # RTSP
+    networks:
+      - newcam-network
+    
+  # ZLM Registrar - Automatic camera registration (DISABLED - Missing Dockerfile)
+  # zlm-registrar:
+  #   build:
+  #     context: ./docker/zlmediakit
+  #     dockerfile: Dockerfile.registrar
+  #   container_name: newcam-zlm-registrar
+  #   depends_on:
+  #     - zlmediakit
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ./storage/recordings:/opt/media/bin/www/record/proxy
+  #   environment:
+  #     - GOGC=75
+  #     - TZ=America/Sao_Paulo
+  #   networks:
+  #     - newcam-network
+      
+  # Processor - Video processing and S3 upload (DISABLED - Missing Dockerfile)
+  # processor:
+  #   build:
+  #     context: ./docker/zlmediakit
+  #     dockerfile: Dockerfile.processor
+  #   container_name: newcam-processor
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ./storage/recordings:/opt/media/bin/www/record/proxy
+  #     - ./storage/www:/opt/media/bin/www
+  #   environment:
+  #     - WASABI_BUCKET=${WASABI_BUCKET:-safe-cameras-03}
+  #     - WASABI_ENDPOINT=${WASABI_ENDPOINT:-https://s3.us-east-2.wasabisys.com}
+  #     - WASABI_ACCESS_KEY=${WASABI_ACCESS_KEY}
+  #     - WASABI_SECRET_KEY=${WASABI_SECRET_KEY}
+  #     - API_ENDPOINT=${API_ENDPOINT:-http://ns1.infotecms.com.br:8087/segmentos}
+  #     - TZ=America/Sao_Paulo
+  #   ports:
+  #     - "8090:8080"   # Health check
+  #   depends_on:
+  #     - zlmediakit
+  #   networks:
+  #     - newcam-network
+
+  # SRS Server - Alternative streaming server
+  srs:
+    image: ossrs/srs:5
+    container_name: newcam-srs
+    ports:
+      - "1936:1935"   # RTMP (alternative port)
+      - "8081:8080"   # HTTP API
+      - "1985:1985"   # HTTP API
+      - "8001:8000"   # HTTP Server (ajustado para evitar conflito)
+    volumes:
+      - ./docker/srs/srs.conf:/usr/local/srs/conf/srs.conf
+      - srs_data:/usr/local/srs/objs/nginx/html
+    environment:
+      - TZ=America/Sao_Paulo
+    networks:
+      - newcam-network
+    restart: unless-stopped
+
+  # NGINX for reverse proxy and static files
+  nginx:
+    image: nginx:alpine
+    container_name: newcam-nginx
+    ports:
+      - "80:80"
+      - "8082:80"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./storage/streams:/usr/share/nginx/html/streams
+      - ./storage/recordings:/usr/share/nginx/html/recordings
+    depends_on:
+      - zlmediakit
+      - srs
+    networks:
+      - newcam-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  zlmediakit_data:
+  srs_data:
+
+networks:
+  newcam-network:
+    driver: bridge

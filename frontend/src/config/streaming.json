@@ -1,0 +1,13 @@
+{
+  "streaming": {
+    "server": "zlm",
+    "baseUrl": "/streaming",
+    "apiUrl": "/streaming/api",
+    "disableSimulation": true,
+    "forceZLM": true
+  },
+  "backend": {
+    "baseUrl": "/api"
+  },
+  "timestamp": "2025-07-27T05:13:02.161Z"
+}

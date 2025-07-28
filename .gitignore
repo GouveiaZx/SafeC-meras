@@ -1,0 +1,317 @@
+# ========================================
+# NEWCAM - Sistema de Vigilância por Câmeras IP
+# Arquivo .gitignore
+# ========================================
+
+# Dependências
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Arquivos de ambiente
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.production
+
+# Logs
+logs/
+*.log
+storage/logs/
+
+# Arquivos temporários
+.tmp/
+temp/
+storage/temp/
+
+# Gravações e mídia
+storage/recordings/
+storage/hls/
+*.mp4
+*.avi
+*.mkv
+*.mov
+*.m3u8
+*.ts
+*.webm
+
+# Cache
+.cache/
+.parcel-cache/
+.next/
+out/
+build/
+dist/
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory
+coverage/
+*.lcov
+.nyc_output/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Optional npm cache directory
+.npm
+.eslintcache
+.stylelintcache
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# Next.js build output
+.next
+out
+
+# Nuxt.js build / generate output
+.nuxt
+dist
+
+# Gatsby files
+.cache/
+public
+
+# Serverless directories
+.serverless/
+
+# FuseBox cache
+.fusebox/
+
+# DynamoDB Local files
+.dynamodb/
+
+# TernJS port file
+.tern-port
+
+# Stores VSCode versions used for testing VSCode extensions
+.vscode-test
+
+# yarn v2
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+.pnp.*
+
+# ========================================
+# DOCKER
+# ========================================
+# Docker volumes
+volumes/
+
+# ========================================
+# SISTEMA OPERACIONAL
+# ========================================
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ========================================
+# IDEs e EDITORES
+# ========================================
+# Visual Studio Code
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# JetBrains IDEs
+.idea/
+*.swp
+*.swo
+*~
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ========================================
+# CERTIFICADOS E CHAVES
+# ========================================
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+certificates/
+ssl/
+
+# ========================================
+# BACKUP E DUMPS
+# ========================================
+*.sql
+*.dump
+backups/
+
+# ========================================
+# ESPECÍFICO DO PROJETO NEWCAM
+# ========================================
+# Configurações locais de desenvolvimento
+config/local.json
+config/development.json
+config/production.json
+
+# Arquivos de configuração de mídia
+media-servers/*/data/
+media-servers/*/logs/
+
+# Dados de teste
+tests/fixtures/videos/
+tests/fixtures/images/
+
+# Relatórios de performance
+performance-reports/
+
+# Arquivos de monitoramento
+monitoring/data/
+
+# Cache do Redis (se local)
+redis-data/
+
+# Arquivos de configuração específicos do servidor
+server-config/
+
+# Arquivos de deploy
+deploy-keys/
+deploy-scripts/local/
+
+# Documentação gerada automaticamente
+docs/api/generated/
+
+# Arquivos de análise de código
+sonar-project.properties
+.scannerwork/
+
+# Arquivos de profiling
+profile-*.json
+*.prof
+
+# Arquivos de benchmark
+benchmark-results/
+
+# Arquivos temporários de upload
+uploads/temp/
+
+# Cache de thumbnails
+thumbnails/cache/
+
+# Arquivos de configuração de desenvolvimento local
+.dev-config
+.local-settings
+
+# Arquivos de estado do Docker Compose
+.docker-compose-state
+
+# Arquivos de lock específicos
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Arquivos de configuração de CI/CD locais
+.github/workflows/local/
+.gitlab-ci-local.yml
+
+# Arquivos de configuração de monitoramento local
+prometheus/data/
+grafana/data/
+
+# Arquivos de configuração de load balancer
+nginx/logs/
+nginx/cache/
+
+# Arquivos de configuração de banco de dados local
+postgresql/data/
+mysql/data/
+
+# Arquivos de configuração de message broker
+rabbitmq/data/
+kafka/data/
+
+# Arquivos de configuração de search engine
+elasticsearch/data/
+
+# Arquivos de configuração de cache
+memcached/data/
+
+# Arquivos de configuração de sessão
+sessions/
+
+# Arquivos de configuração de queue
+queues/data/
+
+# Arquivos de configuração de storage
+storage/cache/
+storage/sessions/
+storage/uploads/
+
+# Arquivos de configuração de email
+email-templates/compiled/
+
+# Arquivos de configuração de notificação
+notifications/templates/compiled/
+
+# Arquivos de configuração de relatórios
+reports/generated/
+
+# Arquivos de configuração de analytics
+analytics/data/
+
+# Arquivos de configuração de machine learning
+ml-models/trained/
+ml-data/processed/
+
+# Arquivos de configuração de AI
+ai-models/
+ai-training-data/
+
+# ========================================
+# FIM DO ARQUIVO .gitignore
+# ========================================
