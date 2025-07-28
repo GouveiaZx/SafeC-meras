@@ -242,15 +242,15 @@ router.get('/test-zlm', async (req, res) => {
 });
 
 /**
- * @route GET /api/streams/:stream_id/hls/*
- * @desc Proxy para stream HLS com autenticação específica
+ * @route GET /api/streams/:stream_id/hls
+ * @desc Proxy para stream HLS principal (playlist.m3u8)
  * @access Private (via token HLS)
  */
-router.get('/:stream_id/hls/*',
+router.get('/:stream_id/hls',
   authenticateHLS,
   asyncHandler(async (req, res) => {
     const { stream_id } = req.params;
-    const hlsPath = req.params[0] || 'hls.m3u8'; // Captura o resto do caminho
+    const hlsPath = 'playlist.m3u8'; // Arquivo principal do HLS
     
     logger.debug(`authenticateHLS - Stream ID recebido: ${stream_id}`);
     logger.debug(`authenticateHLS - HLS Path: ${hlsPath}`);
@@ -285,9 +285,133 @@ router.get('/:stream_id/hls/*',
       const SIMPLE_BASE_URL = `http://localhost:${process.env.SIMPLE_STREAMING_PORT || 8081}`;
       proxyUrl = `${SIMPLE_BASE_URL}/hls/${stream_id}/playlist.m3u8`;
     } else {
-      // Para ZLMediaKit, usar porta 9902
-      const ZLM_BASE_URL = process.env.ZLM_BASE_URL || 'http://localhost:9902';
-      proxyUrl = `${ZLM_BASE_URL}/live/${stream_id}/${hlsPath}`;
+      // Para ZLMediaKit via NGINX, usar porta 80 (NGINX faz proxy para ZLMediaKit)
+      const NGINX_BASE_URL = process.env.NGINX_BASE_URL || 'http://localhost:80';
+      proxyUrl = `${NGINX_BASE_URL}/live/${stream_id}/${hlsPath}`;
+    }
+    
+    logger.debug(`authenticateHLS - Fazendo proxy para: ${proxyUrl} (servidor: ${streamingServer})`);
+    
+    try {
+      const response = await fetch(proxyUrl, {
+        method: 'GET',
+        signal: AbortSignal.timeout(10000)
+      });
+      
+      if (!response.ok) {
+        logger.error(`ZLMediaKit retornou erro: ${response.status} ${response.statusText}`);
+        
+        // Em desenvolvimento, retornar um playlist HLS de teste
+        if (process.env.NODE_ENV === 'development') {
+          logger.info('Modo desenvolvimento: retornando playlist HLS de teste');
+          
+          const testPlaylist = `#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:10
+#EXT-X-MEDIA-SEQUENCE:0
+#EXTINF:10.0,
+segment-0.ts
+#EXTINF:10.0,
+segment-1.ts
+#EXTINF:10.0,
+segment-2.ts
+#EXT-X-ENDLIST`;
+          
+          res.set({
+            'Content-Type': 'application/vnd.apple.mpegurl',
+            'Cache-Control': 'no-cache',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Headers': 'Range'
+          });
+          
+          return res.send(testPlaylist);
+        }
+        
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      // Definir cabeçalhos apropriados
+      res.set({
+        'Content-Type': response.headers.get('content-type') || 'application/vnd.apple.mpegurl',
+        'Cache-Control': 'no-cache',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Range'
+      });
+      
+      // Pipe do stream usando ReadableStream
+      const reader = response.body.getReader();
+      const pump = async () => {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            res.write(value);
+          }
+          res.end();
+        } catch (error) {
+          logger.error('Erro no pipe do stream:', error);
+          res.end();
+        }
+      };
+      pump();
+    } catch (error) {
+      logger.error(`Erro ao fazer proxy HLS para ${proxyUrl}:`, error.message);
+      res.status(502).json({
+        success: false,
+        message: 'Erro ao acessar stream HLS',
+        error: error.message
+      });
+    }
+  })
+);
+
+/**
+ * @route GET /api/streams/:stream_id/hls/*
+ * @desc Proxy para segmentos HLS (.ts) e outros arquivos
+ * @access Private (via token HLS)
+ */
+router.get('/:stream_id/hls/*',
+  authenticateHLS,
+  asyncHandler(async (req, res) => {
+    const { stream_id } = req.params;
+    const hlsPath = req.params[0] || 'playlist.m3u8'; // Captura o resto do caminho
+    
+    logger.debug(`authenticateHLS - Stream ID recebido: ${stream_id}`);
+    logger.debug(`authenticateHLS - HLS Path: ${hlsPath}`);
+    logger.debug(`authenticateHLS - Usuário autenticado: ${req.user?.email}`);
+    
+    // Verificar se o stream existe nos streams ativos
+    const activeStream = streamingService.getStream(stream_id);
+    if (!activeStream) {
+      logger.warn(`Stream ${stream_id} não encontrado nos streams ativos`);
+      return res.status(404).json({
+        success: false,
+        message: 'Stream não encontrado ou não está ativo'
+      });
+    }
+    
+    // Verificar permissão de acesso à câmera
+    if (req.user.role !== 'admin' && 
+        !req.user.camera_access.includes(activeStream.camera_id)) {
+      logger.warn(`Usuário ${req.user.email} sem acesso à câmera ${activeStream.camera_id}`);
+      return res.status(403).json({
+        success: false,
+        message: 'Sem permissão para acessar este stream'
+      });
+    }
+    
+    // Detectar qual servidor de streaming está sendo usado
+    const streamingServer = process.env.STREAMING_SERVER || 'zlm';
+    let proxyUrl;
+    
+    if (streamingServer === 'simple') {
+      // Para SimpleStreamingService, usar porta 8081
+      const SIMPLE_BASE_URL = `http://localhost:${process.env.SIMPLE_STREAMING_PORT || 8081}`;
+      proxyUrl = `${SIMPLE_BASE_URL}/hls/${stream_id}/playlist.m3u8`;
+    } else {
+      // Para ZLMediaKit via NGINX, usar porta 80 (NGINX faz proxy para ZLMediaKit)
+      const NGINX_BASE_URL = process.env.NGINX_BASE_URL || 'http://localhost:80';
+      proxyUrl = `${NGINX_BASE_URL}/live/${stream_id}/${hlsPath}`;
     }
     
     logger.debug(`authenticateHLS - Fazendo proxy para: ${proxyUrl} (servidor: ${streamingServer})`);
@@ -578,7 +702,7 @@ router.get('/:stream_id/flv',
     const { stream_id } = req.params;
     
     const ZLM_BASE_URL = process.env.ZLM_BASE_URL || 'http://localhost:8000';
-    const zlmUrl = `${ZLM_BASE_URL}/live/${stream_id}_flv_medium.live.flv`;
+    const zlmUrl = `${ZLM_BASE_URL}/live/${stream_id}.live.flv`;
     
     try {
       const response = await fetch(zlmUrl, {

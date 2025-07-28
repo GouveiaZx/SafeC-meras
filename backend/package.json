@@ -1,7 +1,7 @@
 {
   "name": "newcam-backend",
   "version": "1.0.0",
-  "description": "Backend do sistema de vigilância por câmeras IP NewCAM",
+  "description": "Backend do sistema de vigilância por câmeras IP NewCAM - Updated",
   "main": "src/server.js",
   "type": "module",
   "scripts": {

@@ -42,15 +42,35 @@ const corsConfig = {
     'Accept',
     'Authorization',
     'Cache-Control',
-    'X-API-Key'
+    'X-API-Key',
+    'Range',
+    'Accept-Ranges',
+    'Content-Range',
+    'If-Range',
+    'If-Modified-Since',
+    'If-None-Match',
+    'Pragma',
+    'Expires',
+    'User-Agent',
+    'Referer'
   ],
   exposedHeaders: [
     'X-Total-Count',
     'X-Page-Count',
     'X-Current-Page',
-    'X-Per-Page'
+    'X-Per-Page',
+    'Accept-Ranges',
+    'Content-Range',
+    'Content-Length',
+    'Content-Type',
+    'ETag',
+    'Last-Modified',
+    'Cache-Control',
+    'Pragma'
   ],
-  maxAge: 86400 // 24 horas
+  maxAge: 86400, // 24 horas
+  preflightContinue: false,
+  optionsSuccessStatus: 200
 };
 
 export { corsConfig };

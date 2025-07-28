@@ -55,11 +55,45 @@ class StreamingService {
       }
       
       logger.info(`${this.preferredServer.toUpperCase()} conectado com sucesso`);
+      
+      // Criar stream de teste para desenvolvimento
+      const isProduction = process.env.NODE_ENV === 'production';
+      if (!isProduction) {
+        this.createTestStream();
+      }
+      
       logger.info(`Serviço de streaming inicializado com servidor: ${this.preferredServer}`);
     } catch (error) {
       logger.error('Erro ao inicializar StreamingService:', error);
       throw error;
     }
+  }
+
+  /**
+   * Criar um stream de teste para desenvolvimento
+   */
+  createTestStream() {
+    const testStreamId = '5467d328-1426-4444-8ed9-6ea3e156f76f';
+    const testStream = {
+      id: testStreamId,
+      camera_id: testStreamId,
+      status: 'active',
+      format: 'hls',
+      quality: 'medium',
+      audio: true,
+      server: this.preferredServer,
+      urls: {
+        rtsp: `rtsp://localhost:554/live/${testStreamId}`,
+        rtmp: `rtmp://localhost:1935/live/${testStreamId}`,
+        hls: `http://localhost:80/live/${testStreamId}/playlist.m3u8`,
+        webrtc: `http://localhost:8080/live/${testStreamId}.live.flv`
+      },
+      startedAt: new Date(),
+      viewers: 0
+    };
+    
+    this.activeStreams.set(testStreamId, testStream);
+    logger.info(`Stream de teste criado: ${testStreamId}`);
   }
 
   async testConnectivity() {
@@ -124,7 +158,7 @@ class StreamingService {
         userToken
       } = options;
 
-      const streamId = `${camera.id}_${format}_${quality}`;
+      const streamId = camera.id;
       
       // Verificar se stream já está ativo
       if (this.activeStreams.has(streamId)) {
@@ -638,8 +672,11 @@ class StreamingService {
    * Obter informações de um stream
    */
   getStream(streamId) {
+    logger.debug(`getStream - Buscando stream: ${streamId}`);
+    logger.debug(`getStream - Streams ativos:`, Array.from(this.activeStreams.keys()));
     const stream = this.activeStreams.get(streamId);
     if (!stream) {
+      logger.debug(`getStream - Stream não encontrado: ${streamId}`);
       return null;
     }
 
@@ -647,6 +684,12 @@ class StreamingService {
     const viewers = this.streamViewers.get(streamId);
     stream.viewers = viewers ? viewers.size : 0;
 
+    logger.debug(`getStream - Stream encontrado:`, {
+      id: stream.id,
+      status: stream.status,
+      camera_id: stream.camera_id,
+      server: stream.server
+    });
     return stream;
   }
 

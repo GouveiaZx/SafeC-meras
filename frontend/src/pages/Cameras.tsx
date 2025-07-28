@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { useLocation } from 'react-router-dom';
 import { api, endpoints } from '@/lib/api';
 import VideoPlayer from '@/components/VideoPlayer';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface CameraData {
   id: string;
@@ -34,6 +35,7 @@ interface CamerasResponse {
 }
 
 const Cameras: React.FC = () => {
+  const { token } = useAuth();
   const [cameras, setCameras] = useState<CameraData[]>([]);
   const [filteredCameras, setFilteredCameras] = useState<CameraData[]>([]);
   const [streamStatus, setStreamStatus] = useState<Map<string, StreamStatus>>(new Map());
@@ -532,6 +534,7 @@ const Cameras: React.FC = () => {
                         controls={true}
                         autoPlay={true}
                         muted={true}
+                        token={token}
                       />
                     ) : status?.status === 'active' ? (
                       <div className="w-full h-full flex items-center justify-center text-white">
@@ -678,6 +681,7 @@ const Cameras: React.FC = () => {
                         controls={true}
                         autoPlay={true}
                         muted={false}
+                        token={token}
                       />
                     );
                   }

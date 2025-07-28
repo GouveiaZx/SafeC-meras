@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Play, Pause, Volume2, VolumeX, Maximize, RotateCcw, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
+import Hls from 'hls.js';
 
 interface VideoPlayerProps {
   src?: string;
@@ -9,6 +10,7 @@ interface VideoPlayerProps {
   muted?: boolean;
   controls?: boolean;
   className?: string;
+  token?: string;
   onError?: (error: string) => void;
   onLoadStart?: () => void;
   onLoadEnd?: () => void;
@@ -21,11 +23,13 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
   muted = true,
   controls = true,
   className = '',
+  token,
   onError,
   onLoadStart,
   onLoadEnd
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const hlsRef = useRef<Hls | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(muted);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -33,62 +37,204 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [playPromise, setPlayPromise] = useState<Promise<void> | null>(null);
   const [retryCount, setRetryCount] = useState(0);
   const maxRetries = 3;
+  const [hlsSupported, setHlsSupported] = useState(false);
 
-  const attemptPlay = useCallback(async (video: HTMLVideoElement) => {
-    if (playPromise) {
-      try {
-        await playPromise;
-      } catch (err) {
-        // Ignorar erros de promises anteriores
-      }
+  // Verificar suporte ao HLS
+  useEffect(() => {
+    setHlsSupported(Hls.isSupported());
+  }, []);
+
+  const cleanupHLS = useCallback(() => {
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+      hlsRef.current = null;
     }
+  }, []);
 
-    if (video.readyState < 2) {
-      // Aguardar dados suficientes
-      return new Promise<void>((resolve, reject) => {
-        const handleCanPlay = () => {
-          video.removeEventListener('canplay', handleCanPlay);
-          video.removeEventListener('error', handleError);
-          video.play().then(resolve).catch(reject);
-        };
-        const handleError = () => {
-          video.removeEventListener('canplay', handleCanPlay);
-          video.removeEventListener('error', handleError);
-          reject(new Error('Erro ao carregar vídeo'));
-        };
-        video.addEventListener('canplay', handleCanPlay);
-        video.addEventListener('error', handleError);
+  const initializeHLS = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || !src) return;
+
+    // Limpar instância anterior
+    cleanupHLS();
+
+    // Verificar se é stream HLS
+    const isHLS = src.includes('.m3u8') || src.includes('/hls');
+    
+    if (isHLS && hlsSupported) {
+      console.log('Inicializando HLS.js para:', src);
+      
+      const hls = new Hls({
+        debug: false,
+        enableWorker: true,
+        lowLatencyMode: true,
+        backBufferLength: 90,
+        maxBufferLength: 30,
+        maxMaxBufferLength: 600,
+        manifestLoadingTimeOut: 10000,
+        manifestLoadingMaxRetry: 3,
+        levelLoadingTimeOut: 10000,
+        levelLoadingMaxRetry: 3,
+        fragLoadingTimeOut: 20000,
+        fragLoadingMaxRetry: 3,
+        xhrSetup: (xhr, url) => {
+          console.log('Configurando XHR para:', url);
+          
+          // Adicionar token de autenticação
+          if (token) {
+            xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+            console.log('Token adicionado ao header Authorization');
+          }
+          
+          // Headers adicionais para CORS e streaming
+          xhr.setRequestHeader('Accept', 'application/vnd.apple.mpegurl, application/x-mpegURL, */*');
+          xhr.setRequestHeader('Cache-Control', 'no-cache');
+          xhr.setRequestHeader('Pragma', 'no-cache');
+          
+          // Configurar timeout
+          xhr.timeout = 20000;
+          
+          // Log de debug
+          xhr.addEventListener('loadstart', () => {
+            console.log('XHR loadstart para:', url);
+          });
+          
+          xhr.addEventListener('error', (e) => {
+            console.error('XHR error para:', url, e);
+          });
+          
+          xhr.addEventListener('timeout', () => {
+            console.error('XHR timeout para:', url);
+          });
+        }
       });
+
+      hlsRef.current = hls;
+
+      // Event listeners do HLS
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        console.log('HLS manifest carregado com sucesso');
+        setIsLoading(false);
+        setError(null);
+        onLoadEnd?.();
+        
+        if (autoPlay) {
+          video.play().catch(err => {
+            console.warn('Autoplay falhou:', err);
+          });
+        }
+      });
+
+      hls.on(Hls.Events.ERROR, (event, data) => {
+        console.error('Erro HLS:', data);
+        
+        if (data.fatal) {
+          let errorMessage = 'Erro no stream HLS';
+          
+          switch (data.type) {
+            case Hls.ErrorTypes.NETWORK_ERROR:
+              if (data.response?.code === 401) {
+                errorMessage = 'Erro de autenticação - Token inválido ou expirado';
+              } else if (data.response?.code === 403) {
+                errorMessage = 'Acesso negado ao stream';
+              } else if (data.response?.code === 404) {
+                errorMessage = 'Stream não encontrado';
+              } else {
+                errorMessage = 'Erro de rede ao carregar stream';
+              }
+              break;
+            case Hls.ErrorTypes.MEDIA_ERROR:
+              errorMessage = 'Erro ao decodificar stream';
+              // Tentar recuperar automaticamente
+              if (retryCount < maxRetries) {
+                console.log('Tentando recuperar erro de mídia...');
+                setTimeout(() => {
+                  hls.recoverMediaError();
+                  setRetryCount(prev => prev + 1);
+                }, 1000);
+                return;
+              }
+              break;
+            default:
+              errorMessage = 'Erro fatal no stream HLS';
+          }
+          
+          setError(errorMessage);
+          setIsLoading(false);
+          onError?.(errorMessage);
+          
+          // Tentar reconectar automaticamente
+          if (retryCount < maxRetries && data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            setTimeout(() => {
+              console.log(`Tentativa de reconexão ${retryCount + 1}/${maxRetries}`);
+              setRetryCount(prev => prev + 1);
+              initializeHLS();
+            }, 2000 * (retryCount + 1));
+          }
+        }
+      });
+
+      hls.on(Hls.Events.FRAG_LOADED, () => {
+        console.log('Fragmento HLS carregado');
+      });
+
+      // Carregar stream
+      hls.loadSource(src);
+      hls.attachMedia(video);
+      
+    } else if (isHLS && video.canPlayType('application/vnd.apple.mpegurl')) {
+      // Safari nativo suporta HLS
+      console.log('Usando suporte nativo HLS do Safari');
+      const urlWithToken = token ? `${src}${src.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : src;
+      video.src = urlWithToken;
+      video.load();
+    } else {
+      // Stream não-HLS ou fallback
+      console.log('Usando video nativo para:', src);
+      video.src = src;
+      video.load();
     }
+  }, [src, token, autoPlay, onError, onLoadEnd, retryCount, maxRetries, hlsSupported, cleanupHLS]);
 
-    return video.play();
-  }, [playPromise]);
-
+  // Configurar video e event listeners
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !src) return;
 
-    let isMounted = true;
     setRetryCount(0);
+    setError(null);
+    setIsLoading(true);
+    onLoadStart?.();
 
     const handleLoadStart = () => {
-      if (!isMounted) return;
       setIsLoading(true);
       setError(null);
-      onLoadStart?.();
     };
 
     const handleLoadedData = () => {
-      if (!isMounted) return;
       setIsLoading(false);
       onLoadEnd?.();
     };
 
-    const handleError = (e: Event) => {
-      if (!isMounted) return;
+    const handleTimeUpdate = () => {
+      setCurrentTime(video.currentTime);
+    };
+
+    const handleDurationChange = () => {
+      setDuration(video.duration);
+    };
+
+    const handlePlay = () => {
+      setIsPlaying(true);
+    };
+
+    const handlePause = () => {
+      setIsPlaying(false);
+    };
+
+    const handleVideoError = (e: Event) => {
       const target = e.target as HTMLVideoElement;
       let errorMessage = 'Erro ao carregar o vídeo';
       
@@ -108,90 +254,43 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
         }
       }
       
+      console.error('Erro no video:', errorMessage, target?.error);
       setError(errorMessage);
       setIsLoading(false);
       onError?.(errorMessage);
-      
-      // Tentar novamente automaticamente se não exceder o limite
-      if (retryCount < maxRetries) {
-        setTimeout(() => {
-          if (isMounted) {
-            setRetryCount(prev => prev + 1);
-            video.load();
-          }
-        }, 2000 * (retryCount + 1)); // Backoff exponencial
-      } else {
-        toast.error(errorMessage);
-      }
     };
 
-    const handleTimeUpdate = () => {
-      if (!isMounted) return;
-      setCurrentTime(video.currentTime);
-    };
-
-    const handleDurationChange = () => {
-      if (!isMounted) return;
-      setDuration(video.duration);
-    };
-
-    const handlePlay = () => {
-      if (!isMounted) return;
-      setIsPlaying(true);
-    };
-
-    const handlePause = () => {
-      if (!isMounted) return;
-      setIsPlaying(false);
-    };
-
-    const handleCanPlay = async () => {
-      if (!isMounted || !autoPlay) return;
-      
-      try {
-        const promise = attemptPlay(video);
-        setPlayPromise(promise);
-        await promise;
-      } catch (err) {
-        console.warn('Autoplay falhou:', err);
-        // Não mostrar erro para falha de autoplay
-      } finally {
-        setPlayPromise(null);
-      }
-    };
-
+    // Event listeners
     video.addEventListener('loadstart', handleLoadStart);
     video.addEventListener('loadeddata', handleLoadedData);
-    video.addEventListener('error', handleError);
     video.addEventListener('timeupdate', handleTimeUpdate);
     video.addEventListener('durationchange', handleDurationChange);
     video.addEventListener('play', handlePlay);
     video.addEventListener('pause', handlePause);
-    video.addEventListener('canplay', handleCanPlay);
+    video.addEventListener('error', handleVideoError);
 
-    // Configurar source
-    video.src = src;
+    // Configurar video
     video.muted = muted;
-    video.load();
+    video.playsInline = true;
+    video.preload = 'metadata';
+    
+    // Inicializar player
+    initializeHLS();
 
     return () => {
-      isMounted = false;
+      // Limpar event listeners
       video.removeEventListener('loadstart', handleLoadStart);
       video.removeEventListener('loadeddata', handleLoadedData);
-      video.removeEventListener('error', handleError);
       video.removeEventListener('timeupdate', handleTimeUpdate);
       video.removeEventListener('durationchange', handleDurationChange);
       video.removeEventListener('play', handlePlay);
       video.removeEventListener('pause', handlePause);
-      video.removeEventListener('canplay', handleCanPlay);
+      video.removeEventListener('error', handleVideoError);
       
-      // Cancelar promise de play pendente
-      if (playPromise) {
-        playPromise.catch(() => {});
-        setPlayPromise(null);
-      }
+      // Limpar HLS
+      cleanupHLS();
     };
-  }, [src, autoPlay, muted, onError, onLoadStart, onLoadEnd, attemptPlay, retryCount, maxRetries]);
+  }, [src, autoPlay, muted, token, onError, onLoadStart, onLoadEnd, initializeHLS, cleanupHLS]);
 
   const togglePlay = async () => {
     const video = videoRef.current;
@@ -201,15 +300,11 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       if (isPlaying) {
         video.pause();
       } else {
-        const promise = attemptPlay(video);
-        setPlayPromise(promise);
-        await promise;
+        await video.play();
       }
     } catch (err) {
       console.error('Erro ao reproduzir vídeo:', err);
       toast.error('Erro ao reproduzir vídeo');
-    } finally {
-      setPlayPromise(null);
     }
   };
 
@@ -254,13 +349,10 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
   };
 
   const retry = () => {
-    const video = videoRef.current;
-    if (!video || !src) return;
-
     setError(null);
     setIsLoading(true);
     setRetryCount(0);
-    video.load();
+    initializeHLS();
   };
 
   if (!src) {
@@ -290,6 +382,9 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
           <div className="text-center text-white">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto mb-2"></div>
             <p className="text-sm">Carregando stream...</p>
+            {retryCount > 0 && (
+              <p className="text-xs text-gray-300 mt-1">Tentativa {retryCount}/{maxRetries}</p>
+            )}
           </div>
         </div>
       )}
@@ -374,7 +469,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       )}
 
       {/* Live Indicator */}
-      {src.includes('.m3u8') && (
+      {(src.includes('.m3u8') || src.includes('/hls')) && (
         <div className="absolute top-4 left-4">
           <div className="flex items-center bg-red-600 text-white px-2 py-1 rounded-full text-xs font-medium">
             <div className="w-2 h-2 bg-white rounded-full mr-1 animate-pulse"></div>

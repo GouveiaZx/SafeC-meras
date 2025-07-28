@@ -11,9 +11,9 @@ Sistema completo de monitoramento de câmeras IP com streaming em tempo real, in
 
 ### 🔧 Desenvolvimento Local
 - **Frontend**: http://localhost:5174
-- **Backend API**: http://localhost:3001
-- **Health Check**: http://localhost:3001/health
-- **API Docs**: http://localhost:3001/api/docs
+- **Backend API**: http://localhost:3003
+- **Health Check**: http://localhost:3003/health
+- **API Docs**: http://localhost:3003/api/docs
 
 ## 🏗️ Arquitetura do Sistema
 
@@ -50,7 +50,7 @@ NewCAM/
 | Serviço | Porta | URL | Descrição |
 |---------|-------|-----|----------|
 | **Frontend** | `5174` | http://localhost:5174 | Interface React + Vite |
-| **Backend** | `3002` | http://localhost:3002 | API REST + WebSocket |
+| **Backend** | `3003` | http://localhost:3003 | API REST + WebSocket |
 | **SRS** | `8081` | http://localhost:8081 | Servidor de streaming SRS |
 | **ZLMediaKit** | `8080` | localhost:8080 | Servidor de streaming ZLM |
 | **Supabase** | `54321` | https://grkvfzuadctextnbpajb.supabase.co | Banco de dados |
@@ -64,6 +64,7 @@ NewCAM/
 - **Zustand** para gerenciamento de estado
 - **React Router** para navegação
 - **Lucide React** para ícones
+- **HLS.js** para streaming HLS com autenticação
 
 ### Backend
 - **Node.js** com Express
@@ -136,7 +137,7 @@ docker-compose logs -f
 #### Backend (.env)
 ```env
 NODE_ENV=development
-PORT=3002
+PORT=3003
 SUPABASE_URL=https://grkvfzuadctextnbpajb.supabase.co
 SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
@@ -146,8 +147,8 @@ CORS_ORIGIN=http://localhost:5174
 
 #### Frontend (.env)
 ```env
-VITE_API_URL=http://localhost:3002/api
-VITE_WS_URL=ws://localhost:3002
+VITE_API_URL=http://localhost:3003/api
+VITE_WS_URL=ws://localhost:3003
 VITE_SUPABASE_URL=https://grkvfzuadctextnbpajb.supabase.co
 VITE_SUPABASE_ANON_KEY=your-anon-key
 ```
