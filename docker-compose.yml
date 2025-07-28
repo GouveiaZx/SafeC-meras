@@ -74,46 +74,46 @@ services:
     networks:
       - newcam-network
     
-  # ZLM Registrar - Automatic camera registration (DISABLED - Missing Dockerfile)
-  # zlm-registrar:
-  #   build:
-  #     context: ./docker/zlmediakit
-  #     dockerfile: Dockerfile.registrar
-  #   container_name: newcam-zlm-registrar
-  #   depends_on:
-  #     - zlmediakit
-  #   restart: unless-stopped
-  #   volumes:
-  #     - ./storage/recordings:/opt/media/bin/www/record/proxy
-  #   environment:
-  #     - GOGC=75
-  #     - TZ=America/Sao_Paulo
-  #   networks:
-  #     - newcam-network
+  # ZLM Registrar - Automatic camera registration
+  zlm-registrar:
+    build:
+      context: ./docker/zlmediakit
+      dockerfile: Dockerfile.registrar
+    container_name: newcam-zlm-registrar
+    depends_on:
+      - zlmediakit
+    restart: unless-stopped
+    volumes:
+      - ./storage/recordings:/opt/media/bin/www/record/proxy
+    environment:
+      - GOGC=75
+      - TZ=America/Sao_Paulo
+    networks:
+      - newcam-network
       
-  # Processor - Video processing and S3 upload (DISABLED - Missing Dockerfile)
-  # processor:
-  #   build:
-  #     context: ./docker/zlmediakit
-  #     dockerfile: Dockerfile.processor
-  #   container_name: newcam-processor
-  #   restart: unless-stopped
-  #   volumes:
-  #     - ./storage/recordings:/opt/media/bin/www/record/proxy
-  #     - ./storage/www:/opt/media/bin/www
-  #   environment:
-  #     - WASABI_BUCKET=${WASABI_BUCKET:-safe-cameras-03}
-  #     - WASABI_ENDPOINT=${WASABI_ENDPOINT:-https://s3.us-east-2.wasabisys.com}
-  #     - WASABI_ACCESS_KEY=${WASABI_ACCESS_KEY}
-  #     - WASABI_SECRET_KEY=${WASABI_SECRET_KEY}
-  #     - API_ENDPOINT=${API_ENDPOINT:-http://ns1.infotecms.com.br:8087/segmentos}
-  #     - TZ=America/Sao_Paulo
-  #   ports:
-  #     - "8090:8080"   # Health check
-  #   depends_on:
-  #     - zlmediakit
-  #   networks:
-  #     - newcam-network
+  # Processor - Video processing and S3 upload
+  processor:
+    build:
+      context: ./docker/zlmediakit
+      dockerfile: Dockerfile.processor
+    container_name: newcam-processor
+    restart: unless-stopped
+    volumes:
+      - ./storage/recordings:/opt/media/bin/www/record/proxy
+      - ./storage/www:/opt/media/bin/www
+    environment:
+      - WASABI_BUCKET=${WASABI_BUCKET:-safe-cameras-03}
+      - WASABI_ENDPOINT=${WASABI_ENDPOINT:-https://s3.us-east-2.wasabisys.com}
+      - WASABI_ACCESS_KEY=${WASABI_ACCESS_KEY}
+      - WASABI_SECRET_KEY=${WASABI_SECRET_KEY}
+      - API_ENDPOINT=${API_ENDPOINT:-http://ns1.infotecms.com.br:8087/segmentos}
+      - TZ=America/Sao_Paulo
+    ports:
+      - "8090:8080"   # Health check
+    depends_on:
+      - zlmediakit
+    networks:
+      - newcam-network
 
   # SRS Server - Alternative streaming server
   srs:

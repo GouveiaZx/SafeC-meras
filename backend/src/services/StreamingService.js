@@ -293,7 +293,7 @@ class StreamingService {
       // Precisamos configurar o stream para aceitar push RTMP
       
       // Gerar URLs de streaming
-      const baseUrl = process.env.SRS_BASE_URL || 'http://localhost:8080';
+      const baseUrl = process.env.SRS_BASE_URL || 'http://localhost:8001';
       const urls = {
         rtmp: `rtmp://localhost:1935/live/${streamId}`,
         hls: `${baseUrl}/live/${streamId}/index.m3u8`,

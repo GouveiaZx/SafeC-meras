@@ -152,6 +152,11 @@ const requireRole = (roles) => {
 // Middleware para verificar acesso a câmera específica
 const requireCameraAccess = async (req, res, next) => {
   try {
+    // Permitir acesso total para serviços internos
+    if (req.user && req.user.id === 'internal-service') {
+      return next();
+    }
+    
     logger.debug(`requireCameraAccess - req.params: ${JSON.stringify(req.params)}`);
     logger.debug(`requireCameraAccess - req.body: ${JSON.stringify(req.body)}`);
     
@@ -160,6 +165,7 @@ const requireCameraAccess = async (req, res, next) => {
     
     if (!cameraId) {
       logger.debug('requireCameraAccess - cameraId não encontrado!');
+      logger.debug(`requireCameraAccess - req.params disponíveis: ${JSON.stringify(Object.keys(req.params))}`);
       return res.status(400).json({
         error: 'ID da câmera requerido',
         message: 'ID da câmera deve ser fornecido'

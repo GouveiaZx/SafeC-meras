@@ -103,12 +103,12 @@ router.post('/events',
 router.get('/cameras',
   validateWorkerToken,
   asyncHandler(async (req, res) => {
-    const cameras = await Camera.findAll({
-      where: {
-        enabled: true
-      },
-      attributes: ['id', 'name', 'rtsp_url', 'location', 'enabled', 'status']
+    const result = await Camera.findAll({
+      active: true,
+      limit: 100 // Buscar até 100 câmeras para o worker
     });
+    
+    const cameras = result.cameras || [];
     
     const camerasData = cameras.map(camera => ({
       id: camera.id,

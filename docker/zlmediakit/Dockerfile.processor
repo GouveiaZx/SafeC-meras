@@ -1,0 +1,27 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Instalar dependências do sistema
+RUN apt-get update && apt-get install -y \
+    curl \
+    jq \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copiar requirements e instalar dependências Python
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copiar script do processador
+COPY processor.py .
+
+# Criar diretórios necessários
+RUN mkdir -p /opt/media/bin/www/record/proxy
+RUN mkdir -p /opt/media/bin/www
+
+# Expor porta para health check
+EXPOSE 8080
+
+# Comando para executar o processador
+CMD ["python", "processor.py"]

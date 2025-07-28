@@ -38,8 +38,29 @@ const streamingService = new StreamingService();
 const router = express.Router();
 const logger = createModuleLogger('CameraRoutes');
 
-// Aplicar autenticação a todas as rotas
-router.use(authenticateToken);
+// Middleware para verificar token de serviço interno
+const authenticateService = (req, res, next) => {
+  const serviceToken = req.headers['x-service-token'];
+  const expectedToken = process.env.INTERNAL_SERVICE_TOKEN || 'newcam-internal-service-2025';
+  
+  if (serviceToken === expectedToken) {
+    // Criar usuário fictício para serviços internos
+    req.user = {
+      id: 'internal-service',
+      email: 'internal@service.local',
+      role: 'admin',
+      camera_access: [], // Acesso a todas as câmeras
+      permissions: ['cameras.view', 'cameras.create', 'cameras.edit', 'cameras.delete']
+    };
+    return next();
+  }
+  
+  // Se não é serviço interno, aplicar autenticação normal
+  return authenticateToken(req, res, next);
+};
+
+// Aplicar autenticação (normal ou de serviço) a todas as rotas
+router.use(authenticateService);
 
 /**
  * @route GET /api/cameras

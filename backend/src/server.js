@@ -48,6 +48,7 @@ import discoveryRoutes from './routes/discovery.js';
 // PRODUÇÃO: Rotas de simulação removidas
 // import simulationRoutes from './routes/simulation.js';
 import workerRoutes from './routes/worker.js';
+import hookRoutes from './routes/hooks.js';
 
 // Middleware
 import { errorHandler } from './middleware/errorHandler.js';
@@ -150,6 +151,7 @@ app.use('/api/discovery', discoveryRoutes);
 // PRODUÇÃO: Rotas de simulação removidas
 // app.use('/api/simulation', simulationRoutes);
 app.use('/api/worker', workerRoutes);
+app.use('/api/hook', hookRoutes);
 
 // Middleware de tratamento de erros
 app.use(notFoundHandler);
@@ -189,6 +191,18 @@ async function initializeServices() {
   } catch (error) {
     console.error('Erro ao inicializar serviço de gravação:', error);
   }
+
+  // Inicializar câmeras automaticamente após 10 segundos
+  setTimeout(async () => {
+    try {
+      console.log('🎬 Iniciando processo automático de ativação das câmeras...');
+      const { default: startCameraStreaming } = await import('./scripts/startCameraStreaming.js');
+      await startCameraStreaming();
+      console.log('✅ Processo de ativação das câmeras concluído');
+    } catch (error) {
+      console.error('❌ Erro na inicialização automática das câmeras:', error);
+    }
+  }, 10000); // Aguardar 10 segundos para todos os serviços estarem prontos
 }
 
 // Iniciar servidor
