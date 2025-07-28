@@ -13,8 +13,8 @@
 - **APIs**: http://66.94.104.241:8000/index/api/
 
 ### Backend (API)
-- **Porta**: 3000
-- **URL**: http://66.94.104.241:3000
+- **Porta**: 3001
+- **URL**: http://66.94.104.241:3001
 
 ### Frontend
 - **Porta**: 80 (via Nginx)

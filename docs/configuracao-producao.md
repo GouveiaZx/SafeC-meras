@@ -140,10 +140,10 @@ npm run dev
 
 ### 🔍 URLs de Teste
 
-- **Frontend:** http://localhost:5173
+- **Frontend:** http://localhost:5174
 - **Backend API:** http://localhost:3001/api
 - **Health Check:** http://localhost:3001/api/health
-- **Streaming:** http://localhost:8080 (se ZLMediaKit rodando)
+- **Streaming:** http://localhost:8000 (se ZLMediaKit rodando)
 
 ---
 

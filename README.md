@@ -11,9 +11,9 @@ Sistema completo de monitoramento de câmeras IP com streaming em tempo real, in
 
 ### 🔧 Desenvolvimento Local
 - **Frontend**: http://localhost:5174
-- **Backend API**: http://localhost:3002
-- **Health Check**: http://localhost:3002/health
-- **API Docs**: http://localhost:3002/api/docs
+- **Backend API**: http://localhost:3001
+- **Health Check**: http://localhost:3001/health
+- **API Docs**: http://localhost:3001/api/docs
 
 ## 🏗️ Arquitetura do Sistema
 
