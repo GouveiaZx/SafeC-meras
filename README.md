@@ -86,6 +86,43 @@ NewCAM/
 - **PM2** gerenciamento de processos
 - **Ubuntu 20.04** sistema operacional
 
+## 🚨 Correções Críticas Aplicadas
+
+### ✅ Problemas Resolvidos
+1. **Erro 400 - Stream já ativo** - Coluna `stream_type` ausente no banco de dados
+2. **Porta 3002 em uso** - Processo travado do backend
+3. **Configuração RTMP** - Valores incorretos no banco de dados
+
+### 📋 Documentação Completa para Migração
+
+### 📖 Documentação Principal
+- **[MIGRACAO_SERVIDOR_CLIENTE.md](./MIGRACAO_SERVIDOR_CLIENTE.md)** - Guia completo de migração passo a passo
+- **[README_SERVIDOR_CLIENTE.md](./README_SERVIDOR_CLIENTE.md)** - Documentação de deploy e configuração
+- **[CHECKLIST_MIGRACAO_CLIENTE.md](./CHECKLIST_MIGRACAO_CLIENTE.md)** - Checklist interativo para acompanhamento
+- **[RESUMO_CORRECOES.md](./RESUMO_CORRECOES.md)** - Resumo de todas as correções aplicadas
+- **[CONFIG_SERVIDOR_CLIENTE.env](./CONFIG_SERVIDOR_CLIENTE.env)** - Template de configuração de ambiente
+
+### 🔧 Scripts de Auxílio
+- **[verificar-migracao.js](./verificar-migracao.js)** - Verificação automática pré-migração
+- **[diagnostico_completo.js](./diagnostico_completo.js)** - Diagnóstico completo do sistema
+- **[diagnostico_simples.js](./diagnostico_simples.js)** - Verificação rápida de conexões
+- **[COMANDOS_RAPIDOS.md](./COMANDOS_RAPIDOS.md)** - Comandos essenciais para operação
+
+### 🚀 Início Rápido para Migração
+```bash
+# 1. Verificar sistema
+node diagnostico_completo.js
+
+# 2. Validar configurações
+node verificar-migracao.js
+
+# 3. Seguir checklist
+# Abrir CHECKLIST_MIGRACAO_CLIENTE.md
+
+# 4. Configurar ambiente
+# Copiar CONFIG_SERVIDOR_CLIENTE.env para .env
+```
+
 ## 📦 Instalação
 
 ### Pré-requisitos
@@ -102,14 +139,17 @@ NewCAM/
 git clone <repository-url>
 cd NewCAM
 
-# 2. Backend
+# 2. Verificar sistema antes de iniciar
+node verificar-migracao.js
+
+# 3. Backend
 cd backend
 npm install
 cp .env.example .env
 # Configure as variáveis no .env (Supabase URLs e keys)
 npm run dev
 
-# 3. Frontend (novo terminal)
+# 4. Frontend (novo terminal)
 cd frontend
 npm install
 cp .env.example .env

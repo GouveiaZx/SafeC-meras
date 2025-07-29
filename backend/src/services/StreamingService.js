@@ -200,9 +200,23 @@ class StreamingService {
     logger.debug(`ZLM API URL: ${this.zlmApiUrl}`);
     
     try {
-      // Verificar se a URL RTSP está definida
-      if (!camera.rtsp_url) {
-        throw new AppError('URL RTSP da câmera não está configurada', 400);
+      // Determinar a URL correta baseada no tipo de stream
+      // Usar 'rtsp' como padrão para câmeras existentes que não têm stream_type definido
+      const streamType = camera.stream_type || 'rtsp';
+      let streamUrl;
+      
+      if (streamType === 'rtmp') {
+        if (!camera.rtmp_url) {
+          throw new AppError('URL RTMP da câmera não está configurada', 400);
+        }
+        streamUrl = camera.rtmp_url;
+      } else if (streamType === 'rtsp') {
+        if (!camera.rtsp_url) {
+          throw new AppError('URL RTSP da câmera não está configurada', 400);
+        }
+        streamUrl = camera.rtsp_url;
+      } else {
+        throw new AppError(`Tipo de stream '${streamType}' não suportado`, 400);
       }
       
       // Implementar estratégia robusta de limpeza e criação
@@ -221,7 +235,7 @@ class StreamingService {
             vhost: '__defaultVhost__',
             app: 'live',
             stream: streamId,
-            url: camera.rtsp_url,
+            url: streamUrl,
             enable_rtsp: 1,
             enable_rtmp: 1,
             enable_hls: 1,
@@ -243,7 +257,7 @@ class StreamingService {
                   vhost: '__defaultVhost__',
                   app: 'live',
                   stream: streamId,
-                  url: camera.rtsp_url,
+                  url: streamUrl,
                   enable_rtsp: 1,
                   enable_rtmp: 1,
                   enable_hls: 1,
@@ -340,9 +354,27 @@ class StreamingService {
         flv: `${baseUrl}/live/${streamId}.flv`
       };
 
-      // Para SRS, precisamos de um processo separado para converter RTSP para RTMP
-      // Isso será implementado usando um worker process
-      await this.startRTSPToRTMPRelay(camera.rtsp_url, urls.rtmp);
+      // Para SRS, lidar com diferentes tipos de stream
+      // Usar 'rtsp' como padrão para câmeras existentes que não têm stream_type definido
+      const streamType = camera.stream_type || 'rtsp';
+      
+      if (streamType === 'rtmp') {
+        // Câmera RTMP - usar diretamente a URL RTMP
+        if (!camera.rtmp_url) {
+          throw new AppError('URL RTMP da câmera não está configurada', 400);
+        }
+        // Configurar para aceitar push RTMP da câmera
+        logger.info(`Configurando SRS para câmera RTMP: ${camera.rtmp_url}`);
+      } else if (streamType === 'rtsp') {
+        // Câmera RTSP - precisa converter para RTMP
+        if (!camera.rtsp_url) {
+          throw new AppError('URL RTSP da câmera não está configurada', 400);
+        }
+        // Converter RTSP para RTMP usando relay
+        await this.startRTSPToRTMPRelay(camera.rtsp_url, urls.rtmp);
+      } else {
+        throw new AppError(`Tipo de stream '${streamType}' não suportado`, 400);
+      }
 
       return {
         format,
