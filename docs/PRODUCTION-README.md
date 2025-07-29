@@ -13,8 +13,8 @@
 - **APIs**: http://66.94.104.241:8000/index/api/
 
 ### Backend (API)
-- **Porta**: 3001
-- **URL**: http://66.94.104.241:3001
+- **Porta**: 3002 (desenvolvimento) / 3001 (produção)
+- **URL**: http://localhost:3002 (desenvolvimento) / http://66.94.104.241:3001 (produção)
 
 ### Frontend
 - **Porta**: 80 (via Nginx)
@@ -82,7 +82,7 @@ pm2 restart newcam-backend
 ## Monitoramento
 
 ### URLs de Verificação:
-- **API Health**: http://66.94.104.241:3000/api/health
+- **API Health**: http://66.94.104.241:3001/api/health (produção) / http://localhost:3002/api/health (desenvolvimento)
 - **ZLMediaKit**: http://66.94.104.241:8000/index/api/getServerConfig?secret=9QqL3M2K7vHQexkbfp6RvbCUB3GkV4MK
 - **Frontend**: http://66.94.104.241
 

@@ -67,9 +67,8 @@ services:
       - ./storage/recordings:/opt/media/bin/www/record/proxy
       - ./storage/www:/opt/media/bin/www
     ports:
-      - "9902:80"    # API ZLM (HTTP)
       - "1935:1935"  # RTMP
-      - "8000:80"    # HTTP-HLS
+      - "8000:80"    # HTTP-HLS e API (porta interna 80)
       - "554:554"    # RTSP
     networks:
       - newcam-network

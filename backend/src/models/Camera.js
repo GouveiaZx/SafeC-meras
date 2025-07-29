@@ -34,7 +34,7 @@ class Camera {
     this.rtsp_url = data.rtsp_url;
     this.rtmp_url = data.rtmp_url;
     this.hls_url = data.hls_url;
-    this.status = data.status || 'offline';
+    this.status = data.status || 'online';
     this.is_streaming = data.is_streaming || false;
     this.is_recording = data.is_recording || false;
     this.location = data.location;

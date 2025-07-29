@@ -29,6 +29,14 @@ class StreamingService {
     this.isInitialized = false;
   }
 
+  /**
+   * Verificar se uma string é um UUID válido
+   */
+  isValidUUID(uuid) {
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    return uuidRegex.test(uuid);
+  }
+
   async init() {
     if (this.isInitialized) {
       logger.info('StreamingService já foi inicializado');
@@ -40,7 +48,7 @@ class StreamingService {
       this.isInitialized = true;
       
       // Configurar servidor de streaming baseado na variável de ambiente
-      this.preferredServer = process.env.STREAMING_SERVER || 'srs';
+      this.preferredServer = process.env.STREAMING_SERVER || 'zlm';
       this.usesFallback = false;
       this.fallbackService = null;
       
@@ -56,12 +64,7 @@ class StreamingService {
       
       logger.info(`${this.preferredServer.toUpperCase()} conectado com sucesso`);
       
-      // Criar stream de teste para desenvolvimento
-      const isProduction = process.env.NODE_ENV === 'production';
-      if (!isProduction) {
-        this.createTestStream();
-      }
-      
+      // NÃO criar stream de teste - usar apenas streams reais
       logger.info(`Serviço de streaming inicializado com servidor: ${this.preferredServer}`);
     } catch (error) {
       logger.error('Erro ao inicializar StreamingService:', error);
@@ -69,32 +72,7 @@ class StreamingService {
     }
   }
 
-  /**
-   * Criar um stream de teste para desenvolvimento
-   */
-  createTestStream() {
-    const testStreamId = '5467d328-1426-4444-8ed9-6ea3e156f76f';
-    const testStream = {
-      id: testStreamId,
-      camera_id: testStreamId,
-      status: 'active',
-      format: 'hls',
-      quality: 'medium',
-      audio: true,
-      server: this.preferredServer,
-      urls: {
-        rtsp: `rtsp://localhost:554/live/${testStreamId}`,
-        rtmp: `rtmp://localhost:1935/live/${testStreamId}`,
-        hls: `http://localhost:80/live/${testStreamId}/playlist.m3u8`,
-        webrtc: `http://localhost:8080/live/${testStreamId}.live.flv`
-      },
-      startedAt: new Date(),
-      viewers: 0
-    };
-    
-    this.activeStreams.set(testStreamId, testStream);
-    logger.info(`Stream de teste criado: ${testStreamId}`);
-  }
+
 
   async testConnectivity() {
     const tests = [];
@@ -294,7 +272,7 @@ class StreamingService {
       const directUrls = {
         rtsp: `rtsp://localhost:554/live/${streamId}`,
         rtmp: `rtmp://localhost:1935/live/${streamId}`,
-        hls: `${zlmBaseUrl}/live/${streamId}/hls.m3u8`,
+        hls: `/api/streams/${streamId}/hls`,
         flv: `${zlmBaseUrl}/live/${streamId}.live.flv`,
         thumbnail: `${zlmBaseUrl}/live/${streamId}.live.jpg`
       };
@@ -673,10 +651,13 @@ class StreamingService {
    */
   getStream(streamId) {
     logger.debug(`getStream - Buscando stream: ${streamId}`);
+    logger.debug(`getStream - Total de streams ativos: ${this.activeStreams.size}`);
     logger.debug(`getStream - Streams ativos:`, Array.from(this.activeStreams.keys()));
+    
     const stream = this.activeStreams.get(streamId);
     if (!stream) {
       logger.debug(`getStream - Stream não encontrado: ${streamId}`);
+      logger.debug(`getStream - Verificando se é um UUID válido: ${this.isValidUUID(streamId)}`);
       return null;
     }
 
@@ -688,7 +669,8 @@ class StreamingService {
       id: stream.id,
       status: stream.status,
       camera_id: stream.camera_id,
-      server: stream.server
+      server: stream.server,
+      viewers: stream.viewers
     });
     return stream;
   }

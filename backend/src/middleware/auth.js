@@ -160,7 +160,7 @@ const requireCameraAccess = async (req, res, next) => {
     logger.debug(`requireCameraAccess - req.params: ${JSON.stringify(req.params)}`);
     logger.debug(`requireCameraAccess - req.body: ${JSON.stringify(req.body)}`);
     
-    const cameraId = req.params.id || req.params.cameraId || req.params.camera_id || req.body.cameraId || req.body.camera_id;
+    const cameraId = req.params.cameraId || req.params.id || req.params.camera_id || req.body.cameraId || req.body.camera_id;
     logger.debug(`requireCameraAccess - cameraId extraído: ${cameraId}`);
     
     if (!cameraId) {

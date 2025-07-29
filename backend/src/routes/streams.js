@@ -134,333 +134,96 @@ const authenticateHLS = async (req, res, next) => {
   }
 };
 
-/**
- * @route GET /api/streams/test-auth
- * @desc Testar autenticação HLS
- * @access Public
- */
-router.get('/test-auth', async (req, res) => {
-  try {
-    const token = req.query.token;
-    
-    if (!token) {
-      return res.status(401).json({
-        success: false,
-        message: 'Token não fornecido',
-        debug: {
-          headers: req.headers,
-          query: req.query
-        }
-      });
-    }
-    
-    // Verificar token JWT
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
-    // Buscar usuário no banco
-    const { supabaseAdmin } = await import('../config/database.js');
-    const { data: user, error } = await supabaseAdmin
-      .from('users')
-      .select('*')
-      .eq('id', decoded.userId)
-      .eq('active', true)
-      .single();
-    
-    if (error || !user) {
-      return res.status(401).json({
-        success: false,
-        message: 'Usuário não encontrado',
-        debug: {
-          userId: decoded.userId,
-          error: error?.message
-        }
-      });
-    }
-    
-    res.json({
-      success: true,
-      message: 'Autenticação HLS funcionando',
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        role: user.role
-      }
-    });
-  } catch (error) {
-    logger.error('Erro no teste de autenticação:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Erro interno',
-      error: error.message
-    });
-  }
-});
 
-/**
- * @route GET /api/streams/test-zlm
- * @desc Testar conectividade com ZLMediaKit (sem autenticação)
- * @access Public
- */
-router.get('/test-zlm', async (req, res) => {
-  try {
-    // Testar conectividade diretamente com ZLMediaKit
-    const tests = await streamingService.testConnectivity();
-    const zlmTest = tests.find(test => test.server === 'zlm');
-    
-    if (zlmTest && zlmTest.status === 'online') {
-      res.json({
-        success: true,
-        message: 'ZLMediaKit está online',
-        data: {
-          status: 'online',
-          server: 'ZLMediaKit',
-          url: streamingService.zlmApiUrl,
-          response: zlmTest.response
-        }
-      });
-    } else {
-      res.status(503).json({
-        success: false,
-        message: 'ZLMediaKit não está disponível',
-        data: {
-          status: 'offline',
-          server: 'ZLMediaKit',
-          url: streamingService.zlmApiUrl,
-          error: zlmTest ? zlmTest.error : 'Servidor não encontrado'
-        }
-      });
-    }
-  } catch (error) {
-    logger.error('Erro ao testar conectividade ZLMediaKit:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Erro interno ao testar conectividade',
-      error: error.message
-    });
-  }
-});
+
+
+
+
 
 /**
  * @route GET /api/streams/:stream_id/hls
- * @desc Proxy para stream HLS principal (playlist.m3u8)
- * @access Private (via token HLS)
+ * @desc Redirecionar para o manifesto HLS principal
+ * @access Private (requer token HLS)
  */
-router.get('/:stream_id/hls',
-  authenticateHLS,
-  asyncHandler(async (req, res) => {
-    const { stream_id } = req.params;
-    const hlsPath = 'playlist.m3u8'; // Arquivo principal do HLS
-    
-    logger.debug(`authenticateHLS - Stream ID recebido: ${stream_id}`);
-    logger.debug(`authenticateHLS - HLS Path: ${hlsPath}`);
-    logger.debug(`authenticateHLS - Usuário autenticado: ${req.user?.email}`);
-    
-    // Verificar se o stream existe nos streams ativos
-    const activeStream = streamingService.getStream(stream_id);
-    if (!activeStream) {
-      logger.warn(`Stream ${stream_id} não encontrado nos streams ativos`);
-      return res.status(404).json({
-        success: false,
-        message: 'Stream não encontrado ou não está ativo'
-      });
-    }
-    
-    // Verificar permissão de acesso à câmera
-    if (req.user.role !== 'admin' && 
-        !req.user.camera_access.includes(activeStream.camera_id)) {
-      logger.warn(`Usuário ${req.user.email} sem acesso à câmera ${activeStream.camera_id}`);
-      return res.status(403).json({
-        success: false,
-        message: 'Sem permissão para acessar este stream'
-      });
-    }
-    
-    // Detectar qual servidor de streaming está sendo usado
-    const streamingServer = process.env.STREAMING_SERVER || 'zlm';
-    let proxyUrl;
-    
-    if (streamingServer === 'simple') {
-      // Para SimpleStreamingService, usar porta 8081
-      const SIMPLE_BASE_URL = `http://localhost:${process.env.SIMPLE_STREAMING_PORT || 8081}`;
-      proxyUrl = `${SIMPLE_BASE_URL}/hls/${stream_id}/playlist.m3u8`;
-    } else {
-      // Para ZLMediaKit via NGINX, usar porta 80 (NGINX faz proxy para ZLMediaKit)
-      const NGINX_BASE_URL = process.env.NGINX_BASE_URL || 'http://localhost:80';
-      proxyUrl = `${NGINX_BASE_URL}/live/${stream_id}/${hlsPath}`;
-    }
-    
-    logger.debug(`authenticateHLS - Fazendo proxy para: ${proxyUrl} (servidor: ${streamingServer})`);
-    
-    try {
-      const response = await fetch(proxyUrl, {
-        method: 'GET',
-        signal: AbortSignal.timeout(10000)
-      });
-      
-      if (!response.ok) {
-        logger.error(`ZLMediaKit retornou erro: ${response.status} ${response.statusText}`);
-        
-        // Em desenvolvimento, retornar um playlist HLS de teste
-        if (process.env.NODE_ENV === 'development') {
-          logger.info('Modo desenvolvimento: retornando playlist HLS de teste');
-          
-          const testPlaylist = `#EXTM3U
-#EXT-X-VERSION:3
-#EXT-X-TARGETDURATION:10
-#EXT-X-MEDIA-SEQUENCE:0
-#EXTINF:10.0,
-segment-0.ts
-#EXTINF:10.0,
-segment-1.ts
-#EXTINF:10.0,
-segment-2.ts
-#EXT-X-ENDLIST`;
-          
-          res.set({
-            'Content-Type': 'application/vnd.apple.mpegurl',
-            'Cache-Control': 'no-cache',
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Headers': 'Range'
-          });
-          
-          return res.send(testPlaylist);
-        }
-        
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-      
-      // Definir cabeçalhos apropriados
-      res.set({
-        'Content-Type': response.headers.get('content-type') || 'application/vnd.apple.mpegurl',
-        'Cache-Control': 'no-cache',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Range'
-      });
-      
-      // Pipe do stream usando ReadableStream
-      const reader = response.body.getReader();
-      const pump = async () => {
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            res.write(value);
-          }
-          res.end();
-        } catch (error) {
-          logger.error('Erro no pipe do stream:', error);
-          res.end();
-        }
-      };
-      pump();
-    } catch (error) {
-      logger.error(`Erro ao fazer proxy HLS para ${proxyUrl}:`, error.message);
-      res.status(502).json({
-        success: false,
-        message: 'Erro ao acessar stream HLS',
-        error: error.message
-      });
-    }
-  })
-);
+router.get('/:stream_id/hls', authenticateHLS, asyncHandler(async (req, res) => {
+  const { stream_id } = req.params;
+  const { token } = req.query;
+  
+  // Redirecionar para o arquivo principal do manifesto HLS
+  const redirectUrl = `/api/streams/${stream_id}/hls/hls.m3u8${token ? `?token=${token}` : ''}`;
+  res.redirect(302, redirectUrl);
+}));
 
 /**
  * @route GET /api/streams/:stream_id/hls/*
- * @desc Proxy para segmentos HLS (.ts) e outros arquivos
+ * @desc Rota de proxy para manifestos HLS (.m3u8) e segmentos (.ts)
  * @access Private (via token HLS)
  */
-router.get('/:stream_id/hls/*',
-  authenticateHLS,
-  asyncHandler(async (req, res) => {
-    const { stream_id } = req.params;
-    const hlsPath = req.params[0] || 'playlist.m3u8'; // Captura o resto do caminho
-    
-    logger.debug(`authenticateHLS - Stream ID recebido: ${stream_id}`);
-    logger.debug(`authenticateHLS - HLS Path: ${hlsPath}`);
-    logger.debug(`authenticateHLS - Usuário autenticado: ${req.user?.email}`);
-    
-    // Verificar se o stream existe nos streams ativos
-    const activeStream = streamingService.getStream(stream_id);
-    if (!activeStream) {
-      logger.warn(`Stream ${stream_id} não encontrado nos streams ativos`);
-      return res.status(404).json({
-        success: false,
-        message: 'Stream não encontrado ou não está ativo'
-      });
+router.get('/:stream_id/hls/*', authenticateHLS, asyncHandler(async (req, res) => {
+  const { stream_id } = req.params;
+  const file = req.params[0] || 'hls.m3u8'; // Captura todo o caminho restante ou usa o default
+  const { token } = req.query;
+
+  if (!file.endsWith('.m3u8') && !file.endsWith('.ts')) {
+    return res.status(400).send('Tipo de arquivo inválido.');
+  }
+
+  const activeStream = streamingService.getStream(stream_id);
+  if (!activeStream) {
+    return res.status(404).send('Stream não encontrado.');
+  }
+
+  if (req.user.role !== 'admin' && !req.user.camera_access.includes(activeStream.camera_id)) {
+    return res.status(403).send('Acesso negado a este stream.');
+  }
+
+  const ZLM_BASE_URL = process.env.ZLM_BASE_URL || 'http://localhost:8001';
+  const proxyUrl = `${ZLM_BASE_URL}/live/${stream_id}/${file}`;
+
+  try {
+    const response = await fetch(proxyUrl);
+    if (!response.ok) {
+      return res.status(response.status).send(await response.text());
     }
-    
-    // Verificar permissão de acesso à câmera
-    if (req.user.role !== 'admin' && 
-        !req.user.camera_access.includes(activeStream.camera_id)) {
-      logger.warn(`Usuário ${req.user.email} sem acesso à câmera ${activeStream.camera_id}`);
-      return res.status(403).json({
-        success: false,
-        message: 'Sem permissão para acessar este stream'
-      });
-    }
-    
-    // Detectar qual servidor de streaming está sendo usado
-    const streamingServer = process.env.STREAMING_SERVER || 'zlm';
-    let proxyUrl;
-    
-    if (streamingServer === 'simple') {
-      // Para SimpleStreamingService, usar porta 8081
-      const SIMPLE_BASE_URL = `http://localhost:${process.env.SIMPLE_STREAMING_PORT || 8081}`;
-      proxyUrl = `${SIMPLE_BASE_URL}/hls/${stream_id}/playlist.m3u8`;
+
+    if (file.endsWith('.m3u8')) {
+      let manifest = await response.text();
+      const baseUrl = `/api/streams/${stream_id}/hls`;
+
+      // Reescreve as URLs para apontar para o nosso proxy
+      manifest = manifest.replace(/^(.*\.m3u8)$/gm, `${baseUrl}/$1?token=${token}`)
+                         .replace(/^(.*\.ts)$/gm, `${baseUrl}/$1?token=${token}`);
+
+      res.set('Content-Type', 'application/vnd.apple.mpegurl');
+      res.send(manifest);
     } else {
-      // Para ZLMediaKit via NGINX, usar porta 80 (NGINX faz proxy para ZLMediaKit)
-      const NGINX_BASE_URL = process.env.NGINX_BASE_URL || 'http://localhost:80';
-      proxyUrl = `${NGINX_BASE_URL}/live/${stream_id}/${hlsPath}`;
-    }
-    
-    logger.debug(`authenticateHLS - Fazendo proxy para: ${proxyUrl} (servidor: ${streamingServer})`);
-    
-    try {
-      const response = await fetch(proxyUrl, {
-        method: 'GET',
-        signal: AbortSignal.timeout(10000)
-      });
-      
-      if (!response.ok) {
-        logger.error(`ZLMediaKit retornou erro: ${response.status} ${response.statusText}`);
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-      
-      // Definir cabeçalhos apropriados
-      res.set({
-        'Content-Type': response.headers.get('content-type') || 'application/vnd.apple.mpegurl',
-        'Cache-Control': 'no-cache',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Range'
-      });
-      
-      // Pipe do stream usando ReadableStream
-      const reader = response.body.getReader();
-      const pump = async () => {
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+      res.set('Content-Type', 'video/mp2t');
+      if (req.method === 'HEAD') {
+        res.set('Content-Length', response.headers.get('content-length') || '0');
+        res.end();
+      } else {
+        const reader = response.body.getReader();
+        const pump = () => {
+          return reader.read().then(({ done, value }) => {
+            if (done) {
+              res.end();
+              return;
+            }
             res.write(value);
-          }
+            return pump();
+          });
+        };
+        pump().catch(err => {
+          logger.error('Erro ao fazer stream do segmento:', err);
           res.end();
-        } catch (error) {
-          logger.error('Erro no pipe do stream:', error);
-          res.end();
-        }
-      };
-      pump();
-    } catch (error) {
-      logger.error(`Erro ao fazer proxy HLS para ${proxyUrl}:`, error.message);
-      res.status(502).json({
-        success: false,
-        message: 'Erro ao acessar stream HLS',
-        error: error.message
-      });
+        });
+      }
     }
-  })
-);
+  } catch (error) {
+    logger.error(`Erro no proxy HLS para ${proxyUrl}:`, error);
+    res.status(500).send('Erro interno no proxy HLS.');
+  }
+}));
 
 // Aplicar autenticação a todas as outras rotas
 router.use(authenticateToken);
@@ -547,13 +310,13 @@ router.get('/stats',
 );
 
 /**
- * @route POST /api/streams/:camera_id/start
+ * @route POST /api/streams/:cameraId/start
  * @desc Iniciar stream de uma câmera
  * @access Private
  */
-router.post('/:camera_id/start',
+router.post('/:cameraId/start',
   validateParams({
-    camera_id: {
+    cameraId: {
       required: true,
       type: 'uuid',
       message: 'ID da câmera deve ser um UUID válido'
@@ -579,18 +342,18 @@ router.post('/:camera_id/start',
     }
   }),
   asyncHandler(async (req, res) => {
-    const { camera_id } = req.params;
+    const { cameraId } = req.params;
     const { quality, format, audio } = req.validatedData;
 
-    // Verificar se câmera existe e está online
-    const camera = await Camera.findById(camera_id);
+    // Verificar se câmera existe
+    const camera = await Camera.findById(cameraId);
     if (!camera) {
       throw new NotFoundError('Câmera não encontrada');
     }
 
-    if (camera.status !== 'online') {
-      throw new ValidationError('Câmera não está online');
-    }
+    // Permitir iniciar stream mesmo se câmera estiver offline
+    // O streaming service tentará conectar e atualizar o status
+    logger.info(`Tentando iniciar stream para câmera ${camera.name} (status: ${camera.status})`);
 
     // Obter token do usuário para autenticação HLS
     const userToken = req.headers.authorization?.substring(7); // Remove 'Bearer '
@@ -604,7 +367,7 @@ router.post('/:camera_id/start',
       userToken
     });
 
-    logger.info(`Stream iniciado para câmera ${camera_id} por: ${req.user.email}`);
+    logger.info(`Stream iniciado para câmera ${cameraId} por: ${req.user.email}`);
 
     res.status(201).json({
       message: 'Stream iniciado com sucesso',
@@ -682,9 +445,21 @@ router.get('/:stream_id',
       throw new AuthorizationError('Sem permissão para visualizar este stream');
     }
 
+    // Construir URLs completas para o cliente
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const streamInfo = {
+      ...stream,
+      urls: {
+        ...stream.urls,
+        hls: `${baseUrl}/api/streams/${stream_id}/hls`,
+        flv: `${baseUrl}/api/streams/${stream_id}/flv`,
+        thumbnail: `${baseUrl}/api/streams/${stream_id}/thumbnail`
+      }
+    };
+
     res.json({
       message: 'Stream encontrado',
-      data: stream
+      data: streamInfo
     });
   })
 );

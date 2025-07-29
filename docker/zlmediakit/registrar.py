@@ -19,7 +19,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configurações
-ZLM_BASE_URL = os.getenv('ZLM_BASE_URL', 'http://zlmediakit:80')
+ZLM_BASE_URL = os.getenv('ZLM_BASE_URL', 'http://zlmediakit:8000')
 ZLM_SECRET = os.getenv('ZLM_SECRET', '9QqL3M2K7vHQexkbfp6RvbCUB3GkV4MK')
 API_ENDPOINT = os.getenv('API_ENDPOINT', 'http://host.docker.internal:3002/api')
 INTERNAL_SERVICE_TOKEN = os.getenv('INTERNAL_SERVICE_TOKEN', 'newcam-internal-service-2025')

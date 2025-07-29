@@ -603,6 +603,13 @@ const Cameras: React.FC = () => {
                         >
                           <Trash2 className="h-4 w-4" />
                         </button>
+                        <button 
+                          onClick={() => window.open(`/stream/${streamStatus.get(camera.id)?.stream_id || camera.id}`, '_blank')}
+                          className="text-gray-400 hover:text-blue-600 p-1 rounded"
+                          title="Visualizar em tela cheia"
+                        >
+                          <Maximize2 className="h-4 w-4" />
+                        </button>
                       </div>
                     </div>
 

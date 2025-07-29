@@ -86,6 +86,7 @@
   "dependencies": {
     "@modelcontextprotocol/server-sequential-thinking": "^2025.7.1",
     "@simonb97/server-win-cli": "^0.2.0",
+    "axios": "^1.11.0",
     "dotenv": "^17.2.1",
     "minimatch": "^10.0.3",
     "node-fetch": "^3.3.2"

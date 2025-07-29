@@ -16,6 +16,7 @@ import Settings from "@/pages/Settings";
 import Profile from "@/pages/Profile";
 import Archive from "@/pages/Archive";
 import Security from "@/pages/Security";
+import StreamViewPage from "@/pages/StreamViewPage";
 
 export default function App() {
   return (
@@ -42,6 +43,14 @@ export default function App() {
             </ProtectedRoute>
           }>
             <Route index element={<Cameras />} />
+          </Route>
+          
+          <Route path="/stream/:id" element={
+            <ProtectedRoute>
+              <MainLayout />
+            </ProtectedRoute>
+          }>
+            <Route index element={<StreamViewPage />} />
           </Route>
           
 

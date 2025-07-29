@@ -11,9 +11,9 @@ Sistema completo de monitoramento de câmeras IP com streaming em tempo real, in
 
 ### 🔧 Desenvolvimento Local
 - **Frontend**: http://localhost:5174
-- **Backend API**: http://localhost:3003
-- **Health Check**: http://localhost:3003/health
-- **API Docs**: http://localhost:3003/api/docs
+- **Backend API**: http://localhost:3002
+- **Health Check**: http://localhost:3002/health
+- **API Docs**: http://localhost:3002/api/docs
 
 ## 🏗️ Arquitetura do Sistema
 
@@ -147,8 +147,8 @@ CORS_ORIGIN=http://localhost:5174
 
 #### Frontend (.env)
 ```env
-VITE_API_URL=http://localhost:3003/api
-VITE_WS_URL=ws://localhost:3003
+VITE_API_URL=http://localhost:3002/api
+VITE_WS_URL=ws://localhost:3002
 VITE_SUPABASE_URL=https://grkvfzuadctextnbpajb.supabase.co
 VITE_SUPABASE_ANON_KEY=your-anon-key
 ```
@@ -165,8 +165,8 @@ O projeto utiliza **Supabase** como banco de dados. As tabelas e dados já estã
 ## 🔐 Autenticação
 
 ### Login Padrão
-- **Usuário**: admin
-- **Senha**: admin123
+- **Usuário**: gouveiarx@gmail.com
+- **Senha**: Teste123
 
 ### Endpoints de Autenticação
 - `POST /api/auth/login` - Login
@@ -427,6 +427,15 @@ psql -U postgres -d newcam
 # Verificar conexões
 SELECT * FROM pg_stat_activity;
 ```
+
+## 📚 Documentação
+
+### 📋 Documentos Essenciais
+- [Status do Sistema](docs/STATUS-SISTEMA.md) - Status atual e comandos essenciais
+- [Desenvolvimento Local](docs/DESENVOLVIMENTO-LOCAL.md) - Guia completo para desenvolvimento
+- [Credenciais e Login](docs/CREDENCIAIS-LOGIN.md) - Informações de acesso e autenticação
+- [Configuração do Supabase](docs/configuracao-supabase.md) - Setup do banco de dados
+- [Deploy em Produção](docs/PRODUCTION-README.md) - Configuração para produção
 
 ## 📞 Suporte
 
