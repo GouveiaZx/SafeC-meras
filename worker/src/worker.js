@@ -211,6 +211,9 @@ class CameraWorker {
       clearInterval(camera.checkInterval);
     }
     
+    // DESABILITADO: Verificação automática de câmeras
+    // Comentado para evitar mudanças automáticas de status
+    /*
     // Verifica a câmera a cada 30 segundos
     camera.checkInterval = setInterval(() => {
       this.checkCamera(cameraId);
@@ -218,6 +221,9 @@ class CameraWorker {
     
     // Primeira verificação imediata
     this.checkCamera(cameraId);
+    */
+    
+    logger.info(`Monitoramento automático desabilitado para câmera: ${camera.name}`);
   }
   
   async checkCamera(cameraId) {

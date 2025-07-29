@@ -165,7 +165,10 @@ const errorHandler = (error, req, res, next) => {
   });
   
   // Tratar diferentes tipos de erro
-  if (error.code && error.code.startsWith('PGRST')) {
+  if (error instanceof AppError) {
+    // Se já é um AppError, manter como está
+    err = error;
+  } else if (error.code && error.code.startsWith('PGRST')) {
     err = handleSupabaseError(error);
   } else if (error.name && error.name.includes('JsonWebToken')) {
     err = handleJWTError(error);

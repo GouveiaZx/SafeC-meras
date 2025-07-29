@@ -60,6 +60,7 @@ import { initializeSocket } from './controllers/socketController.js';
 import MetricsService from './services/MetricsService.js';
 import RecordingService from './services/RecordingService.js';
 import streamingService from './services/StreamingService.js';
+import cameraMonitoringService from './services/CameraMonitoringService.js';
 
 const app = express();
 const server = createServer(app);
@@ -113,19 +114,29 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Middleware customizado
 app.use(requestLogger);
 
-// Servir arquivos estáticos de stream
-const streamStoragePath = join(__dirname, '../../worker/storage/streams');
-app.use('/streams', express.static(streamStoragePath, {
-  setHeaders: (res, path) => {
-    if (path.endsWith('.m3u8')) {
-      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-      res.setHeader('Cache-Control', 'no-cache');
-    } else if (path.endsWith('.ts')) {
-      res.setHeader('Content-Type', 'video/mp2t');
-      res.setHeader('Cache-Control', 'public, max-age=3600');
-    }
+// MIDDLEWARE DE DEBUG GLOBAL - CAPTURA TODAS AS REQUISIÇÕES
+app.use((req, res, next) => {
+  if (req.method === 'POST' && req.path.includes('/streams/')) {
+    console.log('🚨 [GLOBAL DEBUG] === REQUISIÇÃO POST PARA STREAMS DETECTADA ===');
+    console.log('🚨 [GLOBAL DEBUG] Method:', req.method);
+    console.log('🚨 [GLOBAL DEBUG] URL:', req.originalUrl);
+    console.log('🚨 [GLOBAL DEBUG] Path:', req.path);
+    console.log('🚨 [GLOBAL DEBUG] Headers:', {
+      authorization: req.headers.authorization ? 'Bearer [PRESENTE]' : 'AUSENTE',
+      'content-type': req.headers['content-type'],
+      'user-agent': req.headers['user-agent']?.substring(0, 50) + '...'
+    });
+    console.log('🚨 [GLOBAL DEBUG] Body:', req.body);
+    console.log('🚨 [GLOBAL DEBUG] Params:', req.params);
+    console.log('🚨 [GLOBAL DEBUG] Query:', req.query);
+    console.log('🚨 [GLOBAL DEBUG] IP:', req.ip);
+    console.log('🚨 [GLOBAL DEBUG] Timestamp:', new Date().toISOString());
   }
-}));
+  next();
+});
+
+// NOTA: Middleware de arquivos estáticos movido para depois das rotas da API
+// para evitar conflito com rotas /api/streams
 
 // Health check
 app.get('/health', (req, res) => {
@@ -153,6 +164,20 @@ app.use('/api/discovery', discoveryRoutes);
 app.use('/api/worker', workerRoutes);
 app.use('/api/hook', hookRoutes);
 
+// Servir arquivos estáticos de stream (APÓS as rotas da API)
+const streamStoragePath = join(__dirname, '../../worker/storage/streams');
+app.use('/streams', express.static(streamStoragePath, {
+  setHeaders: (res, path) => {
+    if (path.endsWith('.m3u8')) {
+      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+      res.setHeader('Cache-Control', 'no-cache');
+    } else if (path.endsWith('.ts')) {
+      res.setHeader('Content-Type', 'video/mp2t');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+    }
+  }
+}));
+
 // Middleware de tratamento de erros
 app.use(notFoundHandler);
 app.use(errorHandler);
@@ -174,6 +199,15 @@ async function initializeServices() {
   } catch (error) {
     console.error('❌ Erro ao inicializar StreamingService:', error);
     throw error;
+  }
+
+  // Inicializar serviço de monitoramento de câmeras
+  try {
+    await cameraMonitoringService.initialize(streamingService);
+    cameraMonitoringService.startMonitoring();
+    console.log('✅ CameraMonitoringService inicializado');
+  } catch (error) {
+    console.error('❌ Erro ao inicializar CameraMonitoringService:', error);
   }
 
   // Iniciar coleta de métricas
@@ -261,3 +295,4 @@ process.on('SIGINT', () => {
 });
 
 export { app, server, io };
+// Restart trigger 2

@@ -84,13 +84,20 @@ class Camera {
       errors.push('Nome deve ter entre 2 e 100 caracteres');
     }
 
-    // Validar IP
-    if (!this.ip_address) {
-      errors.push('Endereço IP é obrigatório');
-    } else {
+    // Validar IP (opcional se URLs de stream são fornecidas)
+    if (!this.ip_address && !this.rtsp_url && !this.rtmp_url) {
+      errors.push('Deve ser fornecido pelo menos um: IP da câmera, URL RTSP ou URL RTMP');
+    } else if (this.ip_address) {
+      // Validar IP numérico
       const ipRegex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
-      if (!ipRegex.test(this.ip_address)) {
-        errors.push('Endereço IP deve ter um formato válido');
+      if (ipRegex.test(this.ip_address)) {
+        // É um IP válido
+      } else {
+        // Validar hostname/domínio
+        const hostnameRegex = /^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?))*$/;
+        if (!hostnameRegex.test(this.ip_address) || this.ip_address.length > 253) {
+          errors.push('Endereço IP deve ter um formato válido ou ser um hostname válido');
+        }
       }
     }
 
@@ -401,15 +408,18 @@ class Camera {
         throw new ValidationError('Nome da câmera é obrigatório');
       }
       
-      if (!this.rtsp_url || this.rtsp_url.trim().length === 0) {
-        throw new ValidationError('URL RTSP é obrigatória');
+      // Deve ter pelo menos uma URL de stream ou IP
+      if (!this.rtsp_url && !this.rtmp_url && !this.ip_address) {
+        throw new ValidationError('Deve ser fornecido pelo menos um: IP da câmera, URL RTSP ou URL RTMP');
       }
 
       // Sanitizar dados básicos
       this.name = this.name.trim();
       if (this.description) this.description = this.description.trim();
       if (this.location) this.location = this.location.trim();
-      this.rtsp_url = this.rtsp_url.trim();
+      if (this.rtsp_url) this.rtsp_url = this.rtsp_url.trim();
+      if (this.rtmp_url) this.rtmp_url = this.rtmp_url.trim();
+      if (this.ip_address) this.ip_address = this.ip_address.trim();
       
       // Definir valores padrão
       this.status = this.status || 'offline';
@@ -461,16 +471,27 @@ class Camera {
         this.created_at = now;
         this.updated_at = now;
 
+        // Preparar dados para inserção
+        const insertData = {
+          name: this.name,
+          rtsp_url: this.rtsp_url,
+          rtmp_url: this.rtmp_url,
+          status: this.status || 'connecting',
+          location: this.location
+        };
+        
+        // Só incluir ip_address se for um IP válido (não hostname)
+        if (this.ip_address) {
+          const ipRegex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+          if (ipRegex.test(this.ip_address)) {
+            insertData.ip_address = this.ip_address;
+          }
+          // Se for hostname, não incluir no banco (campo INET não aceita)
+        }
+
         const { data, error } = await supabaseAdmin
           .from(TABLES.CAMERAS)
-          .insert({
-            name: this.name,
-            ip_address: this.ip_address,
-            rtsp_url: this.rtsp_url,
-            rtmp_url: this.rtmp_url,
-            status: this.status || 'connecting',
-            location: this.location
-          })
+          .insert(insertData)
           .select()
           .single();
 

@@ -42,6 +42,8 @@ const Cameras: React.FC = () => {
   const [selectedCamera, setSelectedCamera] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'single'>('grid');
   const [loading, setLoading] = useState(true);
+  const [currentQuality, setCurrentQuality] = useState<string>('720p');
+  const [availableQualitiesState] = useState<string[]>(['1080p', '720p', '480p']);
   const [error, setError] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const location = useLocation();
@@ -51,7 +53,8 @@ const Cameras: React.FC = () => {
     rtsp_url: '',
     rtmp_url: '',
     location: '',
-    stream_type: 'rtsp'
+    stream_type: 'rtsp' as 'rtsp' | 'rtmp',
+    type: 'ip' // Campo obrigatório para validação do backend
   });
   const [saving, setSaving] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -92,7 +95,8 @@ const Cameras: React.FC = () => {
       rtsp_url: camera.rtsp_url,
       rtmp_url: '',
       location: camera.location || '',
-      stream_type: 'rtsp'
+      stream_type: 'rtsp',
+      type: 'ip' // Campo obrigatório para validação do backend
     });
     setShowSettingsModal(true);
   };
@@ -129,6 +133,168 @@ const Cameras: React.FC = () => {
   const confirmDelete = (cameraId: string) => {
     setCameraToDelete(cameraId);
     setShowDeleteConfirm(true);
+  };
+
+  // Função para extrair hostname de uma URL
+  const extractHostnameFromUrl = (url: string): string => {
+    try {
+      const urlObj = new URL(url);
+      return urlObj.hostname;
+    } catch {
+      // Fallback com regex para URLs RTMP
+      const match = url.match(/rtmp:\/\/([^:\/]+)/);
+      return match ? match[1] : '';
+    }
+  };
+
+  // Mapeamento de qualidades do frontend para backend (consistente com StreamingService)
+  const qualityMapping: { [key: string]: string } = {
+    '4K': 'ultra',
+    '1080p': 'high', 
+    '720p': 'medium',
+    '480p': 'low'
+  };
+
+  // Mapeamento reverso para exibir qualidade atual
+  const reverseQualityMapping: { [key: string]: string } = {
+    'ultra': '4K',
+    'high': '1080p',
+    'medium': '720p',
+    'low': '480p'
+  };
+
+  // Qualidades disponíveis para seleção (ordenadas por qualidade)
+  const availableQualities = ['1080p', '720p', '480p']; // Removido 4K temporariamente
+
+  const handleQualityChange = async (quality: string) => {
+    console.log('🎥 Cameras: Iniciando mudança de qualidade:', {
+      qualidadeSelecionada: quality,
+      cameraSelecionada: selectedCamera,
+      qualidadeAtual: currentQuality
+    });
+    
+    // Validações iniciais
+    if (!selectedCamera) {
+      console.error('❌ Cameras: Nenhuma câmera selecionada');
+      toast.error('Selecione uma câmera primeiro');
+      return;
+    }
+
+    if (!availableQualities.includes(quality)) {
+      console.error('❌ Cameras: Qualidade não suportada:', quality);
+      toast.error(`Qualidade não suportada. Disponíveis: ${availableQualities.join(', ')}`);
+      return;
+    }
+
+    const stream = streamStatus.get(selectedCamera);
+    console.log('📡 Cameras: Status do stream:', {
+      streamEncontrado: !!stream,
+      streamId: stream?.stream_id,
+      statusStream: stream?.status
+    });
+    
+    if (!stream) {
+      console.error('❌ Cameras: Stream não encontrado para câmera:', selectedCamera);
+      toast.error('Stream não encontrado. Inicie o stream primeiro.');
+      return;
+    }
+
+    if (stream.status !== 'active') {
+      console.error('❌ Cameras: Stream não está ativo:', stream.status);
+      toast.error('Stream não está ativo. Inicie o stream primeiro.');
+      return;
+    }
+
+    if (!stream.stream_id) {
+      console.error('❌ Cameras: Stream ID não encontrado');
+      toast.error('ID do stream não encontrado');
+      return;
+    }
+
+    const backendQuality = qualityMapping[quality];
+    if (!backendQuality) {
+      console.error('❌ Cameras: Mapeamento de qualidade falhou:', quality);
+      toast.error(`Erro no mapeamento de qualidade: ${quality}`);
+      return;
+    }
+
+    // Verificar se já está na qualidade desejada
+    const currentBackendQuality = qualityMapping[currentQuality];
+    if (currentBackendQuality === backendQuality) {
+      console.log('ℹ️ Cameras: Qualidade já está definida como:', quality);
+      toast.info(`Qualidade já está em ${quality}`);
+      return;
+    }
+
+    const previousQuality = currentQuality;
+    console.log('🔄 Cameras: Iniciando alteração:', {
+      de: previousQuality,
+      para: quality,
+      backendQuality,
+      streamId: stream.stream_id
+    });
+    
+    try {
+      // Atualizar UI imediatamente para melhor UX
+      setCurrentQuality(quality);
+      
+      console.log(`📤 Enviando requisição para alterar qualidade do stream ${stream.stream_id}`);
+      
+      const response = await api.put(`/api/streams/${stream.stream_id}/quality`, {
+        quality: backendQuality
+      });
+      
+      console.log('✅ Resposta da API:', (response as any).data);
+      
+      // Atualizar informações do stream no estado local
+      setStreamStatus(prev => {
+        const newMap = new Map(prev);
+        const currentStream = newMap.get(selectedCamera);
+        if (currentStream) {
+          (currentStream as any).quality = backendQuality;
+          if ((response as any).data?.data?.bitrate) {
+            currentStream.bitrate = (response as any).data.data.bitrate;
+          }
+          console.log('📊 Stream atualizado no estado local:', currentStream);
+        }
+        return newMap;
+      });
+      
+      toast.success(`✅ Qualidade alterada para ${quality}`);
+      console.log('🎉 Mudança de qualidade concluída com sucesso');
+      
+    } catch (error: any) {
+      console.error('💥 Erro ao alterar qualidade:', {
+        error,
+        response: error.response?.data,
+        status: error.response?.status
+      });
+      
+      // Reverter mudança na UI em caso de erro
+      setCurrentQuality(previousQuality);
+      
+      let errorMessage = 'Erro ao alterar qualidade do stream';
+      
+      if (error.response?.data?.message) {
+        errorMessage = error.response.data.message;
+      } else if (error.response?.data?.error) {
+        errorMessage = error.response.data.error;
+      } else if (error.response?.data?.details && Array.isArray(error.response.data.details)) {
+        errorMessage = error.response.data.details[0]?.message || errorMessage;
+      } else if (error.response?.status === 404) {
+        errorMessage = 'Stream não encontrado. Verifique se a câmera está ativa.';
+      } else if (error.response?.status === 403) {
+        errorMessage = 'Sem permissão para alterar qualidade do stream.';
+      } else if (error.response?.status === 400) {
+        errorMessage = 'Parâmetros inválidos para alteração de qualidade.';
+      } else if (error.response?.status === 500) {
+        errorMessage = 'Erro interno do servidor. Tente novamente.';
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
+      toast.error(`❌ ${errorMessage}`);
+    }
   };
 
   useEffect(() => {
@@ -191,6 +357,19 @@ const Cameras: React.FC = () => {
       setFilteredCameras(cameras);
     }
   }, [cameras, location.search]);
+
+  // Auto-preenchimento do IP baseado na URL RTMP
+  useEffect(() => {
+    if (formData.stream_type === 'rtmp' && formData.rtmp_url && !formData.ip_address) {
+      const hostname = extractHostnameFromUrl(formData.rtmp_url);
+      if (hostname) {
+        setFormData(prev => ({
+          ...prev,
+          ip_address: hostname
+        }));
+      }
+    }
+  }, [formData.rtmp_url, formData.stream_type, formData.ip_address]);
 
   const handleStartStream = async (cameraId: string) => {
     try {
@@ -363,7 +542,8 @@ const Cameras: React.FC = () => {
       rtsp_url: exampleUrl,
       rtmp_url: '',
       location: 'Portaria Principal',
-      stream_type: 'rtsp'
+      stream_type: 'rtsp',
+      type: 'ip' // Campo obrigatório para validação do backend
     });
   };
 
@@ -372,22 +552,115 @@ const Cameras: React.FC = () => {
     setSaving(true);
     
     try {
+      // LOG: Estado completo do formData no início
+      console.log('🔍 DEBUG: Estado completo do formData:', {
+        formData,
+        stream_type: formData.stream_type,
+        rtmp_url: formData.rtmp_url,
+        rtmp_url_length: formData.rtmp_url?.length,
+        rtmp_url_trimmed: formData.rtmp_url?.trim(),
+        rtmp_url_trimmed_length: formData.rtmp_url?.trim()?.length
+      });
+      
+      // Validação básica no frontend
+      if (!formData.name.trim()) {
+        toast.error('Nome da câmera é obrigatório');
+        return;
+      }
+
+      // Garantir que stream_type tenha um valor válido
+      if (!formData.stream_type || !['rtsp', 'rtmp'].includes(formData.stream_type)) {
+        toast.error('Tipo de stream deve ser RTSP ou RTMP');
+        return;
+      }
+
+      // Validação específica por tipo de stream
+      if (formData.stream_type === 'rtmp') {
+        console.log('🔍 DEBUG: Validando RTMP:', {
+          rtmp_url: formData.rtmp_url,
+          rtmp_url_trimmed: formData.rtmp_url.trim(),
+          is_empty: !formData.rtmp_url.trim(),
+          starts_with_rtmp: formData.rtmp_url.startsWith('rtmp://')
+        });
+        
+        if (!formData.rtmp_url.trim()) {
+          console.log('❌ DEBUG: URL RTMP vazia');
+          toast.error('URL RTMP é obrigatória');
+          return;
+        }
+        if (!formData.rtmp_url.startsWith('rtmp://')) {
+          console.log('❌ DEBUG: URL RTMP não começa com rtmp://');
+          toast.error('URL RTMP deve começar com rtmp://');
+          return;
+        }
+      } else if (formData.stream_type === 'rtsp') {
+        if (!formData.rtsp_url.trim()) {
+          toast.error('URL RTSP é obrigatória');
+          return;
+        }
+        if (!formData.rtsp_url.startsWith('rtsp://')) {
+          toast.error('URL RTSP deve começar com rtsp://');
+          return;
+        }
+      }
+
+      // Validar que pelo menos uma URL ou IP foi fornecido
+      const hasUrl = (formData.stream_type === 'rtmp' && formData.rtmp_url.trim()) || 
+                     (formData.stream_type === 'rtsp' && formData.rtsp_url.trim());
+      const hasIp = formData.ip_address.trim();
+      
+      console.log('🔍 DEBUG: Validação final URL/IP:', {
+        stream_type: formData.stream_type,
+        hasUrl,
+        hasIp,
+        rtmp_condition: formData.stream_type === 'rtmp' && formData.rtmp_url.trim(),
+        rtsp_condition: formData.stream_type === 'rtsp' && formData.rtsp_url.trim(),
+        will_fail: !hasUrl && !hasIp
+      });
+      
+      if (!hasUrl && !hasIp) {
+        console.log('❌ DEBUG: Falha na validação - nem URL nem IP fornecidos');
+        toast.error('É necessário fornecer pelo menos uma URL de stream ou endereço IP');
+        return;
+      }
+
       const payload: any = {
-        name: formData.name,
-        ip_address: formData.ip_address,
-        type: 'ip',
-        location: formData.location,
-        stream_type: formData.stream_type
+        name: formData.name.trim(),
+        type: 'ip', // Tipo válido conforme validação do backend (ip, analog, usb, virtual)
+        stream_type: formData.stream_type || 'rtsp' // Garantir que sempre tenha um valor
       };
+      
+      // Validação adicional para garantir que pelo menos uma URL ou IP seja fornecido
+      const hasRtmpUrl = formData.stream_type === 'rtmp' && formData.rtmp_url.trim();
+      const hasRtspUrl = formData.stream_type === 'rtsp' && formData.rtsp_url.trim();
+      const hasIpAddress = formData.ip_address.trim();
+      
+      if (!hasRtmpUrl && !hasRtspUrl && !hasIpAddress) {
+        toast.error('É necessário fornecer pelo menos uma URL de stream ou endereço IP');
+        return;
+      }
+
+      // Adicionar campos opcionais apenas se preenchidos
+      if (formData.ip_address.trim()) {
+        payload.ip_address = formData.ip_address.trim();
+      }
+      
+      if (formData.location.trim()) {
+        payload.location = formData.location.trim();
+      }
       
       // Adicionar URL baseado no tipo de stream
       if (formData.stream_type === 'rtmp') {
-        payload.rtmp_url = formData.rtmp_url;
+        payload.rtmp_url = formData.rtmp_url.trim();
       } else {
-        payload.rtsp_url = formData.rtsp_url;
+        payload.rtsp_url = formData.rtsp_url.trim();
       }
       
-      await api.post(endpoints.cameras.create(), payload);
+      console.log('Enviando payload para criação de câmera:', payload);
+      
+      const response = await api.post(endpoints.cameras.create(), payload);
+      
+      console.log('Resposta da criação de câmera:', (response as any).data);
       
       toast.success('Câmera cadastrada com sucesso!');
       setShowAddModal(false);
@@ -397,7 +670,8 @@ const Cameras: React.FC = () => {
         rtsp_url: '',
         rtmp_url: '',
         location: '',
-        stream_type: 'rtsp'
+        stream_type: 'rtsp',
+        type: 'ip' // Campo obrigatório para validação do backend
       });
       
       // Recarregar lista de câmeras
@@ -405,9 +679,39 @@ const Cameras: React.FC = () => {
       const updatedCameras = updatedResult.data || [];
       setCameras(updatedCameras);
       setFilteredCameras(updatedCameras);
-    } catch (err) {
-      // Erro já tratado no toast
-      toast.error(err instanceof Error ? err.message : 'Erro ao cadastrar câmera');
+    } catch (err: any) {
+      console.error('Erro ao cadastrar câmera:', err);
+      
+      // Tratamento específico de erros
+      let errorMessage = 'Erro ao cadastrar câmera';
+      
+      if (err.response?.data?.message) {
+        errorMessage = err.response.data.message;
+      } else if (err.response?.data?.error) {
+        errorMessage = err.response.data.error;
+      } else if (err.response?.data?.details) {
+        // Se há detalhes de validação, mostrar erros específicos
+        const details = err.response.data.details;
+        if (Array.isArray(details) && details.length > 0) {
+          // Mostrar o primeiro erro mais específico
+          const firstError = details[0];
+          if (typeof firstError === 'object' && firstError.message) {
+            errorMessage = firstError.message;
+          } else if (typeof firstError === 'string') {
+            errorMessage = firstError;
+          } else {
+            errorMessage = 'Dados de validação inválidos';
+          }
+        }
+      } else if (err.response?.status === 400) {
+        errorMessage = 'Dados inválidos. Verifique os campos obrigatórios.';
+      } else if (err.response?.status === 422) {
+        errorMessage = 'Dados não passaram na validação. Verifique o formato dos campos.';
+      } else if (err.message) {
+        errorMessage = err.message;
+      }
+      
+      toast.error(errorMessage);
     } finally {
       setSaving(false);
     }
@@ -421,7 +725,8 @@ const Cameras: React.FC = () => {
       rtsp_url: '',
       rtmp_url: '',
       location: '',
-      stream_type: 'rtsp'
+      stream_type: 'rtsp',
+      type: 'ip' // Campo obrigatório para validação do backend
     });
   };
 
@@ -596,19 +901,12 @@ const Cameras: React.FC = () => {
                         >
                           <Settings className="h-4 w-4" />
                         </button>
-                        <button 
+                        <button
                           onClick={() => confirmDelete(camera.id)}
                           className="text-gray-400 hover:text-red-600 p-1 rounded"
                           title="Excluir câmera"
                         >
                           <Trash2 className="h-4 w-4" />
-                        </button>
-                        <button 
-                          onClick={() => window.open(`/stream/${streamStatus.get(camera.id)?.stream_id || camera.id}`, '_blank')}
-                          className="text-gray-400 hover:text-blue-600 p-1 rounded"
-                          title="Visualizar em tela cheia"
-                        >
-                          <Maximize2 className="h-4 w-4" />
                         </button>
                       </div>
                     </div>
@@ -689,6 +987,9 @@ const Cameras: React.FC = () => {
                         autoPlay={true}
                         muted={false}
                         token={token}
+                        onQualityChange={handleQualityChange}
+                        availableQualities={availableQualities}
+                        currentQuality={currentQuality}
                       />
                     );
                   }
@@ -772,7 +1073,7 @@ const Cameras: React.FC = () => {
                 
                 <div>
                   <label htmlFor="ip_address" className="block text-sm font-medium text-gray-700 mb-1">
-                    Endereço IP *
+                    Endereço IP
                   </label>
                   <input
                     type="text"
@@ -780,10 +1081,12 @@ const Cameras: React.FC = () => {
                     name="ip_address"
                     value={formData.ip_address}
                     onChange={handleInputChange}
-                    required
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                     placeholder="192.168.1.100"
                   />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Opcional se URL RTSP/RTMP for fornecida
+                  </p>
                 </div>
                 
                 <div>

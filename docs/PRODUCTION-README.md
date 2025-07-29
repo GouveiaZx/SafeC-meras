@@ -13,8 +13,8 @@
 - **APIs**: http://66.94.104.241:8000/index/api/
 
 ### Backend (API)
-- **Porta**: 3002 (desenvolvimento) / 3001 (produção)
-- **URL**: http://localhost:3002 (desenvolvimento) / http://66.94.104.241:3001 (produção)
+- **Porta**: 3002 (desenvolvimento e produção)
+- **URL**: http://localhost:3002 (desenvolvimento) / http://66.94.104.241:3002 (produção)
 
 ### Frontend
 - **Porta**: 80 (via Nginx)

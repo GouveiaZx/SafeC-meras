@@ -4,9 +4,21 @@ import { useAuth } from '@/contexts/AuthContext';
 import VideoPlayer from '@/components/VideoPlayer';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, RefreshCw, AlertCircle } from 'lucide-react';
+import { ArrowLeft, RefreshCw, AlertCircle, Settings } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 
 interface StreamInfo {
   id: string;
@@ -33,6 +45,9 @@ const StreamViewPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [selectedQuality, setSelectedQuality] = useState<string>('720p');
+  const [selectedFps, setSelectedFps] = useState<number>(30);
+  const [updatingSettings, setUpdatingSettings] = useState(false);
 
   const fetchStreamInfo = async () => {
     if (!id || !token) return;
@@ -66,9 +81,54 @@ const StreamViewPage: React.FC = () => {
     fetchStreamInfo();
   };
 
+  const updateStreamSettings = async (quality: string, fps: number) => {
+    if (!id || !token) return;
+    
+    try {
+      setUpdatingSettings(true);
+      const response = await fetch(`/api/streams/${id}/settings`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ quality, fps }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Erro ao atualizar configurações');
+      }
+
+      // Atualizar as informações do stream
+      await fetchStreamInfo();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erro ao atualizar configurações');
+    } finally {
+      setUpdatingSettings(false);
+    }
+  };
+
+  const handleQualityChange = (quality: string) => {
+    setSelectedQuality(quality);
+    updateStreamSettings(quality, selectedFps);
+  };
+
+  const handleFpsChange = (fps: string) => {
+    const fpsNumber = parseInt(fps);
+    setSelectedFps(fpsNumber);
+    updateStreamSettings(selectedQuality, fpsNumber);
+  };
+
   useEffect(() => {
     fetchStreamInfo();
   }, [id, token]);
+
+  useEffect(() => {
+    if (streamInfo) {
+      setSelectedQuality(streamInfo.quality);
+      setSelectedFps(streamInfo.fps);
+    }
+  }, [streamInfo]);
 
   if (loading) {
     return (
@@ -181,13 +241,65 @@ const StreamViewPage: React.FC = () => {
                 </div>
               </div>
               <div className="flex items-center space-x-2">
-                <div className={`px-2 py-1 rounded text-xs ${
+                <div className={`px-3 py-1 rounded-full text-sm font-medium ${
                   streamInfo.status === 'active' 
                     ? 'bg-green-100 text-green-800' 
                     : 'bg-red-100 text-red-800'
                 }`}>
                   {streamInfo.status === 'active' ? 'ONLINE' : 'OFFLINE'}
                 </div>
+                
+                {/* Controles de Qualidade */}
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button variant="outline" size="sm" disabled={streamInfo.status !== 'active'}>
+                      <Settings className="h-4 w-4 mr-2" />
+                      Qualidade
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-80">
+                    <div className="space-y-4">
+                      <h4 className="font-medium">Configurações de Qualidade</h4>
+                      
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">Resolução</label>
+                        <Select value={selectedQuality} onValueChange={handleQualityChange} disabled={updatingSettings}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Selecione a resolução" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="1080p">Alta (1080p)</SelectItem>
+                            <SelectItem value="720p">Média (720p)</SelectItem>
+                            <SelectItem value="480p">Baixa (480p)</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">FPS (Quadros por segundo)</label>
+                        <Select value={selectedFps.toString()} onValueChange={handleFpsChange} disabled={updatingSettings}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Selecione o FPS" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="60">60 FPS</SelectItem>
+                            <SelectItem value="30">30 FPS</SelectItem>
+                            <SelectItem value="25">25 FPS</SelectItem>
+                            <SelectItem value="15">15 FPS</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      
+                      {updatingSettings && (
+                        <div className="text-sm text-gray-500 flex items-center">
+                          <RefreshCw className="h-3 w-3 mr-1 animate-spin" />
+                          Aplicando configurações...
+                        </div>
+                      )}
+                    </div>
+                  </PopoverContent>
+                </Popover>
+                
                 <Button
                   variant="ghost"
                   size="sm"
@@ -205,7 +317,7 @@ const StreamViewPage: React.FC = () => {
                 <div className="relative">
                   <VideoPlayer
                     src={hlsUrl}
-                    token={token || undefined}
+                    token={token}
                     autoPlay={true}
                     muted={true}
                     controls={true}

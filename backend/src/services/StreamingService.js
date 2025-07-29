@@ -168,6 +168,16 @@ class StreamingService {
       this.activeStreams.set(streamId, streamConfig);
       this.streamViewers.set(streamId, new Set());
 
+      // Atualizar status da câmera para online após sucesso do stream
+      try {
+        await camera.updateStatus('online');
+        await camera.updateStreamingStatus(true);
+        logger.info(`Status da câmera ${camera.id} atualizado para online`);
+      } catch (statusError) {
+        logger.warn(`Erro ao atualizar status da câmera ${camera.id}:`, statusError);
+        // Não falhar o stream por erro de status
+      }
+
       logger.info(`Stream ${streamId} iniciado com sucesso`);
       return streamConfig;
     } catch (error) {
@@ -184,8 +194,19 @@ class StreamingService {
   async startZLMStream(camera, options) {
     const { quality, format, audio, streamId, userToken } = options;
     
+    logger.info(`Iniciando stream ZLM para câmera ${camera.id} (${camera.name})`);
+    logger.debug(`Parâmetros do stream: quality=${quality}, format=${format}, audio=${audio}, streamId=${streamId}`);
+    logger.debug(`URL RTSP da câmera: ${camera.rtsp_url}`);
+    logger.debug(`ZLM API URL: ${this.zlmApiUrl}`);
+    
     try {
+      // Verificar se a URL RTSP está definida
+      if (!camera.rtsp_url) {
+        throw new AppError('URL RTSP da câmera não está configurada', 400);
+      }
+      
       // Implementar estratégia robusta de limpeza e criação
+      logger.debug(`Iniciando limpeza e criação do stream ${streamId}`);
       await this.ensureStreamCleanAndCreate(camera, streamId);
       
       let attempts = 0;
@@ -258,13 +279,13 @@ class StreamingService {
 
       // Gerar URLs de streaming através do backend (proxy)
       const backendUrl = process.env.BACKEND_URL || 'http://localhost:3002';
-      const tokenParam = userToken ? `?token=${encodeURIComponent(userToken)}` : '';
+      // Remover token da URL - usar apenas autenticação via header Authorization
       const urls = {
         rtsp: `rtsp://localhost:554/live/${streamId}`,
         rtmp: `rtmp://localhost:1935/live/${streamId}`,
-        hls: `${backendUrl}/api/streams/${streamId}/hls${tokenParam}`,
-        flv: `${backendUrl}/api/streams/${streamId}/flv${tokenParam}`,
-        thumbnail: `${backendUrl}/api/streams/${streamId}/thumbnail${tokenParam}`
+        hls: `${backendUrl}/api/streams/${streamId}/hls`,
+        flv: `${backendUrl}/api/streams/${streamId}/flv`,
+        thumbnail: `${backendUrl}/api/streams/${streamId}/thumbnail`
       };
       
       // URLs diretas do ZLMediaKit (para uso interno)
@@ -290,6 +311,13 @@ class StreamingService {
       };
     } catch (error) {
       logger.error('Erro ao configurar stream no ZLMediaKit:', error);
+      
+      // Se já é um AppError, preservar o status code original
+      if (error instanceof AppError) {
+        throw error;
+      }
+      
+      // Para outros tipos de erro, criar um novo AppError com status 500
       throw new AppError(`Falha ao iniciar stream: ${error.message}`);
     }
   }
@@ -360,6 +388,21 @@ class StreamingService {
       // Remover das estruturas ativas
       this.activeStreams.delete(streamId);
       this.streamViewers.delete(streamId);
+
+      // Atualizar status da câmera para offline após parar o stream
+      try {
+        // Buscar a câmera pelo ID do stream (que é o mesmo ID da câmera)
+        const Camera = (await import('../models/Camera.js')).default;
+        const camera = await Camera.findById(stream.camera_id);
+        if (camera) {
+          await camera.updateStatus('offline');
+          await camera.updateStreamingStatus(false);
+          logger.info(`Status da câmera ${stream.camera_id} atualizado para offline`);
+        }
+      } catch (statusError) {
+        logger.warn(`Erro ao atualizar status da câmera ${stream.camera_id}:`, statusError);
+        // Não falhar a parada do stream por erro de status
+      }
 
       logger.info(`Stream ${streamId} parado com sucesso`);
       return stream;
@@ -496,23 +539,48 @@ class StreamingService {
     try {
       logger.info(`Preparando ambiente para stream ${streamId}`);
       
+      // Verificar conectividade com ZLMediaKit
+      try {
+        const healthCheck = await axios.get(`${this.zlmApiUrl}/getServerConfig?secret=${this.zlmSecret}`, {
+          timeout: 5000
+        });
+        logger.debug(`ZLMediaKit conectado: ${healthCheck.status}`);
+      } catch (healthError) {
+        logger.error(`Erro de conectividade com ZLMediaKit: ${healthError.message}`);
+        throw new AppError('ZLMediaKit não está acessível', 503);
+      }
+      
       // Verificar se existe e remover
+      logger.debug(`Verificando se stream ${streamId} já existe`);
       const exists = await this.checkStreamExists(streamId);
       if (exists) {
         logger.info(`Stream ${streamId} existe, iniciando limpeza completa`);
         await this.progressiveCleanupZLMStream(streamId, 0);
         await new Promise(resolve => setTimeout(resolve, 2000));
+      } else {
+        logger.debug(`Stream ${streamId} não existe, prosseguindo com criação`);
       }
       
       // Verificação final
+      logger.debug(`Verificação final da existência do stream ${streamId}`);
       const stillExists = await this.checkStreamExists(streamId);
       if (stillExists) {
         logger.warn(`Stream ${streamId} ainda existe após limpeza inicial`);
         await this.extremeCleanupZLMStream(streamId);
         await new Promise(resolve => setTimeout(resolve, 3000));
+        
+        // Verificação final após limpeza extrema
+        const finalCheck = await this.checkStreamExists(streamId);
+        if (finalCheck) {
+          logger.error(`Stream ${streamId} persistente após todas as tentativas de limpeza`);
+          throw new AppError('Não foi possível limpar stream existente', 409);
+        }
       }
+      
+      logger.debug(`Ambiente preparado com sucesso para stream ${streamId}`);
     } catch (error) {
       logger.error(`Erro na preparação do stream ${streamId}:`, error);
+      throw error;
     }
   }
 
@@ -1218,12 +1286,18 @@ class StreamingService {
    */
   getQualityBitrate(quality) {
     const bitrates = {
+      // Formato antigo (compatibilidade)
       low: 500000,     // 500 kbps
       medium: 1500000, // 1.5 Mbps
       high: 3000000,   // 3 Mbps
-      ultra: 6000000   // 6 Mbps
+      ultra: 6000000,  // 6 Mbps
+      // Novo formato por resolução
+      '360p': 800000,   // 800 kbps
+      '480p': 1200000,  // 1.2 Mbps
+      '720p': 2500000,  // 2.5 Mbps
+      '1080p': 5000000  // 5 Mbps
     };
-    return bitrates[quality] || bitrates.medium;
+    return bitrates[quality] || bitrates['720p'];
   }
 
   /**
@@ -1231,13 +1305,19 @@ class StreamingService {
    */
   getQualityResolution(quality, originalResolution) {
     const resolutions = {
+      // Formato antigo (compatibilidade)
       low: '640x480',
       medium: '1280x720',
       high: '1920x1080',
-      ultra: '3840x2160'
+      ultra: '3840x2160',
+      // Novo formato por resolução
+      '360p': '640x360',
+      '480p': '854x480',
+      '720p': '1280x720',
+      '1080p': '1920x1080'
     };
     
-    const requested = resolutions[quality] || resolutions.medium;
+    const requested = resolutions[quality] || resolutions['720p'];
     
     // Se a resolução original for especificada e menor, usar a original
     if (originalResolution) {

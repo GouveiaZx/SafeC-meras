@@ -3,8 +3,8 @@
 ## 🔐 Credenciais de Acesso
 
 ### Login Principal (Desenvolvimento)
-- **Email**: gouveiarx@gmail.com
-- **Senha**: Teste123
+- **Email**: admin@newcam.com
+- **Senha**: admin123
 - **Role**: admin
 - **Permissões**: Acesso total ao sistema
 

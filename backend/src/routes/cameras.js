@@ -40,6 +40,9 @@ const logger = createModuleLogger('CameraRoutes');
 
 // Middleware para verificar token de serviço interno
 const authenticateService = (req, res, next) => {
+  console.log('🔍 [SERVICE AUTH DEBUG] Requisição chegou ao authenticateService:', req.method, req.path);
+  console.log('🔍 [SERVICE AUTH DEBUG] Headers:', JSON.stringify(req.headers, null, 2));
+  
   const serviceToken = req.headers['x-service-token'];
   const expectedToken = process.env.INTERNAL_SERVICE_TOKEN || 'newcam-internal-service-2025';
   
@@ -226,8 +229,30 @@ router.get('/:id',
  * @access Private (Admin/Operator)
  */
 router.post('/',
+  (req, res, next) => {
+    console.log('🔍 [BASIC DEBUG] POST /api/cameras - Requisição recebida');
+    console.log('🔍 [BASIC DEBUG] Headers:', JSON.stringify(req.headers, null, 2));
+    console.log('🔍 [BASIC DEBUG] Body:', JSON.stringify(req.body, null, 2));
+    next();
+  },
   requirePermission('cameras.create'),
+  (req, res, next) => {
+    console.log('🔍 [TEMP DEBUG CAMERA CREATE] Dados recebidos:', {
+      body: req.body,
+      headers: req.headers,
+      method: req.method,
+      url: req.url
+    });
+    next();
+  },
   createValidationSchema(validationSchemas.camera),
+  (req, res, next) => {
+    console.log('🔍 [TEMP DEBUG CAMERA CREATE] Após validação:', {
+      validatedData: req.validatedData,
+      validationErrors: req.validationErrors
+    });
+    next();
+  },
   asyncHandler(async (req, res) => {
     const {
       name,
@@ -254,6 +279,21 @@ router.post('/',
       quality_profile,
       retention_days
     } = req.validatedData;
+
+    // Validação customizada: deve ter pelo menos IP ou URL de stream
+    console.log('🔍 [TEMP DEBUG CAMERA CREATE] Validação customizada:', {
+      ip_address,
+      rtsp_url,
+      rtmp_url,
+      hasIp: !!ip_address,
+      hasRtsp: !!rtsp_url,
+      hasRtmp: !!rtmp_url
+    });
+    
+    if (!ip_address && !rtsp_url && !rtmp_url) {
+      console.log('🔍 [TEMP DEBUG CAMERA CREATE] ERRO: Nenhum campo obrigatório fornecido');
+      throw new ValidationError('Deve ser fornecido pelo menos um: IP da câmera, URL RTSP ou URL RTMP');
+    }
 
     // Verificar se URL RTSP já existe (mais específico que IP)
     if (rtsp_url) {

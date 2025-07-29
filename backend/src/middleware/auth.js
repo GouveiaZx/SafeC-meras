@@ -12,6 +12,8 @@ const logger = createModuleLogger('Auth');
 // Middleware principal de autenticação
 const authenticateToken = async (req, res, next) => {
   try {
+    console.log('🔍 [AUTH DEBUG] Requisição recebida:', req.method, req.path);
+    console.log('🔍 [AUTH DEBUG] Headers:', JSON.stringify(req.headers, null, 2));
     logger.debug(`authenticateToken - Requisição recebida: ${req.method} ${req.path}`);
     logger.debug(`authenticateToken - Headers: ${JSON.stringify(req.headers)}`);
     

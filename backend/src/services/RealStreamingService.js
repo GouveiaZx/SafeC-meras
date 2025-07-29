@@ -37,7 +37,7 @@ class RealStreamingService {
    * Inicializar servidor WebSocket
    */
   initializeWebSocketServer() {
-    const port = process.env.WS_PORT || 8080;
+    const port = process.env.WS_PORT || 8081;
     
     this.wsServer = new WebSocket.Server({ 
       port,
@@ -560,7 +560,7 @@ class RealStreamingService {
     switch (stream.type) {
       case 'webrtc':
         return {
-          websocket: `ws://localhost:${process.env.WS_PORT || 8080}`
+          websocket: `ws://localhost:${process.env.WS_PORT || 8081}`
         };
         
       case 'hls':

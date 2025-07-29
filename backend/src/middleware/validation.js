@@ -51,10 +51,17 @@ const validators = {
     }
   },
   
-  // Validar IP
+  // Validar IP ou hostname
   ip: (value) => {
+    // Validar IP numérico
     const ipRegex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
-    return ipRegex.test(value);
+    if (ipRegex.test(value)) {
+      return true;
+    }
+    
+    // Validar hostname/domínio
+    const hostnameRegex = /^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?))*$/;
+    return hostnameRegex.test(value) && value.length <= 253;
   },
   
   // Validar porta
@@ -135,19 +142,54 @@ const validators = {
 // Função para criar esquema de validação
 const createValidationSchema = (schema) => {
   return (req, res, next) => {
+    // Log detalhado da requisição
+    logger.info('=== VALIDAÇÃO INICIADA ===', {
+      endpoint: req.originalUrl,
+      method: req.method,
+      body: req.body,
+      schema: Object.keys(schema)
+    });
+    
+    // LOG TEMPORÁRIO PARA DEBUG RTMP
+    if (req.originalUrl.includes('/cameras') && req.method === 'POST') {
+      console.log('🔍 [TEMP DEBUG] Dados recebidos do frontend:', {
+        body: req.body,
+        headers: req.headers,
+        url: req.originalUrl,
+        method: req.method,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
     const errors = [];
     const sanitizedData = {};
     
     // Validar cada campo do esquema
     for (const [field, rules] of Object.entries(schema)) {
-      const value = getNestedValue(req.body, field);
+      let value = getNestedValue(req.body, field);
+      
+      logger.info(`Validando campo '${field}':`, {
+        value,
+        type: typeof value,
+        rules,
+        isEmpty: value === undefined || value === null || value === ''
+      });
+      
+      // Aplicar valor padrão se o campo não foi fornecido
+      if ((value === undefined || value === null || value === '') && rules.default !== undefined) {
+        value = rules.default;
+        setNestedValue(req.body, field, value);
+        logger.info(`Aplicado valor padrão para '${field}':`, rules.default);
+      }
       
       // Verificar se o campo é obrigatório
       if (rules.required && (value === undefined || value === null || value === '')) {
-        errors.push({
+        const error = {
           field,
           message: `Campo '${field}' é obrigatório`
-        });
+        };
+        logger.error('Campo obrigatório faltando:', error);
+        errors.push(error);
         continue;
       }
       
@@ -177,12 +219,38 @@ const createValidationSchema = (schema) => {
       
       // Validações customizadas
       if (rules.custom) {
-        const customValidation = rules.custom(sanitizedValue);
-        if (customValidation !== true) {
-          errors.push({
-            field,
-            message: customValidation || `Campo '${field}' é inválido`
+        try {
+          logger.info(`Executando validação customizada para '${field}':`, {
+            value: sanitizedValue,
+            customFunction: rules.custom.toString()
           });
+          const customValidation = rules.custom(sanitizedValue, req.body);
+          if (customValidation !== true) {
+            const error = {
+              field,
+              message: customValidation || rules.message || `Campo '${field}' é inválido`
+            };
+            logger.error('Falha na validação customizada:', {
+              field,
+              value: sanitizedValue,
+              customResult: customValidation,
+              error
+            });
+            errors.push(error);
+            continue;
+          }
+        } catch (error) {
+          const validationError = {
+            field,
+            message: rules.message || `Campo '${field}' é inválido`
+          };
+          logger.error('Erro na validação customizada:', {
+            field,
+            value: sanitizedValue,
+            error: error.message,
+            validationError
+          });
+          errors.push(validationError);
           continue;
         }
       }
@@ -225,10 +293,17 @@ const createValidationSchema = (schema) => {
       
       // Validar valores permitidos
       if (rules.enum && !rules.enum.includes(sanitizedValue)) {
-        errors.push({
+        const error = {
           field,
           message: `Campo '${field}' deve ser um dos valores: ${rules.enum.join(', ')}`
+        };
+        logger.error('Falha na validação de enum:', {
+          field,
+          value: sanitizedValue,
+          allowedValues: rules.enum,
+          error
         });
+        errors.push(error);
         continue;
       }
       
@@ -238,7 +313,12 @@ const createValidationSchema = (schema) => {
     
     // Se há erros, retornar erro de validação
     if (errors.length > 0) {
-      logger.warn('Erro de validação:', { errors, body: req.body });
+      logger.error('Erros de validação encontrados:', {
+        errors,
+        receivedData: req.body,
+        endpoint: req.originalUrl,
+        method: req.method
+      });
       return res.status(400).json({
         error: 'Dados inválidos',
         message: 'Os dados fornecidos não passaram na validação',
@@ -332,7 +412,7 @@ const validationSchemas = {
       maxLength: 500
     },
     ip_address: {
-      required: true,
+      required: false,
       type: 'ip',
       message: 'Endereço IP deve ter um formato válido'
     },
@@ -358,18 +438,27 @@ const validationSchemas = {
     },
     stream_type: {
       required: false,
+      type: 'nonEmptyString',
       enum: ['rtsp', 'rtmp'],
       message: 'Tipo de stream deve ser rtsp ou rtmp'
     },
     rtsp_url: {
       required: false,
       type: 'nonEmptyString',
-      maxLength: 500
+      maxLength: 500,
+      custom: (value) => {
+        if (!value) return true;
+        return value.startsWith('rtsp://') || 'URL RTSP deve começar com rtsp://';
+      }
     },
     rtmp_url: {
       required: false,
       type: 'nonEmptyString',
-      maxLength: 500
+      maxLength: 500,
+      custom: (value) => {
+        if (!value) return true;
+        return value.startsWith('rtmp://') || 'URL RTMP deve começar com rtmp://';
+      }
     },
     resolution: {
       required: false,
@@ -380,6 +469,61 @@ const validationSchemas = {
       required: false,
       type: 'fps',
       message: 'FPS deve ser um número entre 1 e 60'
+    },
+    location: {
+      required: false,
+      type: 'nonEmptyString',
+      maxLength: 200,
+      message: 'Localização deve ter no máximo 200 caracteres'
+    },
+    zone: {
+      required: false,
+      type: 'nonEmptyString',
+      maxLength: 100,
+      message: 'Zona deve ter no máximo 100 caracteres'
+    },
+    brand: {
+      required: false,
+      type: 'nonEmptyString',
+      maxLength: 50,
+      message: 'Marca deve ter no máximo 50 caracteres'
+    },
+    model: {
+      required: false,
+      type: 'nonEmptyString',
+      maxLength: 50,
+      message: 'Modelo deve ter no máximo 50 caracteres'
+    },
+    recording_enabled: {
+      required: false,
+      type: 'boolean'
+    },
+    motion_detection: {
+      required: false,
+      type: 'boolean'
+    },
+    audio_enabled: {
+      required: false,
+      type: 'boolean'
+    },
+    ptz_enabled: {
+      required: false,
+      type: 'boolean'
+    },
+    night_vision: {
+      required: false,
+      type: 'boolean'
+    },
+    quality_profile: {
+      required: false,
+      type: 'nonEmptyString',
+      enum: ['low', 'medium', 'high', 'ultra'],
+      message: 'Perfil de qualidade deve ser low, medium, high ou ultra'
+    },
+    retention_days: {
+      required: false,
+      type: 'positiveNumber',
+      message: 'Dias de retenção deve ser um número positivo'
     },
     active: {
       required: false,

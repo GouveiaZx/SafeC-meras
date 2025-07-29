@@ -1,7 +1,7 @@
 # NewCAM - Status do Sistema
 
 ## 📊 Status Geral
-**Data da Última Atualização:** 29/07/2025 - 02:36 UTC
+**Data da Última Atualização:** 29/07/2025 - 15:30 UTC
 
 ### 🟢 Serviços Ativos
 - **Backend API** - Porta 3002 ✅
@@ -15,7 +15,29 @@
 
 ## 🔧 Correções Implementadas Hoje
 
-### 1. Correção da API do ZLMediaKit
+### 1. Ajustes de Interface e Qualidade de Vídeo
+**Problema:** Opções de qualidade não intuitivas e ícones duplicados
+**Solução:** 
+- Alteradas opções de qualidade para "Alta (1080p)", "Média (720p)" e "Baixa (480p)"
+- Removido ícone de tela cheia duplicado próximo ao botão de exclusão
+**Arquivos alterados:**
+- `frontend/src/pages/StreamViewPage.tsx` - Controles de qualidade
+- `frontend/src/pages/Cameras.tsx` - Remoção de ícone duplicado
+**Status:** ✅ Implementado
+
+### 2. Suporte Aprimorado para URLs RTMP
+**Problema:** Validação inadequada para URLs RTMP impedindo cadastro
+**Solução:**
+- Implementada validação específica para URLs RTMP/RTSP
+- Tornado IP opcional quando URL de stream é fornecida
+- Adicionada validação customizada para garantir pelo menos uma fonte de stream
+**Arquivos alterados:**
+- `backend/src/middleware/validation.js` - Validação de URLs
+- `backend/src/routes/cameras.js` - Validação customizada
+- `backend/src/models/Camera.js` - Modelo atualizado
+**Status:** ✅ Implementado
+
+### 3. Correção da API do ZLMediaKit
 **Problema:** URL incorreta da API (porta 9902 inexistente)
 **Solução:** Corrigida para `http://localhost:8000/index/api`
 **Arquivo:** `backend/.env`
@@ -80,8 +102,8 @@ RTMP_PORT=1935
 ## 🎯 Próximos Passos
 
 ### Prioridade Alta
-1. **Teste do Frontend** - Verificar se as correções resolveram os erros HLS
-2. **Validação de Autenticação** - Corrigir tokens para testes de proxy
+1. **Teste das Melhorias** - Validar funcionamento das correções de interface e RTMP
+2. **Investigação de Status Offline** - Analisar problema de câmeras funcionais aparecendo como offline
 3. **Monitoramento de Streams** - Verificar estabilidade dos streams ativos
 
 ### Prioridade Média

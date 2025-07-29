@@ -108,6 +108,13 @@ const authenticateHLS = async (req, res, next) => {
       camera_access: user.camera_access || []
     };
     
+    // Configurar headers CORS específicos para streaming HLS
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Range');
+    res.header('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    
     logger.debug(`authenticateHLS - Usuário autenticado: ${user.email}`);
     next();
   } catch (error) {
@@ -315,6 +322,22 @@ router.get('/stats',
  * @access Private
  */
 router.post('/:cameraId/start',
+  // LOG DETALHADO ANTES DOS MIDDLEWARES
+  (req, res, next) => {
+    console.log('🔍 [STREAM START DEBUG] === INÍCIO DA REQUISIÇÃO ===');
+    console.log('🔍 [STREAM START DEBUG] URL:', req.originalUrl);
+    console.log('🔍 [STREAM START DEBUG] Method:', req.method);
+    console.log('🔍 [STREAM START DEBUG] Headers:', {
+      authorization: req.headers.authorization ? 'Bearer [PRESENTE]' : 'AUSENTE',
+      'content-type': req.headers['content-type'],
+      'user-agent': req.headers['user-agent']
+    });
+    console.log('🔍 [STREAM START DEBUG] Params RAW:', req.params);
+    console.log('🔍 [STREAM START DEBUG] Body RAW:', req.body);
+    console.log('🔍 [STREAM START DEBUG] Query:', req.query);
+    console.log('🔍 [STREAM START DEBUG] User antes dos middlewares:', req.user || 'UNDEFINED');
+    next();
+  },
   validateParams({
     cameraId: {
       required: true,
@@ -322,8 +345,27 @@ router.post('/:cameraId/start',
       message: 'ID da câmera deve ser um UUID válido'
     }
   }),
+  // LOG APÓS VALIDAÇÃO DE PARAMS
+  (req, res, next) => {
+    console.log('🔍 [STREAM START DEBUG] === APÓS VALIDAÇÃO DE PARAMS ===');
+    console.log('🔍 [STREAM START DEBUG] Params validados:', req.params);
+    console.log('🔍 [STREAM START DEBUG] Erros de validação:', req.validationErrors || 'NENHUM');
+    next();
+  },
   requireCameraAccess,
+  // LOG APÓS CAMERA ACCESS
+  (req, res, next) => {
+    console.log('🔍 [STREAM START DEBUG] === APÓS CAMERA ACCESS ===');
+    console.log('🔍 [STREAM START DEBUG] User após camera access:', req.user || 'UNDEFINED');
+    next();
+  },
   requirePermission('streams.control'),
+  // LOG APÓS PERMISSION
+  (req, res, next) => {
+    console.log('🔍 [STREAM START DEBUG] === APÓS PERMISSION CHECK ===');
+    console.log('🔍 [STREAM START DEBUG] User após permission:', req.user || 'UNDEFINED');
+    next();
+  },
   createValidationSchema({
     quality: {
       required: false,
@@ -341,38 +383,93 @@ router.post('/:cameraId/start',
       default: true
     }
   }),
+  // LOG APÓS VALIDAÇÃO DE SCHEMA
+  (req, res, next) => {
+    console.log('🔍 [STREAM START DEBUG] === APÓS VALIDAÇÃO DE SCHEMA ===');
+    console.log('🔍 [STREAM START DEBUG] ValidatedData:', req.validatedData || 'UNDEFINED');
+    console.log('🔍 [STREAM START DEBUG] Erros de schema:', req.validationErrors || 'NENHUM');
+    next();
+  },
   asyncHandler(async (req, res) => {
+    console.log('🔍 [STREAM START DEBUG] === DENTRO DO HANDLER PRINCIPAL ===');
+    console.log('🔍 [STREAM START DEBUG] Dados finais recebidos:', {
+      params: req.params,
+      body: req.body,
+      validatedData: req.validatedData,
+      user: req.user ? { id: req.user.id, email: req.user.email, role: req.user.role } : null,
+      headers: {
+        authorization: req.headers.authorization ? 'Bearer [PRESENTE]' : 'AUSENTE',
+        'content-type': req.headers['content-type']
+      },
+      url: req.originalUrl,
+      method: req.method,
+      timestamp: new Date().toISOString()
+    });
+    
     const { cameraId } = req.params;
     const { quality, format, audio } = req.validatedData;
 
-    // Verificar se câmera existe
-    const camera = await Camera.findById(cameraId);
-    if (!camera) {
-      throw new NotFoundError('Câmera não encontrada');
+    try {
+      // Verificar se câmera existe
+      console.log('🔍 [STREAM START DEBUG] Buscando câmera com ID:', cameraId);
+      const camera = await Camera.findById(cameraId);
+      if (!camera) {
+        console.log('❌ [STREAM START DEBUG] Câmera não encontrada para ID:', cameraId);
+        throw new NotFoundError('Câmera não encontrada');
+      }
+      
+      console.log('✅ [STREAM START DEBUG] Câmera encontrada:', {
+        id: camera.id,
+        name: camera.name,
+        status: camera.status,
+        stream_type: camera.stream_type,
+        rtmp_url: camera.rtmp_url,
+        rtsp_url: camera.rtsp_url,
+        ip_address: camera.ip_address
+      });
+
+      // Permitir iniciar stream mesmo se câmera estiver offline
+      // O streaming service tentará conectar e atualizar o status
+      logger.info(`Tentando iniciar stream para câmera ${camera.name} (status: ${camera.status})`);
+
+      // Obter token do usuário para autenticação HLS
+      const userToken = req.headers.authorization?.substring(7); // Remove 'Bearer '
+      
+      console.log('🔍 [STREAM START DEBUG] Parâmetros para startStream:', {
+        quality,
+        format,
+        audio,
+        userId: req.user.id,
+        userToken: userToken ? 'PRESENTE' : 'AUSENTE'
+      });
+      
+      // Iniciar stream usando o serviço de streaming
+      const streamConfig = await streamingService.startStream(camera, {
+        quality,
+        format,
+        audio,
+        userId: req.user.id,
+        userToken
+      });
+      
+      console.log('✅ [STREAM START DEBUG] Stream iniciado com sucesso:', streamConfig);
+
+      logger.info(`Stream iniciado para câmera ${cameraId} por: ${req.user.email}`);
+
+      res.status(201).json({
+        message: 'Stream iniciado com sucesso',
+        data: streamConfig
+      });
+    } catch (error) {
+      console.log('❌ [STREAM START DEBUG] Erro ao iniciar stream:', {
+        error: error.message,
+        stack: error.stack,
+        name: error.name,
+        cameraId,
+        timestamp: new Date().toISOString()
+      });
+      throw error;
     }
-
-    // Permitir iniciar stream mesmo se câmera estiver offline
-    // O streaming service tentará conectar e atualizar o status
-    logger.info(`Tentando iniciar stream para câmera ${camera.name} (status: ${camera.status})`);
-
-    // Obter token do usuário para autenticação HLS
-    const userToken = req.headers.authorization?.substring(7); // Remove 'Bearer '
-    
-    // Iniciar stream usando o serviço de streaming
-    const streamConfig = await streamingService.startStream(camera, {
-      quality,
-      format,
-      audio,
-      userId: req.user.id,
-      userToken
-    });
-
-    logger.info(`Stream iniciado para câmera ${cameraId} por: ${req.user.email}`);
-
-    res.status(201).json({
-      message: 'Stream iniciado com sucesso',
-      data: streamConfig
-    });
   })
 );
 
@@ -711,6 +808,90 @@ router.put('/:stream_id/quality',
     res.json({
       message: 'Qualidade do stream alterada com sucesso',
       data: stream
+    });
+  })
+);
+
+/**
+ * @route PUT /api/streams/:stream_id/settings
+ * @desc Atualizar configurações do stream (qualidade e FPS)
+ * @access Private (Admin/Operator)
+ */
+router.put('/:stream_id/settings',
+  validateParams({
+    stream_id: {
+      required: true,
+      type: 'nonEmptyString',
+      message: 'ID do stream é obrigatório'
+    }
+  }),
+  requirePermission('streams.control'),
+  createValidationSchema({
+    quality: {
+      required: false,
+      enum: ['low', 'medium', 'high', 'ultra']
+    },
+    fps: {
+      required: false,
+      type: 'number',
+      min: 15,
+      max: 60
+    }
+  }),
+  asyncHandler(async (req, res) => {
+    const { stream_id } = req.params;
+    const { quality, fps } = req.validatedData;
+
+    const stream = streamingService.getStream(stream_id);
+    if (!stream) {
+      throw new NotFoundError('Stream não encontrado');
+    }
+
+    // Verificar permissão para controlar o stream
+    if (req.user.role !== 'admin' && 
+        !req.user.camera_access.includes(stream.camera_id)) {
+      throw new AuthorizationError('Sem permissão para controlar este stream');
+    }
+
+    if (stream.status !== 'active') {
+      throw new ValidationError('Stream não está ativo');
+    }
+
+    // Atualizar configurações
+    const oldSettings = {
+      quality: stream.quality,
+      fps: stream.fps
+    };
+
+    if (quality) {
+      stream.quality = quality;
+      stream.resolution = streamingService.getQualityResolution(quality, stream.resolution);
+      stream.bitrate = streamingService.getQualityBitrate(quality);
+    }
+
+    if (fps) {
+      stream.fps = fps;
+    }
+
+    stream.settings_changed_at = new Date().toISOString();
+    stream.settings_changed_by = req.user.id;
+
+    // Nota: Mudança de configurações em tempo real requer reinicialização do stream
+
+    logger.info(`Configurações do stream ${stream_id} alteradas por: ${req.user.email}`, {
+      old: oldSettings,
+      new: { quality: stream.quality, fps: stream.fps }
+    });
+
+    res.json({
+      message: 'Configurações do stream atualizadas com sucesso',
+      data: {
+        id: stream.id,
+        quality: stream.quality,
+        fps: stream.fps,
+        resolution: stream.resolution,
+        bitrate: stream.bitrate
+      }
     });
   })
 );

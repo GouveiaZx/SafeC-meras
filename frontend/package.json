@@ -11,6 +11,8 @@
     "check": "tsc -b --noEmit"
   },
   "dependencies": {
+    "@radix-ui/react-popover": "^1.1.14",
+    "@radix-ui/react-select": "^2.2.5",
     "@types/hls.js": "^0.13.3",
     "axios": "^1.10.0",
     "clsx": "^2.1.1",

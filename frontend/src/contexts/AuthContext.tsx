@@ -45,10 +45,16 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       try {
         const storedToken = localStorage.getItem('token');
         const storedUser = localStorage.getItem('user');
+        
+        // Limpar tokens inválidos do localStorage
+        const cleanToken = storedToken === 'undefined' || storedToken === 'null' || !storedToken ? null : storedToken;
+        const cleanUser = storedUser === 'undefined' || storedUser === 'null' || !storedUser ? null : storedUser;
+        
+        console.log('AuthContext - Token do localStorage:', { storedToken, cleanToken });
 
-        if (storedToken && storedUser) {
-          setToken(storedToken);
-          setUser(JSON.parse(storedUser));
+        if (cleanToken && cleanUser) {
+          setToken(cleanToken);
+          setUser(JSON.parse(cleanUser));
           
           // Verify token is still valid
           try {

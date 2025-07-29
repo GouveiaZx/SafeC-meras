@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { Play, Pause, Volume2, VolumeX, Maximize, RotateCcw, AlertCircle } from 'lucide-react';
+import { Play, Pause, Volume2, VolumeX, Maximize, RotateCcw, AlertCircle, Settings } from 'lucide-react';
 import { toast } from 'sonner';
 import Hls from 'hls.js';
 
@@ -14,6 +14,9 @@ interface VideoPlayerProps {
   onError?: (error: string) => void;
   onLoadStart?: () => void;
   onLoadEnd?: () => void;
+  onQualityChange?: (quality: string) => void;
+  availableQualities?: string[];
+  currentQuality?: string;
 }
 
 const VideoPlayer: React.FC<VideoPlayerProps> = ({
@@ -26,7 +29,10 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
   token,
   onError,
   onLoadStart,
-  onLoadEnd
+  onLoadEnd,
+  onQualityChange,
+  availableQualities = ['1080p', '720p', '480p'],
+  currentQuality = '720p'
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -37,14 +43,58 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [isLive, setIsLive] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
   const maxRetries = 3;
   const [hlsSupported, setHlsSupported] = useState(false);
+  const [showQualityMenu, setShowQualityMenu] = useState(false);
 
-  // Verificar suporte ao HLS
+  // Função para lidar com mudança de qualidade
+  const handleQualityChange = useCallback((quality: string) => {
+    console.log('VideoPlayer: Mudança de qualidade solicitada para:', quality);
+    
+    // Implementar troca de qualidade no HLS
+    if (hlsRef.current && hlsRef.current.levels.length > 0) {
+      // Mapeamento consistente com backend e frontend
+      const qualityMap: { [key: string]: number } = {
+        '4K': -1,    // Auto (melhor qualidade disponível) - ultra
+        '1080p': -1, // Auto para 1080p - high
+        '720p': 1,   // Qualidade média - medium
+        '480p': 0    // Qualidade baixa - low
+      };
+      
+      const targetLevel = qualityMap[quality];
+      console.log('VideoPlayer: Mapeamento de qualidade:', { quality, targetLevel, availableLevels: hlsRef.current.levels.length });
+      
+      if (targetLevel !== undefined) {
+        if (targetLevel === -1) {
+          // Auto quality - deixa o HLS escolher automaticamente
+          hlsRef.current.currentLevel = -1;
+          console.log('VideoPlayer: Qualidade definida para AUTO (melhor disponível)');
+        } else {
+          // Força um nível específico
+          const actualLevel = Math.min(targetLevel, hlsRef.current.levels.length - 1);
+          hlsRef.current.currentLevel = actualLevel;
+          console.log(`VideoPlayer: Qualidade definida para nível ${actualLevel}`);
+        }
+        
+        console.log(`VideoPlayer: Qualidade alterada para: ${quality} (nível HLS: ${hlsRef.current.currentLevel})`);
+      } else {
+        console.warn('VideoPlayer: Qualidade não reconhecida:', quality);
+      }
+    } else {
+      console.warn('VideoPlayer: HLS não disponível ou sem níveis de qualidade');
+    }
+    
+    // Sempre chamar o callback para notificar o componente pai
+    onQualityChange?.(quality);
+  }, [onQualityChange]);
+
+  // Verificar suporte ao HLS e se é transmissão ao vivo
   useEffect(() => {
     setHlsSupported(Hls.isSupported());
-  }, []);
+    setIsLive(src ? (src.includes('.m3u8') || src.includes('/hls')) : false);
+  }, [src]);
 
   const cleanupHLS = useCallback(() => {
     if (hlsRef.current) {
@@ -69,23 +119,51 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       const hls = new Hls({
         debug: false,
         enableWorker: true,
-        lowLatencyMode: true,
+        lowLatencyMode: false, // Desabilitar para melhor estabilidade
         backBufferLength: 90,
-        maxBufferLength: 30,
+        maxBufferLength: 60, // Aumentar buffer para evitar stalling
         maxMaxBufferLength: 600,
-        manifestLoadingTimeOut: 10000,
-        manifestLoadingMaxRetry: 3,
-        levelLoadingTimeOut: 10000,
-        levelLoadingMaxRetry: 3,
-        fragLoadingTimeOut: 20000,
-        fragLoadingMaxRetry: 3,
+        manifestLoadingTimeOut: 15000, // Aumentar timeout
+        manifestLoadingMaxRetry: 5, // Mais tentativas
+        levelLoadingTimeOut: 15000,
+        levelLoadingMaxRetry: 5,
+        fragLoadingTimeOut: 30000, // Aumentar timeout para fragmentos
+        fragLoadingMaxRetry: 5,
         xhrSetup: (xhr, url) => {
           console.log('Configurando XHR para:', url);
           
-          // Adicionar token de autenticação
-          if (token) {
+          // Validação robusta do token
+          const isValidToken = (
+            token && 
+            typeof token === 'string' && 
+            token.trim() !== '' &&
+            token !== 'null' && 
+            token !== 'undefined' &&
+            token !== 'false' &&
+            !token.includes('undefined') &&
+            token.length > 10 // Token JWT mínimo
+          );
+          
+          console.log('Análise do token:', {
+            received: token,
+            type: typeof token,
+            length: token?.length || 0,
+            isValid: isValidToken,
+            preview: isValidToken ? token.substring(0, 20) + '...' : 'INVÁLIDO'
+          });
+          
+          if (isValidToken) {
             xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-            console.log('Token adicionado ao header Authorization');
+            console.log('✅ Token válido adicionado ao header Authorization');
+          } else {
+            console.error('❌ Token inválido detectado:', {
+              token,
+              type: typeof token,
+              isEmpty: !token,
+              isUndefinedString: token === 'undefined',
+              containsUndefined: token?.includes('undefined')
+            });
+            // Não adicionar header de autorização com token inválido
           }
           
           // Headers adicionais para CORS e streaming
@@ -111,6 +189,18 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
         }
       });
 
+      // Configurações otimizadas para reduzir buffer stalling
+      hls.config.maxBufferLength = 30; // Buffer máximo de 30 segundos
+      hls.config.maxMaxBufferLength = 60; // Buffer máximo absoluto
+      hls.config.maxBufferSize = 60 * 1000 * 1000; // 60MB
+      hls.config.maxBufferHole = 0.5; // Tolerância para buracos no buffer
+      hls.config.highBufferWatchdogPeriod = 3; // Verificação menos frequente quando buffer alto
+      hls.config.nudgeOffset = 0.1; // Ajuste fino para sincronização
+      hls.config.nudgeMaxRetry = 3; // Máximo de tentativas de ajuste
+      hls.config.maxFragLookUpTolerance = 0.25; // Tolerância para busca de fragmentos
+      hls.config.liveSyncDurationCount = 3; // Sincronização com live stream
+      hls.config.liveMaxLatencyDurationCount = 10; // Latência máxima
+
       hlsRef.current = hls;
 
       // Event listeners do HLS
@@ -128,8 +218,37 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       });
 
       hls.on(Hls.Events.ERROR, (event, data) => {
-        console.error('Erro HLS:', data);
+        // Tratar erros não fatais primeiro
+        if (!data.fatal) {
+          switch (data.details) {
+            case 'bufferStalledError':
+              // Recuperação silenciosa para buffer stalling
+              if (hlsRef.current && videoRef.current) {
+                try {
+                  hlsRef.current.startLoad();
+                } catch (e) {
+                  // Falha silenciosa na recuperação
+                }
+              }
+              return;
+            case 'bufferAppendError':
+            case 'bufferAddCodecError':
+            case 'bufferSeekOverHole':
+            case 'bufferNudgeOnStall':
+              // Erros de buffer não fatais - ignorar silenciosamente
+              return;
+            default:
+              // Outros erros não fatais - log apenas em desenvolvimento
+              if (process.env.NODE_ENV === 'development') {
+                console.warn('Erro HLS não fatal:', data.details);
+              }
+              return;
+          }
+        }
         
+        console.error('Erro HLS fatal:', data);
+        
+        // Tratar erros fatais
         if (data.fatal) {
           let errorMessage = 'Erro no stream HLS';
           
@@ -187,8 +306,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
     } else if (isHLS && video.canPlayType('application/vnd.apple.mpegurl')) {
       // Safari nativo suporta HLS
       console.log('Usando suporte nativo HLS do Safari');
-      const urlWithToken = token ? `${src}${src.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : src;
-      video.src = urlWithToken;
+      // Para Safari, não adicionar token na URL, usar apenas headers quando possível
+      video.src = src;
       video.load();
     } else {
       // Stream não-HLS ou fallback
@@ -410,8 +529,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       {/* Custom Controls */}
       {controls && !error && (
         <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black to-transparent p-4">
-          {/* Progress Bar */}
-          {duration > 0 && (
+          {/* Progress Bar - Only for non-live content */}
+          {!isLive && duration > 0 && (
             <div className="mb-3">
               <input
                 type="range"
@@ -449,7 +568,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 )}
               </button>
 
-              {duration > 0 && (
+              {/* Time display - Only for non-live content */}
+              {!isLive && duration > 0 && (
                 <span className="text-white text-sm">
                   {formatTime(currentTime)} / {formatTime(duration)}
                 </span>
@@ -457,6 +577,49 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
             </div>
 
             <div className="flex items-center space-x-3">
+              {/* Live indicator in controls - moved to right side */}
+              {isLive && (
+                <span className="text-red-400 text-sm font-medium flex items-center">
+                  <div className="w-2 h-2 bg-red-400 rounded-full mr-2 animate-pulse"></div>
+                  AO VIVO
+                </span>
+              )}
+              
+              {/* Quality Selector */}
+              <div className="relative">
+                <button
+                  onClick={() => setShowQualityMenu(!showQualityMenu)}
+                  className="text-white hover:text-gray-300 transition-colors"
+                  title="Qualidade do vídeo"
+                >
+                  <Settings className="h-5 w-5" />
+                </button>
+                
+                {showQualityMenu && (
+                  <div className="absolute bottom-8 right-0 bg-black bg-opacity-90 rounded-lg p-2 min-w-[120px] z-50">
+                    <div className="text-white text-xs font-medium mb-2 px-2">Qualidade</div>
+                    {availableQualities.map((quality) => (
+                      <button
+                        key={quality}
+                        onClick={() => {
+                          handleQualityChange(quality);
+                          setShowQualityMenu(false);
+                        }}
+                        className={`block w-full text-left px-2 py-1 text-sm rounded transition-colors ${
+                          currentQuality === quality
+                            ? 'bg-primary-600 text-white'
+                            : 'text-gray-300 hover:bg-gray-700 hover:text-white'
+                        }`}
+                      >
+                        {quality === '1080p' && 'Alta (1080p)'}
+                        {quality === '720p' && 'Média (720p)'}
+                        {quality === '480p' && 'Baixa (480p)'}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              
               <button
                 onClick={toggleFullscreen}
                 className="text-white hover:text-gray-300 transition-colors"
@@ -468,15 +631,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </div>
       )}
 
-      {/* Live Indicator */}
-      {(src.includes('.m3u8') || src.includes('/hls')) && (
-        <div className="absolute top-4 left-4">
-          <div className="flex items-center bg-red-600 text-white px-2 py-1 rounded-full text-xs font-medium">
-            <div className="w-2 h-2 bg-white rounded-full mr-1 animate-pulse"></div>
-            AO VIVO
-          </div>
-        </div>
-      )}
+
     </div>
   );
 };
