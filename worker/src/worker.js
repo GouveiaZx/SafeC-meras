@@ -8,8 +8,8 @@ import { dirname, join } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Carrega variáveis de ambiente do diretório backend
-dotenv.config({ path: join(__dirname, '../../backend/.env') });
+// Carrega variáveis de ambiente do diretório worker
+dotenv.config({ path: join(__dirname, '../.env') });
 
 // Configuração do logger
 const logger = winston.createLogger({

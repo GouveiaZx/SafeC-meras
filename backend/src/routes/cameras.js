@@ -448,16 +448,7 @@ router.put('/:id',
       required: false,
       type: 'boolean'
     },
-    quality_profile: {
-      required: false,
-      enum: ['low', 'medium', 'high', 'ultra']
-    },
-    retention_days: {
-      required: false,
-      type: 'positiveNumber',
-      min: 1,
-      max: 365
-    },
+
     active: {
       required: false,
       type: 'boolean'
@@ -734,6 +725,119 @@ router.get('/:id/recordings',
       message: 'Gravações listadas com sucesso',
       data: recordings
     });
+  })
+);
+
+/**
+ * @route POST /api/cameras/:id/recording/start
+ * @desc Iniciar gravação de uma câmera
+ * @access Private
+ */
+router.post('/:id/recording/start',
+  requireCameraAccess,
+  validateParams({
+    id: {
+      required: true,
+      type: 'uuid',
+      message: 'ID da câmera deve ser um UUID válido'
+    }
+  }),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    
+    logger.info(`[API] Iniciando gravação para câmera ${id}`);
+    
+    try {
+      const result = await RecordingService.startRecording(id);
+      
+      res.json({
+        success: true,
+        message: 'Gravação iniciada com sucesso',
+        data: result
+      });
+    } catch (error) {
+      logger.error(`[API] Erro ao iniciar gravação:`, error);
+      res.status(500).json({
+        success: false,
+        message: 'Erro ao iniciar gravação',
+        error: error.message
+      });
+    }
+  })
+);
+
+/**
+ * @route POST /api/cameras/:id/recording/stop
+ * @desc Parar gravação de uma câmera
+ * @access Private
+ */
+router.post('/:id/recording/stop',
+  requireCameraAccess,
+  validateParams({
+    id: {
+      required: true,
+      type: 'uuid',
+      message: 'ID da câmera deve ser um UUID válido'
+    }
+  }),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { recordingId } = req.body;
+    
+    logger.info(`[API] Parando gravação para câmera ${id}`);
+    
+    try {
+      const result = await RecordingService.stopRecording(id, recordingId);
+      
+      res.json({
+        success: true,
+        message: 'Gravação parada com sucesso',
+        data: result
+      });
+    } catch (error) {
+      logger.error(`[API] Erro ao parar gravação:`, error);
+      res.status(500).json({
+        success: false,
+        message: 'Erro ao parar gravação',
+        error: error.message
+      });
+    }
+  })
+);
+
+/**
+ * @route GET /api/cameras/:id/recording/status
+ * @desc Verificar status de gravação de uma câmera
+ * @access Private
+ */
+router.get('/:id/recording/status',
+  requireCameraAccess,
+  validateParams({
+    id: {
+      required: true,
+      type: 'uuid',
+      message: 'ID da câmera deve ser um UUID válido'
+    }
+  }),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    
+    try {
+      const activeRecordings = await RecordingService.getActiveRecordings(id);
+      
+      res.json({
+        success: true,
+        isRecording: activeRecordings.length > 0,
+        activeRecordings
+      });
+    } catch (error) {
+      logger.error(`[API] Erro ao verificar status:`, error);
+      res.status(500).json({
+        success: false,
+        message: 'Erro ao verificar status de gravação',
+        error: error.message
+      });
+    }
   })
 );
 

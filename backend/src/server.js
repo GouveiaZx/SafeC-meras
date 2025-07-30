@@ -49,6 +49,7 @@ import discoveryRoutes from './routes/discovery.js';
 // import simulationRoutes from './routes/simulation.js';
 import workerRoutes from './routes/worker.js';
 import hookRoutes from './routes/hooks.js';
+import healthRoutes from './routes/health.js';
 
 // Middleware
 import { errorHandler } from './middleware/errorHandler.js';
@@ -163,6 +164,7 @@ app.use('/api/discovery', discoveryRoutes);
 // app.use('/api/simulation', simulationRoutes);
 app.use('/api/worker', workerRoutes);
 app.use('/api/hook', hookRoutes);
+app.use('/api/health', healthRoutes);
 
 // Servir arquivos estáticos de stream (APÓS as rotas da API)
 const streamStoragePath = join(__dirname, '../../worker/storage/streams');

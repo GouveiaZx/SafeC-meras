@@ -177,8 +177,8 @@ class CameraMonitoringService extends EventEmitter {
     logger.info(`Tentativa ${attempts + 1}/${this.maxReconnectionAttempts} de reconexão para câmera ${camera.name}`);
     
     try {
-      // Atualizar status para connecting
-      await camera.updateStatus('connecting');
+      // Atualizar status para offline
+        await camera.updateStatus('offline');
       
       // Parar stream existente se houver
       const existingStream = this.streamingService.getStream(cameraId);

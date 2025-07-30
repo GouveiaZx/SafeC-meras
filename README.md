@@ -13,7 +13,6 @@ Sistema completo de monitoramento de câmeras IP com streaming em tempo real, in
 - **Frontend**: http://localhost:5174
 - **Backend API**: http://localhost:3002
 - **Health Check**: http://localhost:3002/health
-- **API Docs**: http://localhost:3002/api/docs
 
 ## 🏗️ Arquitetura do Sistema
 
@@ -21,13 +20,11 @@ Sistema completo de monitoramento de câmeras IP com streaming em tempo real, in
 NewCAM/
 ├── frontend/          # Interface web (React + TypeScript + Vite)
 ├── backend/           # API REST e WebSocket (Node.js + Express)
-├── worker/            # Processamento de vídeo e tarefas
-├── database/          # Schemas e migrações PostgreSQL
-├── docker/            # Configurações Docker
-├── storage/           # Armazenamento (gravações, logs, streams)
-├── docs/              # Documentação
-├── scripts/           # Scripts de automação
-└── nginx-newcam.conf  # Configuração Nginx
+├── worker/            # Monitoramento de câmeras
+├── docker/            # Configurações Docker e serviços
+├── docs/              # Documentação essencial
+├── scripts/           # Scripts de instalação e migração
+└── nginx.conf         # Configuração Nginx
 ```
 
 ## 🌐 Mapeamento de Portas
@@ -35,25 +32,22 @@ NewCAM/
 ### 📱 Servidor de Produção (66.94.104.241)
 
 | Serviço | Porta | URL/Endpoint | Status | Descrição |
-|---------|-------|--------------|--------|-----------|
+|---------|-------|--------------|--------|-----------||
 | **Nginx** | `80` | http://66.94.104.241 | ✅ | Proxy reverso e frontend |
 | **Backend API** | `3002` | /api/* | ✅ | API REST + WebSocket |
-| **PostgreSQL** | `5432` | localhost:5432 | ✅ | Banco de dados |
-| **Redis** | `6379` | localhost:6379 | ✅ | Cache e sessões |
-| **ZLMediaKit** | `9902` | localhost:9902 | ✅ | Servidor de streaming |
-| **ZLMediaKit RTMP** | `1935` | rtmp://66.94.104.241:1935 | ✅ | Streaming RTMP |
-| **ZLMediaKit HTTP** | `8080` | http://66.94.104.241:8080 | ✅ | HTTP-FLV/HLS |
-| **ZLMediaKit RTSP** | `554` | rtsp://66.94.104.241:554 | ✅ | Streaming RTSP |
+| **ZLMediaKit** | `8000` | /zlm/* | ✅ | Servidor de streaming |
+| **SRS** | `8080` | /srs/* | ✅ | Servidor de streaming alternativo |
+| **PostgreSQL** | `5432` | localhost:5432 | ✅ | Banco de dados (Supabase) |
 
 ### 🖥️ Desenvolvimento Local
 
 | Serviço | Porta | URL | Descrição |
 |---------|-------|-----|----------|
 | **Frontend** | `5174` | http://localhost:5174 | Interface React + Vite |
-| **Backend** | `3003` | http://localhost:3003 | API REST + WebSocket |
-| **SRS** | `8081` | http://localhost:8081 | Servidor de streaming SRS |
-| **ZLMediaKit** | `8080` | localhost:8080 | Servidor de streaming ZLM |
-| **Supabase** | `54321` | https://grkvfzuadctextnbpajb.supabase.co | Banco de dados |
+| **Backend** | `3002` | http://localhost:3002 | API REST + WebSocket |
+| **Worker** | `3001` | localhost:3001 | Monitoramento de câmeras |
+| **ZLMediaKit** | `8000` | localhost:8000 | Servidor de streaming |
+| **SRS** | `8080` | localhost:8080 | Servidor de streaming alternativo |
 
 ## 🚀 Tecnologias
 
@@ -64,73 +58,35 @@ NewCAM/
 - **Zustand** para gerenciamento de estado
 - **React Router** para navegação
 - **Lucide React** para ícones
-- **HLS.js** para streaming HLS com autenticação
+- **HLS.js** para streaming de vídeo
 
 ### Backend
 - **Node.js** com Express
 - **Socket.IO** para WebSockets
-- **PostgreSQL** banco principal
-- **Redis** para cache
+- **Supabase** (PostgreSQL) como banco principal
 - **JWT** para autenticação
 - **Winston** para logs
+- **Axios** para requisições HTTP
 
 ### Streaming
-- **ZLMediaKit** servidor de mídia
-- **RTSP/RTMP** protocolos de streaming
-- **HLS** streaming adaptativo
-- **WebRTC** comunicação P2P
+- **ZLMediaKit** servidor de mídia principal
+- **SRS** servidor de mídia alternativo
+- **RTSP/RTMP** protocolos de entrada
+- **HLS** streaming adaptativo para web
+- **HTTP-FLV** streaming de baixa latência
 
 ### Infraestrutura
 - **Docker** containerização
 - **Nginx** proxy reverso
-- **PM2** gerenciamento de processos
 - **Ubuntu 20.04** sistema operacional
-
-## 🚨 Correções Críticas Aplicadas
-
-### ✅ Problemas Resolvidos
-1. **Erro 400 - Stream já ativo** - Coluna `stream_type` ausente no banco de dados
-2. **Porta 3002 em uso** - Processo travado do backend
-3. **Configuração RTMP** - Valores incorretos no banco de dados
-
-### 📋 Documentação Completa para Migração
-
-### 📖 Documentação Principal
-- **[MIGRACAO_SERVIDOR_CLIENTE.md](./MIGRACAO_SERVIDOR_CLIENTE.md)** - Guia completo de migração passo a passo
-- **[README_SERVIDOR_CLIENTE.md](./README_SERVIDOR_CLIENTE.md)** - Documentação de deploy e configuração
-- **[CHECKLIST_MIGRACAO_CLIENTE.md](./CHECKLIST_MIGRACAO_CLIENTE.md)** - Checklist interativo para acompanhamento
-- **[RESUMO_CORRECOES.md](./RESUMO_CORRECOES.md)** - Resumo de todas as correções aplicadas
-- **[CONFIG_SERVIDOR_CLIENTE.env](./CONFIG_SERVIDOR_CLIENTE.env)** - Template de configuração de ambiente
-
-### 🔧 Scripts de Auxílio
-- **[verificar-migracao.js](./verificar-migracao.js)** - Verificação automática pré-migração
-- **[diagnostico_completo.js](./diagnostico_completo.js)** - Diagnóstico completo do sistema
-- **[diagnostico_simples.js](./diagnostico_simples.js)** - Verificação rápida de conexões
-- **[COMANDOS_RAPIDOS.md](./COMANDOS_RAPIDOS.md)** - Comandos essenciais para operação
-
-### 🚀 Início Rápido para Migração
-```bash
-# 1. Verificar sistema
-node diagnostico_completo.js
-
-# 2. Validar configurações
-node verificar-migracao.js
-
-# 3. Seguir checklist
-# Abrir CHECKLIST_MIGRACAO_CLIENTE.md
-
-# 4. Configurar ambiente
-# Copiar CONFIG_SERVIDOR_CLIENTE.env para .env
-```
+- **Wasabi S3** armazenamento de gravações
 
 ## 📦 Instalação
 
 ### Pré-requisitos
 - Node.js 18+
-- PostgreSQL 13+
-- Redis 6+
-- Docker (opcional)
-- FFmpeg (para processamento)
+- Docker e Docker Compose
+- Git
 
 ### 🚀 Desenvolvimento Local
 
@@ -139,22 +95,29 @@ node verificar-migracao.js
 git clone <repository-url>
 cd NewCAM
 
-# 2. Verificar sistema antes de iniciar
-node verificar-migracao.js
+# 2. Configure as variáveis de ambiente
+cp .env.example .env
+# Edite o .env com suas configurações
 
-# 3. Backend
+# 3. Inicie os serviços com Docker
+docker-compose up -d
+
+# 4. Instale dependências do backend
 cd backend
 npm install
 cp .env.example .env
-# Configure as variáveis no .env (Supabase URLs e keys)
+# Configure as variáveis do backend
 npm run dev
 
-# 4. Frontend (novo terminal)
+# 5. Instale dependências do frontend (novo terminal)
 cd frontend
 npm install
-cp .env.example .env
-# Configure as variáveis no .env
 npm run dev
+
+# 6. Inicie o worker (novo terminal)
+cd worker
+npm install
+npm start
 ```
 
 ### 🐳 Docker (Recomendado)
@@ -172,35 +135,31 @@ docker-compose logs -f
 
 ## ⚙️ Configuração
 
-### Variáveis de Ambiente
+### Variáveis de Ambiente Principais
 
-#### Backend (.env)
+#### Raiz do Projeto (.env)
 ```env
-NODE_ENV=development
-PORT=3003
+# Supabase
 SUPABASE_URL=https://grkvfzuadctextnbpajb.supabase.co
 SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
-JWT_SECRET=your-secret-key
-CORS_ORIGIN=http://localhost:5174
+
+# Streaming
+ZLM_API_URL=http://localhost:8000
+ZLM_SECRET=035c73f7-bb6b-4889-a715-d9eb2d1925cc
+SRS_API_URL=http://localhost:8080
+SRS_SECRET=your-srs-secret
+
+# Wasabi S3
+WASABI_ACCESS_KEY=your-access-key
+WASABI_SECRET_KEY=your-secret-key
+WASABI_BUCKET=your-bucket
+WASABI_REGION=us-east-1
+WASABI_ENDPOINT=https://s3.wasabisys.com
+
+# Worker
+WORKER_TOKEN=your-worker-token
 ```
-
-#### Frontend (.env)
-```env
-VITE_API_URL=http://localhost:3002/api
-VITE_WS_URL=ws://localhost:3002
-VITE_SUPABASE_URL=https://grkvfzuadctextnbpajb.supabase.co
-VITE_SUPABASE_ANON_KEY=your-anon-key
-```
-
-### Banco de Dados
-
-O projeto utiliza **Supabase** como banco de dados. As tabelas e dados já estão configurados:
-
-- **URL**: https://grkvfzuadctextnbpajb.supabase.co
-- **Usuários**: Já cadastrados no sistema
-- **Câmeras**: Configuradas e prontas para uso
-- **Políticas RLS**: Ativas para segurança
 
 ## 🔐 Autenticação
 
@@ -225,49 +184,34 @@ O projeto utiliza **Supabase** como banco de dados. As tabelas e dados já estã
 - `POST /api/cameras` - Adicionar câmera
 - `PUT /api/cameras/:id` - Atualizar câmera
 - `DELETE /api/cameras/:id` - Remover câmera
-- `GET /api/cameras/:id/stream` - Stream da câmera
+- `POST /api/cameras/:id/start-stream` - Iniciar stream
+- `POST /api/cameras/:id/stop-stream` - Parar stream
 
 ### Gravações
 - `GET /api/recordings` - Listar gravações
 - `GET /api/recordings/:id` - Detalhes da gravação
 - `DELETE /api/recordings/:id` - Excluir gravação
 
+### Hooks (ZLMediaKit)
+- `POST /api/hook/on_publish` - Callback de publicação
+- `POST /api/hook/on_play` - Callback de reprodução
+- `POST /api/hook/on_stream_changed` - Callback de mudança de stream
+- `POST /api/hook/on_record_mp4` - Callback de gravação
+
 ## 🎥 Streaming
 
 ### Protocolos Suportados
-- **RTSP**: `rtsp://66.94.104.241:554/live/stream`
-- **RTMP**: `rtmp://66.94.104.241:1935/live/stream`
-- **HLS**: `http://66.94.104.241:8080/live/stream.m3u8`
-- **HTTP-FLV**: `http://66.94.104.241:8080/live/stream.flv`
+- **RTSP**: Entrada de câmeras IP
+- **RTMP**: Entrada de streams RTMP
+- **HLS**: Saída para web (`.m3u8`)
+- **HTTP-FLV**: Saída de baixa latência (`.flv`)
 
-### Configuração de Câmeras
-
-```json
-{
-  "name": "Câmera Principal",
-  "rtsp_url": "rtsp://admin:password@192.168.1.100:554/stream",
-  "enabled": true,
-  "recording": true,
-  "motion_detection": true
-}
-```
+### URLs de Streaming
+- **HLS**: `http://localhost:8000/live/{stream_id}.m3u8`
+- **HTTP-FLV**: `http://localhost:8000/live/{stream_id}.flv`
+- **RTMP**: `rtmp://localhost:1935/live/{stream_id}`
 
 ## 🔧 Monitoramento
-
-### PM2 (Produção)
-```bash
-# Status dos processos
-pm2 status
-
-# Logs em tempo real
-pm2 logs
-
-# Reiniciar serviços
-pm2 restart all
-
-# Monitoramento
-pm2 monit
-```
 
 ### Docker
 ```bash
@@ -275,36 +219,51 @@ pm2 monit
 docker ps
 
 # Logs dos serviços
-docker-compose logs -f newcam-backend
-docker-compose logs -f newcam-postgres
-docker-compose logs -f newcam-redis
-docker-compose logs -f newcam-zlmediakit
+docker-compose logs -f backend
+docker-compose logs -f worker
+docker-compose logs -f zlmediakit
+docker-compose logs -f srs
 
 # Reiniciar serviços
 docker-compose restart
 ```
 
-## 🛠️ Desenvolvimento
-
-### Scripts Úteis
-
+### Verificação de Saúde
 ```bash
-# Backend
-npm run dev          # Desenvolvimento
-npm run build        # Build para produção
-npm run test         # Executar testes
-npm run lint         # Verificar código
+# API Health Check
+curl http://localhost:3002/health
 
-# Frontend
-npm run dev          # Servidor de desenvolvimento
-npm run build        # Build para produção
-npm run preview      # Preview da build
-npm run lint         # ESLint
+# ZLMediaKit Status
+curl http://localhost:8000/index/api/getServerConfig
 
-# Worker
-npm start            # Iniciar worker
-npm run dev          # Desenvolvimento
+# SRS Status
+curl http://localhost:8080/api/v1/summaries
 ```
+
+## 🛠️ Scripts Úteis
+
+### Instalação de Serviços
+```powershell
+# Instalar ZLMediaKit
+.\scripts\install-zlmediakit.ps1
+
+# Instalar SRS
+.\scripts\install-srs.ps1
+
+# Iniciar todos os serviços
+.\start-all-services.ps1
+```
+
+### Migração de Dados
+```bash
+# Migrar tipo de stream das câmeras
+node scripts\migrate-camera-stream-type.js
+
+# Migrar campo IP das câmeras
+node scripts\run_ip_field_migration.js
+```
+
+## 🧪 Desenvolvimento
 
 ### Estrutura de Pastas
 
@@ -320,106 +279,51 @@ src/
 └── styles/         # Estilos globais
 ```
 
-## 🧪 Testes
+### Scripts de Desenvolvimento
 
 ```bash
 # Backend
 cd backend
-npm test
+npm run dev          # Desenvolvimento
+npm run build        # Build para produção
+npm run lint         # Verificar código
 
 # Frontend
 cd frontend
-npm test
+npm run dev          # Servidor de desenvolvimento
+npm run build        # Build para produção
+npm run preview      # Preview da build
+npm run lint         # ESLint
 
-# Testes E2E
-npm run test:e2e
+# Worker
+cd worker
+npm start            # Iniciar worker
+npm run dev          # Desenvolvimento
 ```
-
-## 📊 Performance
-
-### Métricas Monitoradas
-- CPU e memória dos processos
-- Latência das APIs
-- Qualidade dos streams
-- Uso de armazenamento
-- Conexões simultâneas
-
-### Otimizações
-- Cache Redis para consultas frequentes
-- Compressão gzip no Nginx
-- Lazy loading de componentes
-- Otimização de imagens
-- CDN para assets estáticos
 
 ## 🔒 Segurança
 
 ### Medidas Implementadas
 - Autenticação JWT
-- HTTPS em produção
+- CORS configurado
 - Rate limiting
 - Validação de entrada
 - Sanitização de dados
-- CORS configurado
 - Headers de segurança
-
-### Configuração SSL (Produção)
-```bash
-# Certbot para Let's Encrypt
-sudo certbot --nginx -d seu-dominio.com
-```
+- Tokens de worker para autenticação
 
 ## 📝 Logs
 
 ### Localização dos Logs
-- **Backend**: `/var/www/newcam/backend/logs/`
-- **Worker**: `/var/www/newcam/worker/logs/`
-- **Nginx**: `/var/log/nginx/`
-- **PM2**: `~/.pm2/logs/`
+- **Backend**: `backend/logs/`
+- **Worker**: `worker/logs/`
+- **Docker**: `docker-compose logs`
 
 ### Níveis de Log
 - `error`: Erros críticos
 - `warn`: Avisos importantes
 - `info`: Informações gerais
 - `debug`: Depuração (apenas desenvolvimento)
-
-## 🚀 Deploy
-
-### Produção
-
-1. **Preparar servidor**:
-```bash
-# Atualizar sistema
-sudo apt update && sudo apt upgrade -y
-
-# Instalar dependências
-sudo apt install -y nodejs npm nginx postgresql redis-server
-```
-
-2. **Deploy da aplicação**:
-```bash
-# Clonar código
-git clone <repository> /var/www/newcam
-cd /var/www/newcam
-
-# Instalar dependências
-npm install --production
-
-# Build do frontend
-cd frontend && npm run build
-
-# Configurar PM2
-pm2 start ecosystem.config.js
-pm2 startup
-pm2 save
-```
-
-3. **Configurar Nginx**:
-```bash
-# Copiar configuração
-sudo cp nginx-newcam.conf /etc/nginx/sites-available/newcam
-sudo ln -s /etc/nginx/sites-available/newcam /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-```
 
 ## 🆘 Troubleshooting
 
@@ -428,77 +332,67 @@ sudo nginx -t && sudo systemctl reload nginx
 #### Backend não inicia
 ```bash
 # Verificar logs
-pm2 logs newcam-backend
+docker-compose logs backend
 
 # Verificar porta
-sudo netstat -tlnp | grep 3002
+netstat -ano | findstr :3002
 
 # Reiniciar
-pm2 restart newcam-backend
-```
-
-#### Frontend não carrega
-```bash
-# Verificar build
-cd frontend && npm run build
-
-# Verificar Nginx
-sudo nginx -t
-sudo systemctl status nginx
+docker-compose restart backend
 ```
 
 #### Streaming não funciona
 ```bash
 # Verificar ZLMediaKit
-docker logs newcam-zlmediakit
+docker-compose logs zlmediakit
 
 # Testar API
-curl http://localhost:9902/index/api/getServerConfig
+curl http://localhost:8000/index/api/getServerConfig
+
+# Verificar configuração
+type docker\zlmediakit\config.ini
 ```
 
-#### Banco de dados
+#### Worker não conecta
 ```bash
-# Verificar PostgreSQL
-sudo systemctl status postgresql
+# Verificar logs do worker
+docker-compose logs worker
 
-# Conectar ao banco
-psql -U postgres -d newcam
+# Verificar token
+echo $WORKER_TOKEN
 
-# Verificar conexões
-SELECT * FROM pg_stat_activity;
+# Reiniciar worker
+docker-compose restart worker
 ```
 
 ## 📚 Documentação
 
 ### 📋 Documentos Essenciais
-- [Status do Sistema](docs/STATUS-SISTEMA.md) - Status atual e comandos essenciais
 - [Desenvolvimento Local](docs/DESENVOLVIMENTO-LOCAL.md) - Guia completo para desenvolvimento
-- [Credenciais e Login](docs/CREDENCIAIS-LOGIN.md) - Informações de acesso e autenticação
+- [Credenciais e Login](docs/CREDENCIAIS-LOGIN.md) - Informações de acesso
 - [Configuração do Supabase](docs/configuracao-supabase.md) - Setup do banco de dados
 - [Deploy em Produção](docs/PRODUCTION-README.md) - Configuração para produção
 
 ## 📞 Suporte
 
 ### Informações do Sistema
-- **Versão**: 1.0.0
+- **Versão**: 2.0.0
 - **Node.js**: 18+
-- **Banco**: PostgreSQL 13+
-- **Cache**: Redis 6+
-- **Servidor**: Ubuntu 20.04
+- **Banco**: Supabase (PostgreSQL)
+- **Streaming**: ZLMediaKit + SRS
+- **Armazenamento**: Wasabi S3
 
 ### Comandos de Diagnóstico
 ```bash
 # Status geral
-pm2 status
 docker ps
-sudo systemctl status nginx postgresql redis
+docker-compose ps
 
 # Verificar portas
-sudo netstat -tlnp | grep -E '(3002|5432|6379|9902)'
+netstat -ano | findstr -E "(3002|3001|8000|8080|5174)"
 
 # Logs recentes
-pm2 logs --lines 50
-sudo tail -f /var/log/nginx/error.log
+docker-compose logs --tail=50
 ```
 
 ---

@@ -27,6 +27,7 @@ import { supabaseAdmin } from '../config/database.js';
 import EmailService from '../services/EmailService.js';
 import rateLimit from 'express-rate-limit';
 import slowDown from 'express-slow-down';
+import authHealthService from '../services/AuthHealthService.js';
 
 const router = express.Router();
 const logger = createModuleLogger('AuthRoutes');
@@ -70,18 +71,24 @@ router.post('/login',
     const user = await User.findByEmail(email);
     if (!user) {
       logger.warn(`Tentativa de login com email inexistente: ${email}`);
+      // Registrar falha no monitoramento de saúde
+      authHealthService.recordLoginAttempt(false);
       throw new AuthenticationError('Credenciais inválidas');
     }
 
     // Verificar se usuário está ativo
     if (!user.active) {
       logger.warn(`Tentativa de login com usuário inativo: ${email}`);
+      // Registrar falha no monitoramento de saúde
+      authHealthService.recordLoginAttempt(false);
       throw new AuthenticationError('Conta desativada');
     }
 
     // Verificar se usuário está bloqueado
     if (user.blocked_at) {
       logger.warn(`Tentativa de login com usuário bloqueado: ${email}`);
+      // Registrar falha no monitoramento de saúde
+      authHealthService.recordLoginAttempt(false);
       throw new AuthenticationError('Conta bloqueada. Entre em contato com o administrador.');
     }
 
@@ -89,6 +96,8 @@ router.post('/login',
     const isPasswordValid = await user.verifyPassword(password);
     if (!isPasswordValid) {
       logger.warn(`Tentativa de login com senha incorreta: ${email}`);
+      // Registrar falha no monitoramento de saúde
+      authHealthService.recordLoginAttempt(false);
       throw new AuthenticationError('Credenciais inválidas');
     }
 
@@ -103,6 +112,9 @@ router.post('/login',
     // Aqui você pode implementar uma tabela de refresh tokens se necessário
 
     logger.info(`Login realizado com sucesso: ${email}`);
+
+    // Registrar sucesso no monitoramento de saúde
+    authHealthService.recordLoginAttempt(true);
 
     res.json({
       message: 'Login realizado com sucesso',
@@ -271,25 +283,87 @@ router.post('/refresh',
   }),
   asyncHandler(async (req, res) => {
     const { refreshToken } = req.validatedData;
+    const requestId = Math.random().toString(36).substr(2, 9);
+    const startTime = Date.now();
+    const clientIP = req.ip || req.connection.remoteAddress;
+
+    logger.info(`[${requestId}] 🔄 Token refresh request`, {
+      ip: clientIP,
+      userAgent: req.headers['user-agent'],
+      timestamp: new Date().toISOString()
+    });
 
     try {
       // Verificar refresh token
       const decoded = verifyRefreshToken(refreshToken);
       
+      logger.debug(`[${requestId}] ✅ Refresh token decoded`, {
+        userId: decoded.userId,
+        type: decoded.type,
+        exp: new Date(decoded.exp * 1000).toISOString()
+      });
+      
       if (decoded.type !== 'refresh') {
+        logger.warn(`[${requestId}] ❌ Invalid token type`, {
+          expectedType: 'refresh',
+          actualType: decoded.type,
+          userId: decoded.userId
+        });
+        // Registrar falha no monitoramento de saúde
+        authHealthService.recordTokenRefresh(false);
         throw new AuthenticationError('Token inválido');
       }
 
       // Buscar usuário
       const user = await User.findById(decoded.userId);
-      if (!user || !user.active || user.blocked_at) {
+      
+      if (!user) {
+        logger.warn(`[${requestId}] ❌ User not found`, {
+          userId: decoded.userId,
+          ip: clientIP
+        });
+        // Registrar falha no monitoramento de saúde
+        authHealthService.recordTokenRefresh(false);
+        throw new AuthenticationError('Usuário inválido');
+      }
+      
+      if (!user.active) {
+        logger.warn(`[${requestId}] ❌ Inactive user refresh attempt`, {
+          userId: user.id,
+          email: user.email,
+          ip: clientIP
+        });
+        // Registrar falha no monitoramento de saúde
+        authHealthService.recordTokenRefresh(false);
+        throw new AuthenticationError('Usuário inválido');
+      }
+      
+      if (user.blocked_at) {
+        logger.warn(`[${requestId}] ❌ Blocked user refresh attempt`, {
+          userId: user.id,
+          email: user.email,
+          blockedAt: user.blocked_at,
+          ip: clientIP
+        });
+        // Registrar falha no monitoramento de saúde
+        authHealthService.recordTokenRefresh(false);
         throw new AuthenticationError('Usuário inválido');
       }
 
       // Gerar novo access token
       const accessToken = generateToken(user.id, user.email, user.role);
+      const duration = Date.now() - startTime;
 
-      logger.debug(`Token renovado para usuário: ${user.email}`);
+      logger.info(`[${requestId}] ✅ Token refresh successful (${duration}ms)`, {
+        userId: user.id,
+        email: user.email,
+        role: user.role,
+        ip: clientIP,
+        duration: `${duration}ms`
+      });
+
+      // Registrar sucesso no monitoramento de saúde
+      authHealthService.recordTokenRefresh(true);
 
       res.json({
         message: 'Token renovado com sucesso',
@@ -299,7 +373,19 @@ router.post('/refresh',
         }
       });
     } catch (error) {
-      logger.warn('Tentativa de renovação com refresh token inválido');
+      const duration = Date.now() - startTime;
+      
+      logger.error(`[${requestId}] ❌ Token refresh failed (${duration}ms)`, {
+        error: error.message,
+        name: error.name,
+        ip: clientIP,
+        duration: `${duration}ms`,
+        stack: error.stack
+      });
+      
+      // Registrar erro no monitoramento de saúde
+      authHealthService.recordTokenRefresh(false, error);
+      
       throw new AuthenticationError('Refresh token inválido');
     }
   })

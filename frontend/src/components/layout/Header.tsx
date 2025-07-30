@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Menu, Bell, Search, LogOut, User, Settings } from 'lucide-react';
+import { Menu, Search, LogOut, User, Settings } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 
@@ -76,13 +76,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
 
           {/* Right side */}
           <div className="flex items-center space-x-4">
-            {/* Notifications */}
-            <button className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg relative">
-              <Bell className="h-6 w-6" />
-              {/* Notification badge */}
-              <span className="absolute top-1 right-1 h-2 w-2 bg-red-500 rounded-full"></span>
-            </button>
-
             {/* User menu */}
             <div className="relative">
               <button

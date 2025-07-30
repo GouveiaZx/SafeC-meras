@@ -102,7 +102,7 @@ const RecordingsPage: React.FC = () => {
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [dateRange, setDateRange] = useState({ start: '', end: '' });
-  const [autoRefresh, setAutoRefresh] = useState(true);
+
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
   // Dados de tendência de upload carregados da API
@@ -199,17 +199,7 @@ const RecordingsPage: React.FC = () => {
     handleRefresh();
   }, [selectedCamera, selectedStatus, searchTerm, dateRange, handleRefresh]);
 
-  useEffect(() => {
-    if (!autoRefresh) return;
 
-    const interval = setInterval(() => {
-      fetchRecordings();
-      fetchStats();
-      fetchUploadTrends();
-    }, 5000);
-
-    return () => clearInterval(interval);
-  }, [autoRefresh, selectedCamera, selectedStatus, searchTerm, dateRange, fetchRecordings, fetchStats, fetchUploadTrends]);
 
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return '0 B';
@@ -276,14 +266,6 @@ const RecordingsPage: React.FC = () => {
           </p>
         </div>
         <div className="flex items-center space-x-4">
-          <Button
-            onClick={() => setAutoRefresh(!autoRefresh)}
-            variant={autoRefresh ? 'default' : 'outline'}
-            size="sm"
-          >
-            <RefreshCw className="w-4 h-4 mr-2" />
-            Auto-refresh
-          </Button>
           <Button onClick={handleRefresh} variant="outline" size="sm" disabled={loading}>
             <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
             Atualizar
@@ -543,7 +525,6 @@ const RecordingsPage: React.FC = () => {
         {lastUpdate && (
           <p>
             Última atualização: {lastUpdate.toLocaleTimeString('pt-BR')}
-            {autoRefresh && ' • Atualizando automaticamente a cada 5 segundos'}
           </p>
         )}
       </div>

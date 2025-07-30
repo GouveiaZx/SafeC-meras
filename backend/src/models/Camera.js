@@ -37,6 +37,7 @@ class Camera {
     this.status = data.status || 'online';
     this.is_streaming = data.is_streaming || false;
     this.is_recording = data.is_recording || false;
+    this.recording_enabled = data.recording_enabled || false;
     this.location = data.location;
     this.resolution = data.resolution || '1920x1080';
     this.fps = data.fps || 30;
@@ -55,7 +56,6 @@ class Camera {
     this.brand = data.brand;
     this.model = data.model;
     this.zone = data.zone;
-    this.recording_enabled = data.recording_enabled || false;
     this.motion_detection = data.motion_detection || false;
     this.audio_enabled = data.audio_enabled || false;
     this.ptz_enabled = data.ptz_enabled || false;
@@ -444,12 +444,17 @@ class Camera {
             rtmp_url: this.rtmp_url,
             hls_url: this.hls_url,
             status: this.status,
-            is_streaming: this.is_streaming,
-            is_recording: this.is_recording,
+            recording_enabled: this.recording_enabled,
+            motion_detection: this.motion_detection,
+            audio_enabled: this.audio_enabled,
+            ptz_enabled: this.ptz_enabled,
+            night_vision: this.night_vision,
+            quality: this.quality_profile, // Mapear quality_profile para quality
             location: this.location,
+            zone: this.zone,
             resolution: this.resolution,
             fps: this.fps,
-            // bitrate: this.bitrate, // Campo removido - não existe na tabela
+            active: this.active,
             updated_at: this.updated_at
           })
           .eq('id', this.id)
@@ -476,7 +481,7 @@ class Camera {
           name: this.name,
           rtsp_url: this.rtsp_url,
           rtmp_url: this.rtmp_url,
-          status: this.status || 'connecting',
+          status: this.status || 'offline',
           location: this.location
         };
         

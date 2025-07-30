@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback, useRef } from 'react';
 import { api, endpoints } from '@/lib/api';
+import { useAuthNotifications } from '@/hooks/useAuthNotifications';
 
 interface User {
   id: string;
@@ -13,12 +14,15 @@ interface User {
 interface AuthContextType {
   user: User | null;
   token: string | null;
+  refreshToken: string | null;
   isLoading: boolean;
   isAuthenticated: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (userData: RegisterData) => Promise<void>;
   logout: () => void;
   updateUser: (userData: Partial<User>) => void;
+  refreshAuthToken: () => Promise<boolean>;
+  isTokenExpired: () => boolean;
 }
 
 interface RegisterData {
@@ -35,54 +39,184 @@ interface AuthProviderProps {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(null);
-  const [token, setToken] = useState<string | null>(null);
+  const authNotifications = useAuthNotifications();
+  
+  // Initialize state with localStorage data immediately to prevent UI flicker
+  const getInitialState = () => {
+    try {
+      const storedToken = localStorage.getItem('token');
+      const storedRefreshToken = localStorage.getItem('refreshToken');
+      const storedUser = localStorage.getItem('user');
+      
+      // Limpar tokens inválidos do localStorage
+      const cleanToken = storedToken === 'undefined' || storedToken === 'null' || !storedToken ? null : storedToken;
+      const cleanRefreshToken = storedRefreshToken === 'undefined' || storedRefreshToken === 'null' || !storedRefreshToken ? null : storedRefreshToken;
+      const cleanUser = storedUser === 'undefined' || storedUser === 'null' || !storedUser ? null : storedUser;
+      
+      if (cleanToken && cleanUser) {
+        return {
+          token: cleanToken,
+          refreshToken: cleanRefreshToken,
+          user: JSON.parse(cleanUser)
+        };
+      }
+    } catch (error) {
+      console.error('Error reading from localStorage:', error);
+    }
+    return { token: null, refreshToken: null, user: null };
+  };
+
+  const initialState = getInitialState();
+  const [user, setUser] = useState<User | null>(initialState.user);
+  const [token, setToken] = useState<string | null>(initialState.token);
+  const [refreshToken, setRefreshToken] = useState<string | null>(initialState.refreshToken);
   const [isLoading, setIsLoading] = useState(true);
+  const refreshTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Initialize auth state from localStorage
+  // Função para verificar se o token está expirado
+  const isTokenExpired = useCallback((): boolean => {
+    if (!token) return true;
+    
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]));
+      const currentTime = Math.floor(Date.now() / 1000);
+      const bufferTime = 300; // 5 minutos de buffer
+      
+      return payload.exp <= (currentTime + bufferTime);
+    } catch (error) {
+      console.error('Erro ao verificar expiração do token:', error);
+      return true;
+    }
+  }, [token]);
+
+  // Função para refresh do token
+  const refreshAuthToken = useCallback(async (): Promise<boolean> => {
+    if (!refreshToken) {
+      console.log('🔄 Sem refresh token disponível');
+      return false;
+    }
+
+    try {
+      console.log('🔄 Tentando refresh do token...');
+      const response = await api.post<{ tokens: { accessToken: string } }>(endpoints.auth.refresh(), {
+        refreshToken
+      });
+
+      const newToken = response.tokens.accessToken;
+      setToken(newToken);
+      localStorage.setItem('token', newToken);
+      
+      console.log('✅ Token refreshed com sucesso');
+      authNotifications.showTokenRefreshSuccess();
+      scheduleTokenRefresh(newToken);
+      return true;
+    } catch (error: any) {
+      console.error('❌ Erro ao fazer refresh do token:', error);
+      
+      const errorMessage = error.response?.data?.message || error.message || 'Erro na renovação do token';
+      authNotifications.showTokenRefreshError(errorMessage);
+      
+      logout();
+      return false;
+    }
+  }, [refreshToken]);
+
+  // Função para agendar o próximo refresh
+  const scheduleTokenRefresh = useCallback((currentToken: string) => {
+    if (refreshTimeoutRef.current) {
+      clearTimeout(refreshTimeoutRef.current);
+    }
+
+    try {
+      const payload = JSON.parse(atob(currentToken.split('.')[1]));
+      const currentTime = Math.floor(Date.now() / 1000);
+      const expirationTime = payload.exp;
+      const refreshTime = expirationTime - 600; // 10 minutos antes da expiração
+      const timeUntilRefresh = (refreshTime - currentTime) * 1000;
+
+      if (timeUntilRefresh > 0) {
+        console.log(`⏰ Próximo refresh agendado em ${Math.floor(timeUntilRefresh / 1000 / 60)} minutos`);
+        refreshTimeoutRef.current = setTimeout(() => {
+          refreshAuthToken();
+        }, timeUntilRefresh);
+      } else {
+        // Token já está próximo da expiração, fazer refresh imediatamente
+        console.log('⚡ Token próximo da expiração, fazendo refresh imediato');
+        refreshAuthToken();
+      }
+    } catch (error) {
+      console.error('Erro ao agendar refresh:', error);
+    }
+  }, [refreshAuthToken]);
+
+  // Verify token validity after initial load
   useEffect(() => {
-    const initializeAuth = async () => {
+    const verifyAuth = async () => {
       try {
-        const storedToken = localStorage.getItem('token');
-        const storedUser = localStorage.getItem('user');
-        
-        // Limpar tokens inválidos do localStorage
-        const cleanToken = storedToken === 'undefined' || storedToken === 'null' || !storedToken ? null : storedToken;
-        const cleanUser = storedUser === 'undefined' || storedUser === 'null' || !storedUser ? null : storedUser;
-        
-        console.log('AuthContext - Token do localStorage:', { storedToken, cleanToken });
+        if (token && user) {
+          // Verificar se o token está expirado
+          if (isTokenExpired()) {
+            console.log('🔄 Token expirado, tentando refresh...');
+            const refreshSuccess = await refreshAuthToken();
+            if (!refreshSuccess) {
+              setIsLoading(false);
+              return;
+            }
+          } else {
+            // Token ainda válido, agendar próximo refresh
+            scheduleTokenRefresh(token);
+          }
 
-        if (cleanToken && cleanUser) {
-          setToken(cleanToken);
-          setUser(JSON.parse(cleanUser));
-          
-          // Verify token is still valid
+          // Verify token is still valid with backend
           try {
             const response = await api.get<{ user: any }>(endpoints.auth.me());
-            setUser(response.user);
+            // Update user data if needed
+            const mappedUser = {
+              id: response.user.id,
+              name: response.user.name,
+              email: response.user.email,
+              userType: response.user.role?.toUpperCase() || 'CLIENT',
+              isActive: response.user.active,
+              createdAt: response.user.created_at
+            };
+            setUser(mappedUser);
+            localStorage.setItem('user', JSON.stringify(mappedUser));
           } catch (error) {
-            // Token is invalid, clear auth state
-            logout();
+            // Token is invalid, try refresh first
+            console.log('❌ Token inválido no backend, tentando refresh...');
+            const refreshSuccess = await refreshAuthToken();
+            if (!refreshSuccess) {
+              logout();
+            }
           }
         }
       } catch (error) {
-        console.error('Error initializing auth:', error);
-        logout();
+        console.error('Error verifying auth:', error);
       } finally {
         setIsLoading(false);
       }
     };
 
-    initializeAuth();
+    verifyAuth();
+  }, [isTokenExpired, refreshAuthToken, scheduleTokenRefresh]);
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (refreshTimeoutRef.current) {
+        clearTimeout(refreshTimeoutRef.current);
+      }
+    };
   }, []);
 
   const login = async (email: string, password: string): Promise<void> => {
     try {
       setIsLoading(true);
-      const response = await api.post<{ tokens: { accessToken: string }, user: any }>(endpoints.auth.login(), { email, password });
+      const response = await api.post<{ tokens: { accessToken: string; refreshToken: string }, user: any }>(endpoints.auth.login(), { email, password });
       
       const { tokens, user: userData } = response;
       const newToken = tokens.accessToken;
+      const newRefreshToken = tokens.refreshToken;
       
       // Map backend user data to frontend format
       const mappedUser = {
@@ -96,14 +230,23 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       
       // Store in state
       setToken(newToken);
+      setRefreshToken(newRefreshToken);
       setUser(mappedUser);
       
       // Store in localStorage
       localStorage.setItem('token', newToken);
+      localStorage.setItem('refreshToken', newRefreshToken);
       localStorage.setItem('user', JSON.stringify(mappedUser));
+      
+      // Show success notification
+      authNotifications.showLoginSuccess(mappedUser.name);
+      
+      // Agendar refresh automático
+      scheduleTokenRefresh(newToken);
       
     } catch (error: any) {
       const message = error.response?.data?.message || 'Erro ao fazer login';
+      authNotifications.showLoginError(message);
       throw new Error(message);
     } finally {
       setIsLoading(false);
@@ -124,8 +267,12 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       
       // Try public registration first
       await api.post(endpoints.auth.register(), backendData);
+      
+      // Show success notification
+      authNotifications.showRegistrationSuccess();
     } catch (error: any) {
       const message = error.response?.data?.message || 'Erro ao criar conta';
+      authNotifications.showRegistrationError(message);
       throw new Error(message);
     } finally {
       setIsLoading(false);
@@ -133,12 +280,23 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   };
 
   const logout = (): void => {
+    // Clear timeout
+    if (refreshTimeoutRef.current) {
+      clearTimeout(refreshTimeoutRef.current);
+      refreshTimeoutRef.current = null;
+    }
+    
+    // Show logout notification
+    authNotifications.showLogoutSuccess();
+    
     // Clear state
     setUser(null);
     setToken(null);
+    setRefreshToken(null);
     
     // Clear localStorage
     localStorage.removeItem('token');
+    localStorage.removeItem('refreshToken');
     localStorage.removeItem('user');
   };
 
@@ -153,12 +311,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const value: AuthContextType = {
     user,
     token,
+    refreshToken,
     isLoading,
     isAuthenticated: !!user && !!token,
     login,
     register,
     logout,
-    updateUser
+    updateUser,
+    refreshAuthToken,
+    isTokenExpired
   };
 
   return (

@@ -35,44 +35,105 @@ function isValidUUID(uuid) {
 const router = express.Router();
 const logger = createModuleLogger('StreamRoutes');
 
+// Aplicar autenticação a todas as rotas
+router.use(authenticateToken);
+
 /**
  * Middleware de autenticação para HLS (suporta query parameter)
- * Corrigido para usar o mesmo padrão do middleware principal
+ * Melhorado com tratamento CORS otimizado e logs detalhados
  */
 const authenticateHLS = async (req, res, next) => {
   try {
-    logger.debug(`authenticateHLS - Requisição recebida: ${req.method} ${req.path}`);
-    logger.debug(`authenticateHLS - Headers: ${JSON.stringify(req.headers)}`);
-    logger.debug(`authenticateHLS - Query: ${JSON.stringify(req.query)}`);
+    // Headers CORS primeiro (antes de qualquer validação)
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Range');
+    res.header('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
+    
+    // Handle preflight requests
+    if (req.method === 'OPTIONS') {
+      logger.debug('🔄 HLS CORS preflight request handled');
+      return res.status(200).end();
+    }
+    
+    logger.debug(`🚀 HLS Auth - ${req.method} ${req.path}`);
+    logger.debug(`🔍 HLS Auth - Origin: ${req.headers.origin || 'N/A'}`);
+    logger.debug(`🔍 HLS Auth - User-Agent: ${req.headers['user-agent']?.substring(0, 50) || 'N/A'}...`);
     
     let token = null;
+    let tokenSource = 'none';
     
-    // Tentar autenticação via header Authorization
+    // Múltiplas fontes de token (prioridade: header > query > x-auth-token)
     const authHeader = req.headers.authorization;
     if (authHeader && authHeader.startsWith('Bearer ')) {
       token = authHeader.substring(7);
-      logger.debug('authenticateHLS - Token encontrado no header Authorization');
+      tokenSource = 'header';
+      logger.debug('🔐 Token encontrado no header Authorization');
     }
     
-    // Tentar autenticação via query parameter se não encontrou no header
     if (!token && req.query.token) {
       token = req.query.token;
-      logger.debug('authenticateHLS - Token encontrado no query parameter');
+      tokenSource = 'query';
+      logger.debug('🔐 Token encontrado no query parameter');
+    }
+    
+    if (!token && req.headers['x-auth-token']) {
+      token = req.headers['x-auth-token'];
+      tokenSource = 'x-auth-token';
+      logger.debug('🔐 Token encontrado no header x-auth-token');
     }
     
     if (!token) {
-      logger.warn('authenticateHLS - Nenhum token fornecido');
+      logger.warn('❌ HLS Auth - Nenhum token fornecido');
       return res.status(401).json({
         error: 'Token de acesso requerido',
-        message: 'Você precisa estar logado para acessar este recurso'
+        message: 'Autenticação necessária para acessar stream HLS',
+        code: 'NO_TOKEN'
       });
     }
     
-    // Verificar token JWT
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    logger.debug(`authenticateHLS - Token decodificado para userId: ${decoded.userId}`);
+    // Validação básica do token
+    if (typeof token !== 'string' || token.length < 10) {
+      logger.warn('❌ HLS Auth - Token inválido (muito curto ou tipo incorreto)');
+      return res.status(401).json({
+        error: 'Token inválido',
+        message: 'Formato de token inválido',
+        code: 'INVALID_TOKEN_FORMAT'
+      });
+    }
     
-    // Buscar usuário no banco usando supabaseAdmin (mesmo padrão do middleware principal)
+    // Verificar token JWT com melhor error handling
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+      logger.debug(`✅ Token JWT válido para userId: ${decoded.userId} (fonte: ${tokenSource})`);
+    } catch (jwtError) {
+      logger.error('❌ Erro JWT:', jwtError.message);
+      
+      if (jwtError.name === 'TokenExpiredError') {
+        return res.status(401).json({
+          error: 'Token expirado',
+          message: 'Sua sessão expirou. Recarregue a página.',
+          code: 'TOKEN_EXPIRED'
+        });
+      }
+      
+      if (jwtError.name === 'JsonWebTokenError') {
+        return res.status(401).json({
+          error: 'Token malformado',
+          message: 'Token de acesso inválido',
+          code: 'MALFORMED_TOKEN'
+        });
+      }
+      
+      return res.status(401).json({
+        error: 'Token inválido',
+        message: 'Falha na verificação do token',
+        code: 'TOKEN_VERIFICATION_FAILED'
+      });
+    }
+    
+    // Buscar usuário no banco usando supabaseAdmin
     const { supabaseAdmin } = await import('../config/database.js');
     const { data: user, error } = await supabaseAdmin
       .from('users')
@@ -82,23 +143,25 @@ const authenticateHLS = async (req, res, next) => {
       .single();
     
     if (error || !user) {
-      logger.warn(`authenticateHLS - Usuário não encontrado ou inativo: ${decoded.userId}`);
+      logger.warn(`❌ Usuário não encontrado ou inativo: ${decoded.userId}`);
       return res.status(401).json({
-        error: 'Token inválido',
-        message: 'Sua sessão expirou. Faça login novamente.'
+        error: 'Usuário inválido',
+        message: 'Usuário não encontrado ou inativo',
+        code: 'USER_NOT_FOUND'
       });
     }
     
     // Verificar se o usuário não foi bloqueado
     if (user.blocked_at) {
-      logger.warn(`authenticateHLS - Usuário bloqueado: ${user.email}`);
+      logger.warn(`❌ Usuário bloqueado: ${user.email}`);
       return res.status(403).json({
         error: 'Usuário bloqueado',
-        message: 'Sua conta foi bloqueada. Entre em contato com o administrador.'
+        message: 'Sua conta foi bloqueada. Entre em contato com o administrador.',
+        code: 'USER_BLOCKED'
       });
     }
     
-    // Adicionar informações do usuário à requisição (mesmo formato do middleware principal)
+    // Adicionar informações do usuário à requisição
     req.user = {
       id: user.id,
       email: user.email,
@@ -108,35 +171,21 @@ const authenticateHLS = async (req, res, next) => {
       camera_access: user.camera_access || []
     };
     
-    // Configurar headers CORS específicos para streaming HLS
+    logger.debug(`✅ HLS autenticado: ${user.email} (${user.role}) via ${tokenSource}`);
+    next();
+    
+  } catch (error) {
+    logger.error('💥 Erro crítico no middleware HLS:', error);
+    
+    // Headers CORS mesmo em caso de erro
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Range');
-    res.header('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    
-    logger.debug(`authenticateHLS - Usuário autenticado: ${user.email}`);
-    next();
-  } catch (error) {
-    logger.error('authenticateHLS - Erro na autenticação:', error);
-    
-    if (error.name === 'JsonWebTokenError') {
-      return res.status(401).json({
-        error: 'Token malformado',
-        message: 'Token de acesso inválido'
-      });
-    }
-    
-    if (error.name === 'TokenExpiredError') {
-      return res.status(401).json({
-        error: 'Token expirado',
-        message: 'Sua sessão expirou. Faça login novamente.'
-      });
-    }
     
     return res.status(500).json({
       error: 'Erro interno',
-      message: 'Erro ao verificar autenticação'
+      message: 'Erro ao processar autenticação HLS',
+      code: 'INTERNAL_ERROR'
     });
   }
 };

@@ -15,7 +15,7 @@ class S3Service {
   constructor() {
     this.isConfigured = false;
     this.s3 = null;
-    this.bucketName = process.env.WASABI_BUCKET_NAME || 'newcam-recordings';
+    this.bucketName = process.env.WASABI_BUCKET || 'newcam-recordings';
     this.region = process.env.WASABI_REGION || 'us-east-1';
     
     this.init();
@@ -27,8 +27,8 @@ class S3Service {
   init() {
     try {
       // Verificar se as credenciais estão configuradas
-      const accessKeyId = process.env.WASABI_ACCESS_KEY_ID;
-      const secretAccessKey = process.env.WASABI_SECRET_ACCESS_KEY;
+      const accessKeyId = process.env.WASABI_ACCESS_KEY;
+      const secretAccessKey = process.env.WASABI_SECRET_KEY;
       const endpoint = process.env.WASABI_ENDPOINT || 'https://s3.wasabisys.com';
 
       if (!accessKeyId || !secretAccessKey || 

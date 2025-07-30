@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Shield, AlertTriangle, Eye, Lock, Users, Activity, Settings, Download, RefreshCw, Search, Filter, Clock, MapPin, Smartphone, Monitor, Globe } from 'lucide-react';
 import { toast } from 'sonner';
 import { api, endpoints } from '@/lib/api';
+import AuthHealthMonitor from '@/components/AuthHealthMonitor';
 
 interface SecurityEventsResponse {
   events: SecurityEvent[];
@@ -106,6 +107,7 @@ const Security: React.FC = () => {
   const tabs = [
     { id: 'overview', name: 'Visão Geral', icon: Shield },
     { id: 'events', name: 'Eventos', icon: Activity },
+    { id: 'health', name: 'Saúde Auth', icon: Shield },
     { id: 'sessions', name: 'Sessões', icon: Users },
     { id: 'settings', name: 'Configurações', icon: Settings }
   ];
@@ -401,6 +403,184 @@ const Security: React.FC = () => {
       
       {/* Eventos */}
       {activeTab === 'events' && (
+        <div className="space-y-6">
+          {/* Filtros */}
+          <div className="bg-white rounded-lg shadow-md p-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Buscar
+                </label>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <input
+                    type="text"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    placeholder="Buscar eventos..."
+                    className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  />
+                </div>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Severidade
+                </label>
+                <select
+                  value={selectedSeverity}
+                  onChange={(e) => setSelectedSeverity(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                >
+                  <option value="">Todas</option>
+                  <option value="low">Baixa</option>
+                  <option value="medium">Média</option>
+                  <option value="high">Alta</option>
+                  <option value="critical">Crítica</option>
+                </select>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Tipo
+                </label>
+                <select
+                  value={selectedType}
+                  onChange={(e) => setSelectedType(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                >
+                  <option value="">Todos</option>
+                  <option value="login_success">Login Sucesso</option>
+                  <option value="login_failed">Login Falhou</option>
+                  <option value="password_change">Alteração de Senha</option>
+                  <option value="permission_change">Alteração de Permissão</option>
+                  <option value="camera_access">Acesso à Câmera</option>
+                  <option value="system_config">Configuração do Sistema</option>
+                  <option value="data_export">Exportação de Dados</option>
+                  <option value="suspicious_activity">Atividade Suspeita</option>
+                </select>
+              </div>
+              
+              <div className="flex items-end space-x-2">
+                <button
+                  onClick={() => {
+                    setSearchTerm('');
+                    setSelectedSeverity('');
+                    setSelectedType('');
+                    setDateRange({ start: '', end: '' });
+                  }}
+                  className="flex items-center space-x-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+                >
+                  <Filter className="w-4 h-4" />
+                  <span>Limpar</span>
+                </button>
+                
+                <button
+                  onClick={handleExportEvents}
+                  className="flex items-center space-x-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Exportar</span>
+                </button>
+              </div>
+            </div>
+          </div>
+          
+          {/* Lista de eventos */}
+          <div className="bg-white rounded-lg shadow-md">
+            {events.length === 0 ? (
+              <div className="text-center py-8">
+                <Shield className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                <p className="text-gray-600">Nenhum evento encontrado</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Evento
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Usuário
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        IP / Localização
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Data
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {events.map((event) => {
+                      const Icon = typeIcons[event.type] || Activity;
+                      const DeviceIcon = getDeviceIcon(event.device_type);
+                      
+                      return (
+                        <tr key={event.id} className="hover:bg-gray-50">
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="flex items-center space-x-3">
+                              <Icon className="w-5 h-5 text-gray-500" />
+                              <div>
+                                <div className="flex items-center space-x-2">
+                                  <span className="text-sm font-medium text-gray-900">
+                                    {event.type === 'login_success' ? 'Login Sucesso' :
+                                     event.type === 'login_failed' ? 'Login Falhou' :
+                                     event.type === 'password_change' ? 'Alteração de Senha' :
+                                     event.type === 'permission_change' ? 'Alteração de Permissão' :
+                                     event.type === 'camera_access' ? 'Acesso à Câmera' :
+                                     event.type === 'system_config' ? 'Configuração do Sistema' :
+                                     event.type === 'data_export' ? 'Exportação de Dados' :
+                                     'Atividade Suspeita'}
+                                  </span>
+                                  <span className={`px-2 py-1 rounded-full text-xs font-medium ${severityColors[event.severity]}`}>
+                                    {event.severity === 'low' ? 'Baixa' :
+                                     event.severity === 'medium' ? 'Média' :
+                                     event.severity === 'high' ? 'Alta' : 'Crítica'}
+                                  </span>
+                                </div>
+                                <p className="text-sm text-gray-600">{event.description}</p>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="text-sm text-gray-900">{event.username || 'Sistema'}</div>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="flex items-center space-x-2">
+                              <DeviceIcon className="w-4 h-4 text-gray-500" />
+                              <div>
+                                <div className="text-sm text-gray-900 font-mono">{event.ip_address}</div>
+                                {event.location && (
+                                  <div className="text-xs text-gray-500">{event.location}</div>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="text-sm text-gray-900">
+                              {new Date(event.created_at).toLocaleString()}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      
+      {/* Saúde Auth */}
+      {activeTab === 'health' && (
+        <AuthHealthMonitor />
+      )}
+      
+      {/* Sessões */}
+      {activeTab === 'sessions' && (
         <div className="space-y-6">
           {/* Filtros */}
           <div className="bg-white rounded-lg shadow-md p-6">

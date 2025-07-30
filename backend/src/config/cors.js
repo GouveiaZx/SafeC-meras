@@ -17,6 +17,10 @@ const corsConfig = {
       'http://127.0.0.1:5174',
       'http://127.0.0.1:5175',
       'http://127.0.0.1:5176',
+      'http://66.94.104.241',
+      'http://66.94.104.241:80',
+      'http://66.94.104.241:3000',
+      'http://66.94.104.241:5173',
       process.env.FRONTEND_URL,
       process.env.DOMAIN
     ].filter(Boolean); // Remove valores undefined/null

@@ -13,6 +13,7 @@ interface CameraData {
   status: 'online' | 'offline' | 'error';
   location?: string;
   recording: boolean;
+  recording_enabled?: boolean;
   last_seen?: string;
 }
 
@@ -54,7 +55,10 @@ const Cameras: React.FC = () => {
     rtmp_url: '',
     location: '',
     stream_type: 'rtsp' as 'rtsp' | 'rtmp',
-    type: 'ip' // Campo obrigatório para validação do backend
+    type: 'ip', // Campo obrigatório para validação do backend
+    recording_enabled: false,
+    quality_profile: 'medium',
+    retention_days: 30
   });
   const [saving, setSaving] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -543,7 +547,10 @@ const Cameras: React.FC = () => {
       rtmp_url: '',
       location: 'Portaria Principal',
       stream_type: 'rtsp',
-      type: 'ip' // Campo obrigatório para validação do backend
+      type: 'ip', // Campo obrigatório para validação do backend
+      recording_enabled: false,
+      quality_profile: 'medium',
+      retention_days: 30
     });
   };
 
@@ -671,7 +678,10 @@ const Cameras: React.FC = () => {
         rtmp_url: '',
         location: '',
         stream_type: 'rtsp',
-        type: 'ip' // Campo obrigatório para validação do backend
+        type: 'ip', // Campo obrigatório para validação do backend
+        recording_enabled: false,
+        quality_profile: 'medium',
+        retention_days: 30
       });
       
       // Recarregar lista de câmeras
@@ -726,7 +736,10 @@ const Cameras: React.FC = () => {
       rtmp_url: '',
       location: '',
       stream_type: 'rtsp',
-      type: 'ip' // Campo obrigatório para validação do backend
+      type: 'ip', // Campo obrigatório para validação do backend
+      recording_enabled: false,
+      quality_profile: 'medium',
+      retention_days: 30
     });
   };
 
@@ -873,15 +886,24 @@ const Cameras: React.FC = () => {
                       </span>
                     </div>
 
-                    {/* Recording Indicator */}
-                    {camera.recording && (
-                      <div className="absolute top-3 right-3">
+                    {/* Recording Indicators */}
+                    <div className="absolute top-3 right-3 flex flex-col space-y-1">
+                      {/* Recording Enabled Indicator */}
+                      {camera.recording_enabled && (
+                        <div className="flex items-center bg-blue-600 text-white px-2 py-1 rounded-full text-xs">
+                          <div className="w-2 h-2 bg-white rounded-full mr-1"></div>
+                          GRAV
+                        </div>
+                      )}
+                      
+                      {/* Active Recording Indicator */}
+                      {camera.recording && (
                         <div className="flex items-center bg-red-600 text-white px-2 py-1 rounded-full text-xs">
                           <div className="w-2 h-2 bg-white rounded-full mr-1 animate-pulse"></div>
                           REC
                         </div>
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
 
                   {/* Camera Info */}
@@ -1163,6 +1185,74 @@ const Cameras: React.FC = () => {
                   />
                 </div>
                 
+                {/* Configurações de Gravação */}
+                <div className="border-t pt-4">
+                  <h3 className="text-sm font-medium text-gray-900 mb-3">Configurações de Gravação</h3>
+                  
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <label htmlFor="recording_enabled" className="block text-sm font-medium text-gray-700">
+                        Gravação Habilitada
+                      </label>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Ativar gravação automática para esta câmera
+                      </p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        id="recording_enabled"
+                        name="recording_enabled"
+                        checked={formData.recording_enabled || false}
+                        onChange={(e) => setFormData(prev => ({ ...prev, recording_enabled: e.target.checked }))}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-600"></div>
+                    </label>
+                  </div>
+                  
+                  {formData.recording_enabled && (
+                    <div className="mt-4 space-y-3">
+                      <div>
+                        <label htmlFor="quality_profile" className="block text-sm font-medium text-gray-700 mb-1">
+                          Qualidade de Gravação
+                        </label>
+                        <select
+                          id="quality_profile"
+                          name="quality_profile"
+                          value={formData.quality_profile || 'medium'}
+                          onChange={handleSelectChange}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                        >
+                          <option value="low">Baixa (720p)</option>
+                          <option value="medium">Média (1080p)</option>
+                          <option value="high">Alta (1440p)</option>
+                          <option value="ultra">Ultra (4K)</option>
+                        </select>
+                      </div>
+                      
+                      <div>
+                        <label htmlFor="retention_days" className="block text-sm font-medium text-gray-700 mb-1">
+                          Retenção (dias)
+                        </label>
+                        <input
+                          type="number"
+                          id="retention_days"
+                          name="retention_days"
+                          value={formData.retention_days || 30}
+                          onChange={handleInputChange}
+                          min="1"
+                          max="365"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                          placeholder="30"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">
+                          Número de dias para manter as gravações
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
 
               </div>
               
@@ -1261,6 +1351,75 @@ const Cameras: React.FC = () => {
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                     placeholder="Ex: Portaria Principal"
                   />
+                </div>
+                
+                {/* Configurações de Gravação */}
+                <div className="border-t pt-4">
+                  <h3 className="text-sm font-medium text-gray-900 mb-3">Configurações de Gravação</h3>
+                  
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <label htmlFor="edit-recording_enabled" className="block text-sm font-medium text-gray-700">
+                        Gravação Habilitada
+                      </label>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Ativar gravação automática para esta câmera
+                      </p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        id="edit-recording_enabled"
+                        name="recording_enabled"
+                        checked={formData.recording_enabled || false}
+                        onChange={(e) => setFormData(prev => ({ ...prev, recording_enabled: e.target.checked }))}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-600"></div>
+                    </label>
+                  </div>
+                  
+                  {formData.recording_enabled && (
+                    <div className="mt-4 space-y-3">
+                      <div>
+                        <label htmlFor="edit-quality_profile" className="block text-sm font-medium text-gray-700 mb-1">
+                          Qualidade de Gravação
+                        </label>
+                        <select
+                          id="edit-quality_profile"
+                          name="quality_profile"
+                          value={formData.quality_profile || 'medium'}
+                          onChange={handleSelectChange}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                        >
+                          <option value="low">Baixa (720p)</option>
+                          <option value="medium">Média (1080p)</option>
+                          <option value="high">Alta (1440p)</option>
+                          <option value="ultra">Ultra (4K)</option>
+                        </select>
+                      </div>
+                      
+                      <div>
+                        <label htmlFor="edit-retention_days" className="block text-sm font-medium text-gray-700 mb-1">
+                          Retenção (dias)
+                        </label>
+                        <input
+                          type="number"
+                          id="edit-retention_days"
+                          name="retention_days"
+                          value={formData.retention_days || 30}
+                          onChange={handleInputChange}
+                          min="1"
+                          max="365"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                          placeholder="30"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">
+                          Número de dias para manter as gravações
+                        </p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
               

@@ -8,6 +8,8 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "build": "echo 'No build step required for Node.js'",
+    "init": "node src/scripts/initializeServices.js",
+    "start:prod": "npm run init && npm start",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
@@ -16,7 +18,9 @@
     "format": "prettier --write src/**/*.js",
     "migrate": "node src/database/migrate.js",
     "seed": "node src/database/seed.js",
-    "db:reset": "npm run migrate && npm run seed"
+    "db:reset": "npm run migrate && npm run seed",
+    "services:check": "node src/scripts/initializeServices.js --check-only",
+    "cleanup": "node src/scripts/cleanup.js"
   },
   "keywords": [
     "surveillance",

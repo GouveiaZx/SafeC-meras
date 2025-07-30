@@ -43,17 +43,17 @@ async function startCameraStreaming() {
       try {
         console.log(`\n🎬 Processando câmera: ${camera.name}`);
         
-        // Atualizar status para 'connecting'
+        // Atualizar status para 'offline'
         await supabaseAdmin
           .from('cameras')
           .update({ 
-            status: 'connecting',
+            status: 'offline',
             last_seen: new Date().toISOString(),
             updated_at: new Date().toISOString()
           })
           .eq('id', camera.id);
         
-        console.log(`  📡 Status atualizado para 'connecting'`);
+        console.log(`  📡 Status atualizado para 'offline'`);
         
         // Tentar iniciar stream
         try {

@@ -6,29 +6,56 @@
 import jwt from 'jsonwebtoken';
 import { supabaseAdmin, supabase } from '../config/database.js';
 import { createModuleLogger } from '../config/logger.js';
+import authHealthService from '../services/AuthHealthService.js';
 
 const logger = createModuleLogger('Auth');
 
 // Middleware principal de autenticação
 const authenticateToken = async (req, res, next) => {
+  const startTime = Date.now();
+  const requestId = Math.random().toString(36).substr(2, 9);
+  
   try {
-    console.log('🔍 [AUTH DEBUG] Requisição recebida:', req.method, req.path);
-    console.log('🔍 [AUTH DEBUG] Headers:', JSON.stringify(req.headers, null, 2));
-    logger.debug(`authenticateToken - Requisição recebida: ${req.method} ${req.path}`);
-    logger.debug(`authenticateToken - Headers: ${JSON.stringify(req.headers)}`);
+    logger.info(`[${requestId}] 🔍 Auth Request: ${req.method} ${req.path}`, {
+      method: req.method,
+      path: req.path,
+      userAgent: req.headers['user-agent'],
+      ip: req.ip || req.connection.remoteAddress,
+      timestamp: new Date().toISOString()
+    });
     
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
     
     if (!token) {
+      logger.warn(`[${requestId}] ❌ Missing token: ${req.method} ${req.path}`, {
+        ip: req.ip,
+        userAgent: req.headers['user-agent']
+      });
+      
+      // Registrar erro no monitoramento de saúde
+      authHealthService.recordAuthError('NO_TOKEN', {
+        path: req.path,
+        method: req.method,
+        ip: req.ip
+      });
       return res.status(401).json({
         error: 'Token de acesso requerido',
         message: 'Você precisa estar logado para acessar este recurso'
       });
     }
     
+    logger.debug(`[${requestId}] 🔑 Token received, verifying...`);
+    
     // Verificar token JWT
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    
+    logger.debug(`[${requestId}] ✅ Token decoded successfully`, {
+      userId: decoded.userId,
+      email: decoded.email,
+      role: decoded.role,
+      exp: new Date(decoded.exp * 1000).toISOString()
+    });
     
     // Buscar usuário no banco de dados
     const { data: user, error } = await supabaseAdmin
@@ -39,7 +66,20 @@ const authenticateToken = async (req, res, next) => {
       .single();
     
     if (error || !user) {
-      logger.warn(`Tentativa de acesso com token inválido: ${decoded.userId}`);
+      logger.warn(`[${requestId}] ❌ Invalid user or token`, {
+        userId: decoded.userId,
+        error: error?.message,
+        userFound: !!user,
+        userActive: user?.active
+      });
+      
+      // Registrar erro no monitoramento de saúde
+      authHealthService.recordAuthError('INVALID_USER', {
+        userId: decoded.userId,
+        userFound: !!user,
+        userActive: user?.active,
+        userBlocked: !!user?.blocked_at
+      });
       return res.status(401).json({
         error: 'Token inválido',
         message: 'Sua sessão expirou. Faça login novamente.'
@@ -48,6 +88,11 @@ const authenticateToken = async (req, res, next) => {
     
     // Verificar se o usuário não foi bloqueado
     if (user.blocked_at) {
+      logger.warn(`[${requestId}] 🚫 Blocked user access attempt`, {
+        userId: user.id,
+        email: user.email,
+        blockedAt: user.blocked_at
+      });
       logger.warn(`Usuário bloqueado tentou acessar: ${user.email}`);
       return res.status(403).json({
         error: 'Usuário bloqueado',
@@ -67,16 +112,43 @@ const authenticateToken = async (req, res, next) => {
       email: user.email,
       name: user.name,
       role: user.role,
+      userType: user.role?.toUpperCase() || 'CLIENT',
       permissions: user.permissions || [],
-      camera_access: user.camera_access || []
+      camera_access: user.camera_access || [],
+      active: user.active,
+      created_at: user.created_at
     };
     
     // Adicionar cliente Supabase à requisição
     req.supabase = supabase;
     
-    logger.debug(`Usuário autenticado: ${user.email}`);
+    const duration = Date.now() - startTime;
+    logger.info(`[${requestId}] ✅ Auth Success: ${user.email} (${user.role})`, {
+      userId: user.id,
+      email: user.email,
+      role: user.role,
+      duration: `${duration}ms`,
+      path: req.path
+    });
+    
     next();
   } catch (error) {
+    const duration = Date.now() - startTime;
+    logger.error(`[${requestId}] ❌ Auth Error (${duration}ms):`, {
+      error: error.message,
+      name: error.name,
+      stack: error.stack,
+      path: req.path,
+      ip: req.ip
+    });
+    
+    // Registrar erro no monitoramento de saúde
+    authHealthService.recordAuthError('TOKEN_VERIFICATION_ERROR', {
+      errorMessage: error.message,
+      path: req.path,
+      method: req.method
+    });
+    
     if (error.name === 'JsonWebTokenError') {
       return res.status(401).json({
         error: 'Token malformado',
@@ -91,7 +163,6 @@ const authenticateToken = async (req, res, next) => {
       });
     }
     
-    logger.error('Erro na autenticação:', error);
     return res.status(500).json({
       error: 'Erro interno',
       message: 'Erro ao verificar autenticação'

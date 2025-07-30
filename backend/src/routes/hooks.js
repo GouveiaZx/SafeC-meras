@@ -264,6 +264,117 @@ router.post('/on_server_started', async (req, res) => {
 });
 
 /**
+ * Hook: on_record_mp4
+ * Chamado quando uma gravação MP4 é concluída
+ */
+router.post('/on_record_mp4', async (req, res) => {
+  try {
+    const {
+      start_time,
+      file_size,
+      time_len,
+      file_path,
+      file_name,
+      folder,
+      url,
+      app,
+      stream
+    } = req.body;
+
+    logger.info('Hook on_record_mp4 recebido:', {
+      file_name,
+      file_size,
+      duration: time_len,
+      file_path,
+      stream
+    });
+
+    // Extrair camera_id do stream
+    const streamParts = stream.split('_');
+    const cameraId = streamParts[0];
+
+    if (cameraId) {
+      // Importar serviço de gravação
+      const { default: RecordingService } = await import('../services/RecordingService.js');
+      
+      // Processar gravação concluída
+      await RecordingService.processCompletedRecording({
+        cameraId,
+        fileName: file_name,
+        filePath: file_path,
+        fileSize: file_size,
+        duration: time_len,
+        startTime: new Date(start_time * 1000).toISOString(),
+        streamName: stream
+      });
+
+      logger.info(`Gravação MP4 processada para câmera ${cameraId}: ${file_name}`);
+    }
+
+    res.json({ code: 0, msg: 'success' });
+  } catch (error) {
+    logger.error('Erro no hook on_record_mp4:', error);
+    res.status(500).json({ code: -1, msg: error.message });
+  }
+});
+
+/**
+ * Hook: on_record_ts
+ * Chamado quando uma gravação HLS (TS) é concluída
+ */
+router.post('/on_record_ts', async (req, res) => {
+  try {
+    const {
+      start_time,
+      file_size,
+      time_len,
+      file_path,
+      file_name,
+      folder,
+      url,
+      app,
+      stream
+    } = req.body;
+
+    logger.info('Hook on_record_ts recebido:', {
+      file_name,
+      file_size,
+      duration: time_len,
+      file_path,
+      stream
+    });
+
+    // Extrair camera_id do stream
+    const streamParts = stream.split('_');
+    const cameraId = streamParts[0];
+
+    if (cameraId) {
+      // Importar serviço de gravação
+      const { default: RecordingService } = await import('../services/RecordingService.js');
+      
+      // Processar gravação HLS concluída
+      await RecordingService.processCompletedRecording({
+        cameraId,
+        fileName: file_name,
+        filePath: file_path,
+        fileSize: file_size,
+        duration: time_len,
+        startTime: new Date(start_time * 1000).toISOString(),
+        streamName: stream,
+        format: 'hls'
+      });
+
+      logger.info(`Gravação HLS processada para câmera ${cameraId}: ${file_name}`);
+    }
+
+    res.json({ code: 0, msg: 'success' });
+  } catch (error) {
+    logger.error('Erro no hook on_record_ts:', error);
+    res.status(500).json({ code: -1, msg: error.message });
+  }
+});
+
+/**
  * Endpoint de status dos hooks
  */
 router.get('/status', (req, res) => {
@@ -275,7 +386,9 @@ router.get('/status', (req, res) => {
       'on_stream_changed',
       'on_stream_not_found',
       'on_stream_none_reader',
-      'on_server_started'
+      'on_server_started',
+      'on_record_mp4',
+      'on_record_ts'
     ],
     timestamp: new Date().toISOString()
   });
