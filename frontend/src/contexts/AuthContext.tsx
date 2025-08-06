@@ -18,19 +18,13 @@ interface AuthContextType {
   isLoading: boolean;
   isAuthenticated: boolean;
   login: (email: string, password: string) => Promise<void>;
-  register: (userData: RegisterData) => Promise<void>;
   logout: () => void;
   updateUser: (userData: Partial<User>) => void;
   refreshAuthToken: () => Promise<boolean>;
   isTokenExpired: () => boolean;
 }
 
-interface RegisterData {
-  name: string;
-  email: string;
-  password: string;
-  userType: 'ADMIN' | 'INTEGRATOR' | 'CLIENT';
-}
+
 
 interface AuthProviderProps {
   children: ReactNode;
@@ -253,31 +247,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   };
 
-  const register = async (userData: RegisterData): Promise<void> => {
-    try {
-      setIsLoading(true);
-      
-      // Map frontend data to backend format
-      const backendData = {
-        name: userData.name,
-        email: userData.email,
-        password: userData.password,
-        userType: userData.userType
-      };
-      
-      // Try public registration first
-      await api.post(endpoints.auth.register(), backendData);
-      
-      // Show success notification
-      authNotifications.showRegistrationSuccess();
-    } catch (error: any) {
-      const message = error.response?.data?.message || 'Erro ao criar conta';
-      authNotifications.showRegistrationError(message);
-      throw new Error(message);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+
 
   const logout = (): void => {
     // Clear timeout
@@ -315,7 +285,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     isLoading,
     isAuthenticated: !!user && !!token,
     login,
-    register,
     logout,
     updateUser,
     refreshAuthToken,

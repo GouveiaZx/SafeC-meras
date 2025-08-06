@@ -1,0 +1,4 @@
+#!/bin/bash
+# Wrapper script para ocultar o nome do processo ZLMediaKit-probe
+# Executa zlmediakit-probe com todos os argumentos passados
+exec -a zlmediakit-probe zlmediakit-probe "$@"

@@ -63,68 +63,90 @@ router.post('/login',
   authSlowDown,
   createValidationSchema(validationSchemas.login),
   asyncHandler(async (req, res) => {
-    const { email, password } = req.validatedData;
+    try {
+      const { email, password } = req.validatedData;
 
-    logger.info(`Tentativa de login para: ${email}`);
+      logger.info(`[LOGIN DEBUG] Tentativa de login para: ${email}`);
 
-    // Buscar usuário por email
-    const user = await User.findByEmail(email);
-    if (!user) {
-      logger.warn(`Tentativa de login com email inexistente: ${email}`);
-      // Registrar falha no monitoramento de saúde
-      authHealthService.recordLoginAttempt(false);
-      throw new AuthenticationError('Credenciais inválidas');
-    }
-
-    // Verificar se usuário está ativo
-    if (!user.active) {
-      logger.warn(`Tentativa de login com usuário inativo: ${email}`);
-      // Registrar falha no monitoramento de saúde
-      authHealthService.recordLoginAttempt(false);
-      throw new AuthenticationError('Conta desativada');
-    }
-
-    // Verificar se usuário está bloqueado
-    if (user.blocked_at) {
-      logger.warn(`Tentativa de login com usuário bloqueado: ${email}`);
-      // Registrar falha no monitoramento de saúde
-      authHealthService.recordLoginAttempt(false);
-      throw new AuthenticationError('Conta bloqueada. Entre em contato com o administrador.');
-    }
-
-    // Verificar senha
-    const isPasswordValid = await user.verifyPassword(password);
-    if (!isPasswordValid) {
-      logger.warn(`Tentativa de login com senha incorreta: ${email}`);
-      // Registrar falha no monitoramento de saúde
-      authHealthService.recordLoginAttempt(false);
-      throw new AuthenticationError('Credenciais inválidas');
-    }
-
-    // Atualizar último login
-    await user.updateLastLogin();
-
-    // Gerar tokens
-    const accessToken = generateToken(user.id, user.email, user.role);
-    const refreshToken = generateRefreshToken(user.id);
-
-    // Salvar refresh token no banco (opcional - para invalidação)
-    // Aqui você pode implementar uma tabela de refresh tokens se necessário
-
-    logger.info(`Login realizado com sucesso: ${email}`);
-
-    // Registrar sucesso no monitoramento de saúde
-    authHealthService.recordLoginAttempt(true);
-
-    res.json({
-      message: 'Login realizado com sucesso',
-      user: user.toJSON(),
-      tokens: {
-        accessToken,
-        refreshToken,
-        expiresIn: process.env.JWT_EXPIRES_IN || '24h'
+      // Buscar usuário por email
+      logger.info(`[LOGIN DEBUG] Buscando usuário por email...`);
+      const user = await User.findByEmail(email);
+      if (!user) {
+        logger.warn(`Tentativa de login com email inexistente: ${email}`);
+        // Registrar falha no monitoramento de saúde
+        authHealthService.recordLoginAttempt(false);
+        throw new AuthenticationError('Credenciais inválidas');
       }
-    });
+      logger.info(`[LOGIN DEBUG] Usuário encontrado: ${user.id}`);
+
+      // Verificar se usuário está ativo
+      logger.info(`[LOGIN DEBUG] Verificando se usuário está ativo...`);
+      if (!user.active) {
+        logger.warn(`Tentativa de login com usuário inativo: ${email}`);
+        // Registrar falha no monitoramento de saúde
+        authHealthService.recordLoginAttempt(false);
+        throw new AuthenticationError('Conta desativada');
+      }
+      logger.info(`[LOGIN DEBUG] Usuário está ativo`);
+
+      // Verificar se usuário está bloqueado
+      logger.info(`[LOGIN DEBUG] Verificando se usuário está bloqueado...`);
+      if (user.blocked_at) {
+        logger.warn(`Tentativa de login com usuário bloqueado: ${email}`);
+        // Registrar falha no monitoramento de saúde
+        authHealthService.recordLoginAttempt(false);
+        throw new AuthenticationError('Conta bloqueada. Entre em contato com o administrador.');
+      }
+      logger.info(`[LOGIN DEBUG] Usuário não está bloqueado`);
+
+      // Verificar senha
+      logger.info(`[LOGIN DEBUG] Verificando senha...`);
+      const isPasswordValid = await user.verifyPassword(password);
+      logger.info(`[LOGIN DEBUG] Resultado verificação senha: ${isPasswordValid}`);
+      if (!isPasswordValid) {
+        logger.warn(`Tentativa de login com senha incorreta: ${email}`);
+        // Registrar falha no monitoramento de saúde
+        authHealthService.recordLoginAttempt(false);
+        throw new AuthenticationError('Credenciais inválidas');
+      }
+
+      // Atualizar último login
+      logger.info(`[LOGIN DEBUG] Atualizando último login...`);
+      await user.updateLastLogin();
+
+      // Gerar tokens
+      logger.info(`[LOGIN DEBUG] Gerando tokens...`);
+      const accessToken = generateToken(user.id, user.email, user.role);
+      const refreshToken = generateRefreshToken(user.id);
+      logger.info(`[LOGIN DEBUG] Tokens gerados com sucesso`);
+
+      // Salvar refresh token no banco (opcional - para invalidação)
+      // Aqui você pode implementar uma tabela de refresh tokens se necessário
+
+      logger.info(`Login realizado com sucesso: ${email}`);
+
+      // Registrar sucesso no monitoramento de saúde
+      authHealthService.recordLoginAttempt(true);
+
+      logger.info(`[LOGIN DEBUG] Enviando resposta...`);
+      res.json({
+        message: 'Login realizado com sucesso',
+        user: user.toJSON(),
+        tokens: {
+          accessToken,
+          refreshToken,
+          expiresIn: process.env.JWT_EXPIRES_IN || '24h'
+        }
+      });
+      logger.info(`[LOGIN DEBUG] Resposta enviada com sucesso`);
+    } catch (error) {
+      logger.error(`[LOGIN DEBUG] Erro capturado na rota de login:`, {
+        message: error.message,
+        stack: error.stack,
+        name: error.name
+      });
+      throw error;
+    }
   })
 );
 

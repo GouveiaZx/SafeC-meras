@@ -659,6 +659,49 @@ const validationSchemas = {
         return value === data.newPassword || 'Confirmação de senha não confere';
       }
     }
+  },
+
+  // Validação para gravação contínua
+  continuousRecording: {
+    camera_id: {
+      required: true,
+      type: 'uuid',
+      message: 'ID da câmera deve ser um UUID válido'
+    },
+    enabled: {
+      required: false,
+      type: 'boolean',
+      message: 'Status deve ser um valor booleano'
+    }
+  },
+
+  // Validação para opções de gravação
+  recordingOptions: {
+    camera_id: {
+      required: true,
+      type: 'uuid',
+      message: 'ID da câmera deve ser um UUID válido'
+    },
+    duration: {
+      required: false,
+      type: 'positiveInteger',
+      message: 'Duração deve ser um número positivo em segundos'
+    },
+    quality: {
+      required: false,
+      type: 'nonEmptyString',
+      message: 'Qualidade deve ser low, medium, high ou ultra'
+    },
+    format: {
+      required: false,
+      type: 'nonEmptyString',
+      message: 'Formato deve ser mp4, avi ou mkv'
+    },
+    continuous: {
+      required: false,
+      type: 'boolean',
+      message: 'Gravação contínua deve ser um valor booleano'
+    }
   }
 };
 
@@ -668,13 +711,35 @@ const validateParams = (schema) => {
     console.log('[DEBUG] validateParams - req.params:', req.params);
     console.log('[DEBUG] validateParams - schema:', schema);
     
+    // Se for um schema Joi, usar validação Joi
+    if (schema && typeof schema.validate === 'function') {
+      const { error, value } = schema.validate(req.params, { abortEarly: false });
+      
+      if (error) {
+        const errors = error.details.map(detail => ({
+          param: detail.path.join('.'),
+          message: detail.message
+        }));
+        
+        return res.status(400).json({
+          error: 'Parâmetros inválidos',
+          message: 'Os parâmetros da URL são inválidos',
+          details: errors
+        });
+      }
+      
+      req.params = value;
+      return next();
+    }
+    
+    // Validação tradicional para schemas customizados
     const errors = [];
     
-    for (const [param, rules] of Object.entries(schema)) {
+    for (const [param, rules] of Object.entries(schema || {})) {
       const value = req.params[param];
       console.log(`[DEBUG] validateParams - Validando param '${param}' com valor:`, value);
       
-      if (rules.required && !value) {
+      if (rules && rules.required && !value) {
         console.log(`[DEBUG] validateParams - Param '${param}' é obrigatório mas não foi fornecido`);
         errors.push({
           param,
@@ -683,7 +748,7 @@ const validateParams = (schema) => {
         continue;
       }
       
-      if (value && rules.type && validators[rules.type]) {
+      if (value && rules && rules.type && validators[rules.type]) {
         const isValid = validators[rules.type](value);
         console.log(`[DEBUG] validateParams - Validação de '${param}' (${rules.type}):`, isValid);
         if (!isValid) {
@@ -717,10 +782,34 @@ const validateRequest = (schemaName) => {
   throw new Error(`Schema de validação '${schemaName}' não encontrado`);
 };
 
+// Função validateBody para objetos Joi
+const validateBody = (joiSchema) => {
+  return (req, res, next) => {
+    const { error, value } = joiSchema.validate(req.body, { abortEarly: false });
+    
+    if (error) {
+      const errors = error.details.map(detail => ({
+        field: detail.path.join('.'),
+        message: detail.message
+      }));
+      
+      return res.status(400).json({
+        error: 'Dados inválidos',
+        message: 'Os dados enviados são inválidos',
+        details: errors
+      });
+    }
+    
+    req.body = value;
+    next();
+  };
+};
+
 const validationMiddleware = {
   createValidationSchema,
   validateParams,
   validateRequest,
+  validateBody,
   validators,
   validationSchemas
 };
@@ -730,6 +819,7 @@ export {
   createValidationSchema,
   validateParams,
   validateRequest,
+  validateBody,
   validators,
   validationSchemas
 };

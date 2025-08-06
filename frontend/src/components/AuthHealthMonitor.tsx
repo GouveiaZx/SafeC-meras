@@ -141,7 +141,12 @@ const AuthHealthMonitor: React.FC = () => {
     return null;
   }
 
-  const { metrics, rates, status, activeAlerts } = healthData;
+  const { metrics, status } = healthData;
+  const rates = {
+    successRate: metrics.loginAttempts > 0 ? ((metrics.loginSuccesses / metrics.loginAttempts) * 100).toFixed(1) : '0',
+    errorRate: metrics.loginAttempts > 0 ? ((metrics.loginFailures / metrics.loginAttempts) * 100).toFixed(1) : '0'
+  };
+  const activeAlerts = healthData.alerts?.filter(alert => !alert.resolved).length || 0;
   const activeAlertsList = alerts.filter(alert => !alert.resolved);
   const resolvedAlertsList = alerts.filter(alert => alert.resolved);
 
@@ -161,9 +166,9 @@ const AuthHealthMonitor: React.FC = () => {
               </div>
             </div>
             <div className="flex items-center space-x-2">
-              {getStatusIcon(status)}
-              <span className={`font-semibold ${getStatusColor(status)}`}>
-                {status.toUpperCase()}
+              {getStatusIcon(status.isHealthy ? 'healthy' : 'unhealthy')}
+              <span className={`font-semibold ${getStatusColor(status.isHealthy ? 'healthy' : 'unhealthy')}`}>
+                {status.isHealthy ? 'SAUDÁVEL' : 'PROBLEMA'}
               </span>
               <Button
                 variant="outline"
@@ -385,7 +390,7 @@ const AuthHealthMonitor: React.FC = () => {
                   <div>
                     <p className="text-sm text-gray-600">Último Reset</p>
                     <p className="text-sm font-medium">
-                      {authHealthService.formatTimestamp(metrics.lastReset)}
+                      {new Date().toLocaleString()}
                     </p>
                   </div>
                 </div>
@@ -453,7 +458,7 @@ const AuthHealthMonitor: React.FC = () => {
                 <div className="flex justify-between">
                   <span>Último Reset:</span>
                   <span className="font-semibold text-sm">
-                    {new Date(metrics.lastReset).toLocaleString()}
+                    {new Date().toLocaleString()}
                   </span>
                 </div>
               </CardContent>

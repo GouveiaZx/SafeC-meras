@@ -2,7 +2,9 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
+import { toast } from 'sonner';
 import { api, endpoints } from '@/lib/api';
+import VideoPlayer from '../components/VideoPlayer';
 import {
   Video,
   Pause,
@@ -14,22 +16,32 @@ import {
   AlertCircle,
   CheckCircle,
   Upload,
-  Database
+  Database,
+  Play,
+  X
 } from 'lucide-react';
+import { getAPIBaseURL } from '../lib/api';
 import MetricCard from '@/components/dashboard/MetricCard';
 import LineChart from '@/components/charts/LineChart';
 
 interface RecordingsResponse {
-  data: {
-    recordings: Recording[];
+  success: boolean;
+  data: Recording[];
+  pagination?: {
+    page: number;
+    limit: number;
+    total: number;
+    pages: number;
   };
 }
 
 interface StatsResponse {
+  success: boolean;
   data: RecordingStats;
 }
 
 interface TrendsResponse {
+  success: boolean;
   data: {
     hourly: Array<{
       time: string;
@@ -52,41 +64,41 @@ interface Recording {
   status: 'recording' | 'completed' | 'uploading' | 'uploaded' | 'failed';
   localPath?: string;
   s3Url?: string;
-  segments: RecordingSegment[];
   metadata: {
-    resolution: string;
     fps: number;
     codec: string;
     bitrate: number;
   };
 }
 
-interface RecordingSegment {
-  id: string;
-  filename: string;
-  startTime: string;
-  endTime: string;
-  duration: number;
-  size: number;
-  status: 'pending' | 'uploading' | 'uploaded' | 'failed';
-  localPath?: string;
-  s3Url?: string;
-  uploadAttempts: number;
-}
+
 
 interface RecordingStats {
   totalRecordings: number;
-  activeRecordings: number;
-  totalSegments: number;
   totalSize: number;
-  uploadedSize: number;
-  pendingUploads: number;
-  failedUploads: number;
-  storageUsed: {
+  totalDuration: number;
+  successRate: number;
+  averageFileSize: number;
+  recordingsByStatus: {
+    completed: number;
+    recording: number;
+    failed: number;
+    processing: number;
+  };
+  // Campos opcionais para compatibilidade
+  total?: number;
+  today?: number;
+  avgDuration?: number;
+  activeRecordings?: number;
+
+  uploadedSize?: number;
+  pendingUploads?: number;
+  failedUploads?: number;
+  storageUsed?: {
     local: number;
     s3: number;
   };
-  uploadQueue: {
+  uploadQueue?: {
     pending: number;
     processing: number;
     failed: number;
@@ -95,6 +107,7 @@ interface RecordingStats {
 
 const RecordingsPage: React.FC = () => {
   const [recordings, setRecordings] = useState<Recording[]>([]);
+  const [activeRecordings, setActiveRecordings] = useState<Recording[]>([]);
   const [stats, setStats] = useState<RecordingStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [, setError] = useState<string | null>(null);
@@ -102,11 +115,16 @@ const RecordingsPage: React.FC = () => {
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [dateRange, setDateRange] = useState({ start: '', end: '' });
-
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [viewingRecording, setViewingRecording] = useState<Recording | null>(null);
 
   // Dados de tendência de upload carregados da API
-  const [uploadTrendData, setUploadTrendData] = useState([
+  const [uploadTrendData, setUploadTrendData] = useState<Array<{
+    time: string;
+    uploads: number;
+    failures: number;
+    size: number;
+  }>>([
     { time: '00:00', uploads: 0, failures: 0, size: 0 },
     { time: '04:00', uploads: 0, failures: 0, size: 0 },
     { time: '08:00', uploads: 0, failures: 0, size: 0 },
@@ -117,11 +135,11 @@ const RecordingsPage: React.FC = () => {
 
   const fetchUploadTrends = useCallback(async () => {
     try {
-      const data = await api.get<TrendsResponse>(endpoints.recordings.getTrends());
-      if (data.data && data.data.hourly) {
-        setUploadTrendData(data.data.hourly);
+      const response = await api.get<TrendsResponse>(endpoints.recordings.getTrends());
+      if (response.success && response.data && response.data.hourly) {
+        setUploadTrendData(response.data.hourly);
       }
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Erro ao buscar tendências de upload:', err);
       // Manter dados padrão em caso de erro
     }
@@ -129,6 +147,8 @@ const RecordingsPage: React.FC = () => {
 
   const fetchRecordings = useCallback(async () => {
     try {
+      console.log('🔍 [DEBUG] Iniciando busca de gravações...');
+      
       const params = new URLSearchParams();
       if (selectedCamera !== 'all') params.append('camera', selectedCamera);
       if (selectedStatus !== 'all') params.append('status', selectedStatus);
@@ -136,50 +156,103 @@ const RecordingsPage: React.FC = () => {
       if (dateRange.start) params.append('startDate', dateRange.start);
       if (dateRange.end) params.append('endDate', dateRange.end);
 
-      const data = await api.get<RecordingsResponse>(`${endpoints.recordings.getAll()}?${params}`);
-      setRecordings(data.data.recordings || []);
+      const url = `${endpoints.recordings.getAll()}?${params}`;
+      console.log('🔍 [DEBUG] URL da requisição:', url);
+      console.log('🔍 [DEBUG] Parâmetros:', Object.fromEntries(params));
+      
+      const response = await api.get<RecordingsResponse>(url);
+      console.log('🔍 [DEBUG] Resposta da API:', response);
+      
+      if (response.success && response.data) {
+        console.log('🔍 [DEBUG] Gravações encontradas:', response.data.length);
+        setRecordings(response.data);
+      } else {
+        console.log('🔍 [DEBUG] Nenhuma gravação encontrada ou estrutura de resposta inválida');
+        setRecordings([]);
+      }
       setError(null);
-    } catch (err) {
+    } catch (err: unknown) {
+      console.error('❌ [DEBUG] Erro ao buscar gravações:', err);
       setError(err instanceof Error ? err.message : 'Erro desconhecido');
     }
   }, [selectedCamera, selectedStatus, searchTerm, dateRange]);
 
   const fetchStats = useCallback(async () => {
     try {
-      const data = await api.get<StatsResponse>(endpoints.recordings.getStats());
-      setStats(data.data);
-    } catch (err) {
-      console.error('Erro ao buscar estatísticas:', err);
+      console.log('📊 [DEBUG] Buscando estatísticas de gravações...');
+      const response = await api.get<StatsResponse>(endpoints.recordings.getStats());
+      console.log('📊 [DEBUG] Resposta das estatísticas:', response);
+      
+      if (response.success && response.data) {
+        console.log('📊 [DEBUG] Dados das estatísticas:', response.data);
+        setStats(response.data);
+      } else {
+        console.log('📊 [DEBUG] Nenhuma estatística encontrada ou estrutura inválida');
+      }
+    } catch (err: unknown) {
+      console.error('❌ [DEBUG] Erro ao buscar estatísticas:', err);
+    }
+  }, []);
+
+  const fetchActiveRecordings = useCallback(async () => {
+    try {
+      console.log('🔴 [DEBUG] Buscando gravações ativas...');
+      const response = await api.get<{success: boolean; data: Recording[]; count: number}>(endpoints.recordings.getActive());
+      console.log('🔴 [DEBUG] Resposta gravações ativas:', response);
+      
+      if (response.success && response.data) {
+        console.log('🔴 [DEBUG] Gravações ativas encontradas:', response.data.length);
+        setActiveRecordings(response.data);
+      } else {
+        console.log('🔴 [DEBUG] Nenhuma gravação ativa encontrada');
+        setActiveRecordings([]);
+      }
+    } catch (err: unknown) {
+      console.error('❌ [DEBUG] Erro ao buscar gravações ativas:', err);
+      setActiveRecordings([]);
     }
   }, []);
 
   const handleRefresh = useCallback(async () => {
     setLoading(true);
-    await Promise.all([fetchRecordings(), fetchStats(), fetchUploadTrends()]);
+    await Promise.all([fetchRecordings(), fetchStats(), fetchUploadTrends(), fetchActiveRecordings()]);
     setLoading(false);
     setLastUpdate(new Date());
-  }, [fetchRecordings, fetchStats, fetchUploadTrends]);
+  }, [fetchRecordings, fetchStats, fetchUploadTrends, fetchActiveRecordings]);
 
 
 
   const handleStopRecording = async (recordingId: string) => {
     try {
-      await api.post(endpoints.recordings.stop(recordingId));
-      await handleRefresh();
-    } catch (err) {
-      console.error('Erro ao parar gravação:', err);
+      console.log('🛑 [DEBUG] Parando gravação:', recordingId);
+      const response = await api.post<{success: boolean; message?: string; data?: any}>(endpoints.recordings.stop(recordingId));
+      console.log('✅ [DEBUG] Resposta do stop:', response);
+      
+      if (response && typeof response === 'object' && 'success' in response) {
+        const typedResponse = response as {success: boolean; message?: string; data?: any};
+        if (typedResponse.success) {
+          toast.success('Gravação parada com sucesso!');
+          await handleRefresh();
+        } else {
+          throw new Error(typedResponse.message || 'Erro ao parar gravação');
+        }
+      } else {
+        throw new Error('Resposta inválida do servidor');
+      }
+    } catch (err: unknown) {
+      console.error('❌ [DEBUG] Erro ao parar gravação:', err);
+      const errorMessage = err instanceof Error ? err.message : 'Erro desconhecido ao parar gravação';
+      toast.error(`Erro ao parar gravação: ${errorMessage}`);
     }
   };
 
-  const handleRetryUpload = async (recordingId: string, segmentId?: string) => {
+  const handleRetryUpload = async (recordingId: string) => {
     try {
-      const endpoint = segmentId 
-        ? `/recordings/${recordingId}/segments/${segmentId}/retry`
-        : `/recordings/${recordingId}/retry`;
+      const endpoint = `/recordings/${recordingId}/retry`;
       
       await api.post(endpoint);
       await handleRefresh();
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Erro ao tentar novamente o upload:', err);
     }
   };
@@ -188,16 +261,75 @@ const RecordingsPage: React.FC = () => {
     if (!confirm('Tem certeza que deseja excluir esta gravação?')) return;
 
     try {
-      await api.delete(endpoints.recordings.delete(recordingId));
-      await handleRefresh();
-    } catch (err) {
-      console.error('Erro ao excluir gravação:', err);
+      console.log('🗑️ [DEBUG] Excluindo gravação:', recordingId);
+      const response = await api.delete<{success: boolean; message?: string; freed_space?: number}>(endpoints.recordings.delete(recordingId));
+      console.log('✅ [DEBUG] Resposta do delete:', response);
+      
+      if (response && typeof response === 'object' && 'success' in response) {
+        const typedResponse = response as {success: boolean; message?: string; freed_space?: number};
+        if (typedResponse.success) {
+          toast.success('Gravação excluída com sucesso!');
+          await handleRefresh();
+        } else {
+          throw new Error(typedResponse.message || 'Erro ao excluir gravação');
+        }
+      } else {
+        throw new Error('Resposta inválida do servidor');
+      }
+    } catch (err: unknown) {
+      console.error('❌ [DEBUG] Erro ao excluir gravação:', err);
+      const errorMessage = err instanceof Error ? err.message : 'Erro desconhecido ao excluir gravação';
+      toast.error(`Erro ao excluir gravação: ${errorMessage}`);
     }
   };
 
+  const handleViewRecording = (recording: Recording) => {
+    setViewingRecording(recording);
+  };
+
+  const getRecordingUrl = (recording: Recording) => {
+    // Se tem URL do S3, usar ela diretamente
+    if (recording.s3Url) {
+      return recording.s3Url;
+    }
+    
+    // Para gravações locais, usar o endpoint de vídeo direto
+    if (recording.localPath || recording.id) {
+      const apiBaseUrl = getAPIBaseURL();
+      // Usar a nova rota /video que serve arquivos MP4 diretamente
+      return `${apiBaseUrl}/recordings/${recording.id}/video`;
+    }
+    
+    return null;
+  };
+
   useEffect(() => {
+    // Adicionar token de desenvolvimento temporário para testes
+    if (!localStorage.getItem('token')) {
+      console.log('🔧 [DEBUG] Adicionando token de desenvolvimento para testes');
+      localStorage.setItem('token', 'dev-token-for-testing');
+      localStorage.setItem('user', JSON.stringify({
+        id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890', // UUID válido para desenvolvimento
+        name: 'Usuário de Desenvolvimento',
+        email: 'dev@test.com',
+        userType: 'ADMIN',
+        isActive: true,
+        createdAt: new Date().toISOString()
+      }));
+    }
+    
     handleRefresh();
   }, [selectedCamera, selectedStatus, searchTerm, dateRange, handleRefresh]);
+
+  // Atualização automática das gravações ativas a cada 30 segundos
+  useEffect(() => {
+    const interval = setInterval(() => {
+      console.log('🔄 [DEBUG] Atualizando gravações ativas automaticamente...');
+      fetchActiveRecordings();
+    }, 30000); // 30 segundos
+
+    return () => clearInterval(interval);
+  }, [fetchActiveRecordings]);
 
 
 
@@ -236,7 +368,7 @@ const RecordingsPage: React.FC = () => {
     );
   };
 
-  const filteredRecordings = recordings.filter(recording => {
+  const filteredRecordings = (recordings || []).filter(recording => {
     if (selectedCamera !== 'all' && recording.cameraId !== selectedCamera) return false;
     if (selectedStatus !== 'all' && recording.status !== selectedStatus) return false;
     if (searchTerm && !recording.filename.toLowerCase().includes(searchTerm.toLowerCase()) &&
@@ -244,7 +376,7 @@ const RecordingsPage: React.FC = () => {
     return true;
   });
 
-  if (loading && !recordings.length) {
+  if (loading && (!recordings || !recordings.length)) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center">
@@ -277,14 +409,14 @@ const RecordingsPage: React.FC = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <MetricCard
           title="Gravações Ativas"
-          value={stats?.activeRecordings || 0}
+          value={stats?.recordingsByStatus?.recording || stats?.activeRecordings || 0}
           icon={Video}
           color="red"
         />
         
         <MetricCard
           title="Total de Gravações"
-          value={stats?.totalRecordings || 0}
+          value={stats?.totalRecordings || stats?.total || 0}
           icon={Database}
           color="blue"
         />
@@ -298,7 +430,7 @@ const RecordingsPage: React.FC = () => {
         
         <MetricCard
           title="Armazenamento S3"
-          value={formatBytes(stats?.storageUsed.s3 || 0)}
+          value={formatBytes(stats?.storageUsed?.s3 || 0)}
           icon={Cloud}
           color="green"
         />
@@ -327,25 +459,77 @@ const RecordingsPage: React.FC = () => {
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <span className="text-sm text-gray-600">Pendentes</span>
-              <span className="font-medium text-yellow-600">{stats?.uploadQueue.pending || 0}</span>
+              <span className="font-medium text-yellow-600">{stats?.uploadQueue?.pending || 0}</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-sm text-gray-600">Processando</span>
-              <span className="font-medium text-primary-600">{stats?.uploadQueue.processing || 0}</span>
+              <span className="font-medium text-primary-600">{stats?.uploadQueue?.processing || 0}</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-sm text-gray-600">Falharam</span>
-              <span className="font-medium text-red-600">{stats?.uploadQueue.failed || 0}</span>
-            </div>
-            <div className="pt-2 border-t">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-600">Total de Segmentos</span>
-                <span className="font-medium">{stats?.totalSegments || 0}</span>
-              </div>
+              <span className="font-medium text-red-600">{stats?.uploadQueue?.failed || 0}</span>
             </div>
           </div>
         </Card>
       </div>
+
+      {/* Gravações Ativas */}
+      {activeRecordings.length > 0 && (
+        <Card className="p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold flex items-center">
+              <Video className="w-5 h-5 mr-2 text-red-500" />
+              Gravações Ativas ({activeRecordings.length})
+            </h3>
+            <Badge className="bg-red-100 text-red-800 flex items-center gap-1">
+              <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
+              Ao Vivo
+            </Badge>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {activeRecordings.map((recording) => (
+              <div key={recording.id} className="border border-red-200 bg-red-50 rounded-lg p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center space-x-2">
+                    <Video className="w-4 h-4 text-red-500" />
+                    <span className="font-medium text-sm">{recording.cameraName}</span>
+                  </div>
+                  <Badge className="bg-red-100 text-red-800 text-xs">
+                    Gravando
+                  </Badge>
+                </div>
+                <div className="text-xs text-gray-600 space-y-1">
+                  <div>Arquivo: {recording.filename}</div>
+                  <div>Iniciado: {new Date(recording.startTime).toLocaleString('pt-BR')}</div>
+                  <div>Duração: {formatDuration(recording.duration || 0)}</div>
+                </div>
+                <div className="mt-3 flex space-x-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleStopRecording(recording.id)}
+                    className="text-red-600 border-red-300 hover:bg-red-100"
+                  >
+                    <Pause className="w-3 h-3 mr-1" />
+                    Parar
+                  </Button>
+                  {getRecordingUrl(recording) && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleViewRecording(recording)}
+                      className="text-blue-600 border-blue-300 hover:bg-blue-100"
+                    >
+                      <Play className="w-3 h-3 mr-1" />
+                      Assistir
+                    </Button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {/* Filtros */}
       <Card className="p-4">
@@ -427,6 +611,16 @@ const RecordingsPage: React.FC = () => {
                     <div className="flex items-center space-x-2">
                       {getStatusBadge(recording.status)}
                       <div className="flex space-x-1">
+                        {(recording.status === 'completed' || recording.status === 'uploaded') && getRecordingUrl(recording) && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleViewRecording(recording)}
+                            title="Assistir gravação"
+                          >
+                            <Play className="w-4 h-4" />
+                          </Button>
+                        )}
                         {recording.status === 'recording' && (
                           <Button
                             size="sm"
@@ -465,54 +659,16 @@ const RecordingsPage: React.FC = () => {
                     </div>
                   </div>
                   
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                     <div>
                       <span className="text-gray-600">Duração:</span>
                       <p className="font-medium">{formatDuration(recording.duration)}</p>
                     </div>
                     <div>
-                      <span className="text-gray-600">Tamanho:</span>
-                      <p className="font-medium">{formatBytes(recording.size)}</p>
-                    </div>
-                    <div>
-                      <span className="text-gray-600">Resolução:</span>
-                      <p className="font-medium">{recording.metadata.resolution}</p>
-                    </div>
-                    <div>
-                      <span className="text-gray-600">Segmentos:</span>
-                      <p className="font-medium">{recording.segments.length}</p>
+                      <span className="text-gray-600">Status:</span>
+                      <p className="font-medium">{getStatusBadge(recording.status)}</p>
                     </div>
                   </div>
-                  
-                  {recording.segments.length > 0 && (
-                    <div className="mt-4 pt-4 border-t border-gray-200">
-                      <h5 className="text-sm font-medium mb-2">Segmentos:</h5>
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-                        {recording.segments.map((segment) => (
-                          <div key={segment.id} className="flex items-center justify-between p-2 bg-gray-50 rounded">
-                            <div className="flex-1">
-                              <p className="text-xs font-medium">{segment.filename}</p>
-                              <p className="text-xs text-gray-600">
-                                {formatBytes(segment.size)} • {formatDuration(segment.duration)}
-                              </p>
-                            </div>
-                            <div className="flex items-center space-x-1">
-                              {getStatusBadge(segment.status)}
-                              {segment.status === 'failed' && (
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  onClick={() => handleRetryUpload(recording.id, segment.id)}
-                                >
-                                  <RefreshCw className="w-3 h-3" />
-                                </Button>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
                 </div>
               ))}
             </div>
@@ -528,6 +684,55 @@ const RecordingsPage: React.FC = () => {
           </p>
         )}
       </div>
+
+      {/* Modal de Visualização de Gravação */}
+      {viewingRecording && (
+        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg max-w-4xl w-full max-h-[90vh] overflow-hidden">
+            <div className="flex items-center justify-between p-4 border-b">
+              <div>
+                <h3 className="text-lg font-semibold">{viewingRecording.filename}</h3>
+                <p className="text-sm text-gray-600">{viewingRecording.cameraName}</p>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setViewingRecording(null)}
+              >
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+            <div className="p-4">
+              <div className="aspect-video bg-black rounded-lg overflow-hidden">
+                <VideoPlayer
+                  src={getRecordingUrl(viewingRecording) || undefined}
+                  controls={true}
+                  autoPlay={false}
+                  className="w-full h-full"
+                  onError={(error) => {
+                    console.error('Erro ao reproduzir gravação:', error);
+                    alert('Erro ao reproduzir gravação: ' + error);
+                  }}
+                />
+              </div>
+              <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                <div>
+                  <span className="text-gray-600">Duração:</span>
+                  <p className="font-medium">{formatDuration(viewingRecording.duration)}</p>
+                </div>
+                <div>
+                  <span className="text-gray-600">Status:</span>
+                  <p className="font-medium">{getStatusBadge(viewingRecording.status)}</p>
+                </div>
+                <div>
+                  <span className="text-gray-600">Data:</span>
+                  <p className="font-medium">{new Date(viewingRecording.startTime).toLocaleString('pt-BR')}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

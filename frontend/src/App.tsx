@@ -3,20 +3,16 @@ import { AuthProvider } from "@/contexts/AuthContext";
 import ProtectedRoute from "@/components/auth/ProtectedRoute";
 import MainLayout from "@/components/layout/MainLayout";
 import Login from "@/pages/auth/Login";
-import Register from "@/pages/auth/Register";
 import Dashboard from "@/pages/Dashboard";
-import Logs from "@/pages/Logs";
-import Reports from "@/pages/Reports";
 import Home from "@/pages/Home";
 import Cameras from "@/pages/Cameras";
-import Recordings from "@/pages/Recordings";
 import RecordingsPage from "@/pages/RecordingsPage";
 import Users from "@/pages/Users";
-import Settings from "@/pages/Settings";
+
 import Profile from "@/pages/Profile";
 import Archive from "@/pages/Archive";
-import Security from "@/pages/Security";
 import StreamViewPage from "@/pages/StreamViewPage";
+import TestStreamPlayer from "@/pages/TestStreamPlayer";
 
 export default function App() {
   return (
@@ -26,7 +22,6 @@ export default function App() {
           {/* Public Routes */}
           <Route path="/" element={<Home />} />
           <Route path="/auth/login" element={<Login />} />
-          <Route path="/auth/register" element={<Register />} />
           
           {/* Protected Routes */}
           <Route path="/dashboard" element={
@@ -53,30 +48,12 @@ export default function App() {
             <Route index element={<StreamViewPage />} />
           </Route>
           
-
-          
-          <Route path="/logs" element={
-            <ProtectedRoute allowedUserTypes={['ADMIN', 'INTEGRATOR']}>
-              <MainLayout />
-            </ProtectedRoute>
-          }>
-            <Route index element={<Logs />} />
-          </Route>
-          
           <Route path="/recordings" element={
             <ProtectedRoute>
               <MainLayout />
             </ProtectedRoute>
           }>
             <Route index element={<RecordingsPage />} />
-          </Route>
-          
-          <Route path="/recordings-old" element={
-            <ProtectedRoute>
-              <MainLayout />
-            </ProtectedRoute>
-          }>
-            <Route index element={<Recordings />} />
           </Route>
           
           <Route path="/archive" element={
@@ -95,29 +72,7 @@ export default function App() {
             <Route index element={<Users />} />
           </Route>
           
-          <Route path="/reports" element={
-            <ProtectedRoute allowedUserTypes={['ADMIN', 'INTEGRATOR']}>
-              <MainLayout />
-            </ProtectedRoute>
-          }>
-            <Route index element={<Reports />} />
-          </Route>
-          
-          <Route path="/security" element={
-            <ProtectedRoute requiredUserType="ADMIN">
-              <MainLayout />
-            </ProtectedRoute>
-          }>
-            <Route index element={<Security />} />
-          </Route>
-          
-          <Route path="/settings" element={
-            <ProtectedRoute>
-              <MainLayout />
-            </ProtectedRoute>
-          }>
-            <Route index element={<Settings />} />
-          </Route>
+
           
           <Route path="/profile" element={
             <ProtectedRoute>
@@ -125,6 +80,14 @@ export default function App() {
             </ProtectedRoute>
           }>
             <Route index element={<Profile />} />
+          </Route>
+
+          <Route path="/test-stream" element={
+            <ProtectedRoute>
+              <MainLayout />
+            </ProtectedRoute>
+          }>
+            <Route index element={<TestStreamPlayer />} />
           </Route>
           
           {/* Error Routes */}

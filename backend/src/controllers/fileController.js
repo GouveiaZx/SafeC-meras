@@ -16,6 +16,15 @@ export class FileController {
     this.uploadPath = process.env.UPLOAD_PATH || './uploads';
     this.recordingsPath = process.env.RECORDINGS_PATH || './storage/recordings';
     this.streamsPath = process.env.STREAMS_PATH || './storage/streams';
+    
+    // Bind methods to preserve 'this' context
+    this.listFiles = this.listFiles.bind(this);
+    this.getFileInfo = this.getFileInfo.bind(this);
+    this.downloadFile = this.downloadFile.bind(this);
+    this.deleteFile = this.deleteFile.bind(this);
+    this.searchFiles = this.searchFiles.bind(this);
+    this.getStorageStats = this.getStorageStats.bind(this);
+    this.moveFile = this.moveFile.bind(this);
   }
 
   /**

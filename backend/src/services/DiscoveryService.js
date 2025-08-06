@@ -9,7 +9,7 @@ import dgram from 'dgram';
 import { createModuleLogger } from '../config/logger.js';
 import { AppError, ValidationError } from '../middleware/errorHandler.js';
 import { Camera } from '../models/Camera.js';
-import streamingService from './StreamingService.js';
+import unifiedStreamingService from './UnifiedStreamingService.js';
 
 const logger = createModuleLogger('DiscoveryService');
 
@@ -424,7 +424,7 @@ class DiscoveryService {
         rtsp_url: rtspUrl
       };
       
-      const testResult = await streamingService.testCameraConnection(testCamera);
+      const testResult = await unifiedStreamingService.testCameraConnection(testCamera);
       
       return {
         success: testResult.success,

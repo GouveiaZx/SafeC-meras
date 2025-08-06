@@ -1,0 +1,1091 @@
+﻿{
+   "code" : 0,
+   "data" : [
+      {
+         "aliveSecond" : 10,
+         "app" : "live",
+         "bytesSpeed" : 76904,
+         "createStamp" : 1754355292,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 36387,
+            "peer_ip" : "186.233.4.4",
+            "peer_port" : 1936
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtmp://connect-301.servicestream.io:1936/stream/974dea8ccc3a",
+         "readerCount" : 0,
+         "schema" : "hls",
+         "stream" : "29a3c06f-ec30-4ae1-823a-7d9dc69eaab5",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 2,
+               "codec_id_name" : "mpeg4-generic",
+               "codec_type" : 1,
+               "loss" : -1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 16000
+            },
+            {
+               "codec_id" : 0,
+               "codec_id_name" : "H264",
+               "codec_type" : 0,
+               "fps" : 20,
+               "height" : 1080,
+               "loss" : -1,
+               "ready" : true,
+               "width" : 1920
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 17,
+         "app" : "live",
+         "bytesSpeed" : 17054,
+         "createStamp" : 1754355285,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 33183,
+            "peer_ip" : "170.245.45.10",
+            "peer_port" : 37777
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtsp://visualizar:infotec5384@170.245.45.10:37777/h264/ch3/main/av_stream",
+         "readerCount" : 0,
+         "schema" : "hls",
+         "stream" : "a4e7d9c8-3f57-4b1a-9628-20727b0f21cd",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 4,
+               "codec_id_name" : "PCMU",
+               "codec_type" : 1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 8000
+            },
+            {
+               "codec_id" : 0,
+               "codec_id_name" : "H264",
+               "codec_type" : 0,
+               "fps" : 15,
+               "height" : 720,
+               "ready" : true,
+               "width" : 1280
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 56,
+         "app" : "live",
+         "bytesSpeed" : 55133,
+         "createStamp" : 1754355244,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 46847,
+            "peer_ip" : "170.245.45.10",
+            "peer_port" : 37777
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtsp://visualizar:infotec5384@170.245.45.10:37777/h264/ch4/main/av_stream",
+         "readerCount" : 0,
+         "schema" : "hls",
+         "stream" : "b533e650-4035-45fa-aa61-2425704f5376",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 4,
+               "codec_id_name" : "PCMU",
+               "codec_type" : 1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 8000
+            },
+            {
+               "codec_id" : 1,
+               "codec_id_name" : "H265",
+               "codec_type" : 0,
+               "fps" : 24,
+               "height" : 720,
+               "ready" : true,
+               "width" : 1280
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 63,
+         "app" : "live",
+         "bytesSpeed" : 44803,
+         "createStamp" : 1754355237,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 38579,
+            "peer_ip" : "186.233.4.80",
+            "peer_port" : 554
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtsp://visualizar:infotec5384@186.233.4.80:554/cam/realmonitor?channel=1subtype=0",
+         "readerCount" : 0,
+         "schema" : "hls",
+         "stream" : "c4aa1174-3692-4958-8528-74a92b328637",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 2,
+               "codec_id_name" : "mpeg4-generic",
+               "codec_type" : 1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 8000
+            },
+            {
+               "codec_id" : 1,
+               "codec_id_name" : "H265",
+               "codec_type" : 0,
+               "fps" : 0,
+               "height" : 720,
+               "ready" : true,
+               "width" : 1280
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 71,
+         "app" : "live",
+         "bytesSpeed" : 9064,
+         "createStamp" : 1754355228,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 46557,
+            "peer_ip" : "201.182.96.145",
+            "peer_port" : 4502
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtmp://connect001.safecameras.com.br:4502/live/54dsf4saf5",
+         "readerCount" : 0,
+         "schema" : "hls",
+         "stream" : "22fa141f-b78a-4c00-a64f-b0236b8b30e7",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 2,
+               "codec_id_name" : "mpeg4-generic",
+               "codec_type" : 1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 8000
+            },
+            {
+               "codec_id" : 0,
+               "codec_id_name" : "H264",
+               "codec_type" : 0,
+               "fps" : 12,
+               "height" : 720,
+               "ready" : true,
+               "width" : 1280
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 10,
+         "app" : "live",
+         "bytesSpeed" : 76995,
+         "createStamp" : 1754355292,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 36387,
+            "peer_ip" : "186.233.4.4",
+            "peer_port" : 1936
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtmp://connect-301.servicestream.io:1936/stream/974dea8ccc3a",
+         "readerCount" : 0,
+         "schema" : "ts",
+         "stream" : "29a3c06f-ec30-4ae1-823a-7d9dc69eaab5",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 2,
+               "codec_id_name" : "mpeg4-generic",
+               "codec_type" : 1,
+               "loss" : -1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 16000
+            },
+            {
+               "codec_id" : 0,
+               "codec_id_name" : "H264",
+               "codec_type" : 0,
+               "fps" : 20,
+               "height" : 1080,
+               "loss" : -1,
+               "ready" : true,
+               "width" : 1920
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 17,
+         "app" : "live",
+         "bytesSpeed" : 17054,
+         "createStamp" : 1754355285,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 33183,
+            "peer_ip" : "170.245.45.10",
+            "peer_port" : 37777
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtsp://visualizar:infotec5384@170.245.45.10:37777/h264/ch3/main/av_stream",
+         "readerCount" : 0,
+         "schema" : "ts",
+         "stream" : "a4e7d9c8-3f57-4b1a-9628-20727b0f21cd",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 4,
+               "codec_id_name" : "PCMU",
+               "codec_type" : 1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 8000
+            },
+            {
+               "codec_id" : 0,
+               "codec_id_name" : "H264",
+               "codec_type" : 0,
+               "fps" : 15,
+               "height" : 720,
+               "ready" : true,
+               "width" : 1280
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 56,
+         "app" : "live",
+         "bytesSpeed" : 55133,
+         "createStamp" : 1754355244,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 46847,
+            "peer_ip" : "170.245.45.10",
+            "peer_port" : 37777
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtsp://visualizar:infotec5384@170.245.45.10:37777/h264/ch4/main/av_stream",
+         "readerCount" : 0,
+         "schema" : "ts",
+         "stream" : "b533e650-4035-45fa-aa61-2425704f5376",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 4,
+               "codec_id_name" : "PCMU",
+               "codec_type" : 1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 8000
+            },
+            {
+               "codec_id" : 1,
+               "codec_id_name" : "H265",
+               "codec_type" : 0,
+               "fps" : 24,
+               "height" : 720,
+               "ready" : true,
+               "width" : 1280
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 63,
+         "app" : "live",
+         "bytesSpeed" : 44803,
+         "createStamp" : 1754355237,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 38579,
+            "peer_ip" : "186.233.4.80",
+            "peer_port" : 554
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtsp://visualizar:infotec5384@186.233.4.80:554/cam/realmonitor?channel=1subtype=0",
+         "readerCount" : 0,
+         "schema" : "ts",
+         "stream" : "c4aa1174-3692-4958-8528-74a92b328637",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 2,
+               "codec_id_name" : "mpeg4-generic",
+               "codec_type" : 1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 8000
+            },
+            {
+               "codec_id" : 1,
+               "codec_id_name" : "H265",
+               "codec_type" : 0,
+               "fps" : 0,
+               "height" : 720,
+               "ready" : true,
+               "width" : 1280
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 71,
+         "app" : "live",
+         "bytesSpeed" : 9064,
+         "createStamp" : 1754355228,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 46557,
+            "peer_ip" : "201.182.96.145",
+            "peer_port" : 4502
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtmp://connect001.safecameras.com.br:4502/live/54dsf4saf5",
+         "readerCount" : 0,
+         "schema" : "ts",
+         "stream" : "22fa141f-b78a-4c00-a64f-b0236b8b30e7",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 2,
+               "codec_id_name" : "mpeg4-generic",
+               "codec_type" : 1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 8000
+            },
+            {
+               "codec_id" : 0,
+               "codec_id_name" : "H264",
+               "codec_type" : 0,
+               "fps" : 12,
+               "height" : 720,
+               "ready" : true,
+               "width" : 1280
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 10,
+         "app" : "live",
+         "bytesSpeed" : 70477,
+         "createStamp" : 1754355292,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 36387,
+            "peer_ip" : "186.233.4.4",
+            "peer_port" : 1936
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtmp://connect-301.servicestream.io:1936/stream/974dea8ccc3a",
+         "readerCount" : 0,
+         "schema" : "rtsp",
+         "stream" : "29a3c06f-ec30-4ae1-823a-7d9dc69eaab5",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 2,
+               "codec_id_name" : "mpeg4-generic",
+               "codec_type" : 1,
+               "loss" : -1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 16000
+            },
+            {
+               "codec_id" : 0,
+               "codec_id_name" : "H264",
+               "codec_type" : 0,
+               "fps" : 20,
+               "height" : 1080,
+               "loss" : -1,
+               "ready" : true,
+               "width" : 1920
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 17,
+         "app" : "live",
+         "bytesSpeed" : 13243,
+         "createStamp" : 1754355284,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 33183,
+            "peer_ip" : "170.245.45.10",
+            "peer_port" : 37777
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtsp://visualizar:infotec5384@170.245.45.10:37777/h264/ch3/main/av_stream",
+         "readerCount" : 0,
+         "schema" : "rtsp",
+         "stream" : "a4e7d9c8-3f57-4b1a-9628-20727b0f21cd",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 4,
+               "codec_id_name" : "PCMU",
+               "codec_type" : 1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 8000
+            },
+            {
+               "codec_id" : 0,
+               "codec_id_name" : "H264",
+               "codec_type" : 0,
+               "fps" : 15,
+               "height" : 720,
+               "ready" : true,
+               "width" : 1280
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 56,
+         "app" : "live",
+         "bytesSpeed" : 51211,
+         "createStamp" : 1754355244,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 46847,
+            "peer_ip" : "170.245.45.10",
+            "peer_port" : 37777
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtsp://visualizar:infotec5384@170.245.45.10:37777/h264/ch4/main/av_stream",
+         "readerCount" : 0,
+         "schema" : "rtsp",
+         "stream" : "b533e650-4035-45fa-aa61-2425704f5376",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 4,
+               "codec_id_name" : "PCMU",
+               "codec_type" : 1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 8000
+            },
+            {
+               "codec_id" : 1,
+               "codec_id_name" : "H265",
+               "codec_type" : 0,
+               "fps" : 24,
+               "height" : 720,
+               "ready" : true,
+               "width" : 1280
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 63,
+         "app" : "live",
+         "bytesSpeed" : 21220,
+         "createStamp" : 1754355237,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 38579,
+            "peer_ip" : "186.233.4.80",
+            "peer_port" : 554
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtsp://visualizar:infotec5384@186.233.4.80:554/cam/realmonitor?channel=1subtype=0",
+         "readerCount" : 0,
+         "schema" : "rtsp",
+         "stream" : "c4aa1174-3692-4958-8528-74a92b328637",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 2,
+               "codec_id_name" : "mpeg4-generic",
+               "codec_type" : 1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 8000
+            },
+            {
+               "codec_id" : 1,
+               "codec_id_name" : "H265",
+               "codec_type" : 0,
+               "fps" : 0,
+               "height" : 720,
+               "ready" : true,
+               "width" : 1280
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 71,
+         "app" : "live",
+         "bytesSpeed" : 4877,
+         "createStamp" : 1754355228,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 46557,
+            "peer_ip" : "201.182.96.145",
+            "peer_port" : 4502
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtmp://connect001.safecameras.com.br:4502/live/54dsf4saf5",
+         "readerCount" : 0,
+         "schema" : "rtsp",
+         "stream" : "22fa141f-b78a-4c00-a64f-b0236b8b30e7",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 2,
+               "codec_id_name" : "mpeg4-generic",
+               "codec_type" : 1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 8000
+            },
+            {
+               "codec_id" : 0,
+               "codec_id_name" : "H264",
+               "codec_type" : 0,
+               "fps" : 12,
+               "height" : 720,
+               "ready" : true,
+               "width" : 1280
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 10,
+         "app" : "live",
+         "bytesSpeed" : 79881,
+         "createStamp" : 1754355292,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 36387,
+            "peer_ip" : "186.233.4.4",
+            "peer_port" : 1936
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtmp://connect-301.servicestream.io:1936/stream/974dea8ccc3a",
+         "readerCount" : 0,
+         "schema" : "fmp4",
+         "stream" : "29a3c06f-ec30-4ae1-823a-7d9dc69eaab5",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 2,
+               "codec_id_name" : "mpeg4-generic",
+               "codec_type" : 1,
+               "loss" : -1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 16000
+            },
+            {
+               "codec_id" : 0,
+               "codec_id_name" : "H264",
+               "codec_type" : 0,
+               "fps" : 20,
+               "height" : 1080,
+               "loss" : -1,
+               "ready" : true,
+               "width" : 1920
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 17,
+         "app" : "live",
+         "bytesSpeed" : 23514,
+         "createStamp" : 1754355285,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 33183,
+            "peer_ip" : "170.245.45.10",
+            "peer_port" : 37777
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtsp://visualizar:infotec5384@170.245.45.10:37777/h264/ch3/main/av_stream",
+         "readerCount" : 0,
+         "schema" : "fmp4",
+         "stream" : "a4e7d9c8-3f57-4b1a-9628-20727b0f21cd",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 4,
+               "codec_id_name" : "PCMU",
+               "codec_type" : 1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 8000
+            },
+            {
+               "codec_id" : 0,
+               "codec_id_name" : "H264",
+               "codec_type" : 0,
+               "fps" : 15,
+               "height" : 720,
+               "ready" : true,
+               "width" : 1280
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 56,
+         "app" : "live",
+         "bytesSpeed" : 60337,
+         "createStamp" : 1754355244,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 46847,
+            "peer_ip" : "170.245.45.10",
+            "peer_port" : 37777
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtsp://visualizar:infotec5384@170.245.45.10:37777/h264/ch4/main/av_stream",
+         "readerCount" : 0,
+         "schema" : "fmp4",
+         "stream" : "b533e650-4035-45fa-aa61-2425704f5376",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 4,
+               "codec_id_name" : "PCMU",
+               "codec_type" : 1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 8000
+            },
+            {
+               "codec_id" : 1,
+               "codec_id_name" : "H265",
+               "codec_type" : 0,
+               "fps" : 24,
+               "height" : 720,
+               "ready" : true,
+               "width" : 1280
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 63,
+         "app" : "live",
+         "bytesSpeed" : 49030,
+         "createStamp" : 1754355237,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 38579,
+            "peer_ip" : "186.233.4.80",
+            "peer_port" : 554
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtsp://visualizar:infotec5384@186.233.4.80:554/cam/realmonitor?channel=1subtype=0",
+         "readerCount" : 0,
+         "schema" : "fmp4",
+         "stream" : "c4aa1174-3692-4958-8528-74a92b328637",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 2,
+               "codec_id_name" : "mpeg4-generic",
+               "codec_type" : 1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 8000
+            },
+            {
+               "codec_id" : 1,
+               "codec_id_name" : "H265",
+               "codec_type" : 0,
+               "fps" : 0,
+               "height" : 720,
+               "ready" : true,
+               "width" : 1280
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 71,
+         "app" : "live",
+         "bytesSpeed" : 9717,
+         "createStamp" : 1754355228,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 46557,
+            "peer_ip" : "201.182.96.145",
+            "peer_port" : 4502
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtmp://connect001.safecameras.com.br:4502/live/54dsf4saf5",
+         "readerCount" : 0,
+         "schema" : "fmp4",
+         "stream" : "22fa141f-b78a-4c00-a64f-b0236b8b30e7",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 2,
+               "codec_id_name" : "mpeg4-generic",
+               "codec_type" : 1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 8000
+            },
+            {
+               "codec_id" : 0,
+               "codec_id_name" : "H264",
+               "codec_type" : 0,
+               "fps" : 12,
+               "height" : 720,
+               "ready" : true,
+               "width" : 1280
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 10,
+         "app" : "live",
+         "bytesSpeed" : 66203,
+         "createStamp" : 1754355291,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 36387,
+            "peer_ip" : "186.233.4.4",
+            "peer_port" : 1936
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtmp://connect-301.servicestream.io:1936/stream/974dea8ccc3a",
+         "readerCount" : 0,
+         "schema" : "rtmp",
+         "stream" : "29a3c06f-ec30-4ae1-823a-7d9dc69eaab5",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 2,
+               "codec_id_name" : "mpeg4-generic",
+               "codec_type" : 1,
+               "loss" : -1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 16000
+            },
+            {
+               "codec_id" : 0,
+               "codec_id_name" : "H264",
+               "codec_type" : 0,
+               "fps" : 20,
+               "height" : 1080,
+               "loss" : -1,
+               "ready" : true,
+               "width" : 1920
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 17,
+         "app" : "live",
+         "bytesSpeed" : 12659,
+         "createStamp" : 1754355285,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 33183,
+            "peer_ip" : "170.245.45.10",
+            "peer_port" : 37777
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtsp://visualizar:infotec5384@170.245.45.10:37777/h264/ch3/main/av_stream",
+         "readerCount" : 0,
+         "schema" : "rtmp",
+         "stream" : "a4e7d9c8-3f57-4b1a-9628-20727b0f21cd",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 4,
+               "codec_id_name" : "PCMU",
+               "codec_type" : 1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 8000
+            },
+            {
+               "codec_id" : 0,
+               "codec_id_name" : "H264",
+               "codec_type" : 0,
+               "fps" : 15,
+               "height" : 720,
+               "ready" : true,
+               "width" : 1280
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 56,
+         "app" : "live",
+         "bytesSpeed" : 50231,
+         "createStamp" : 1754355244,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 46847,
+            "peer_ip" : "170.245.45.10",
+            "peer_port" : 37777
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtsp://visualizar:infotec5384@170.245.45.10:37777/h264/ch4/main/av_stream",
+         "readerCount" : 0,
+         "schema" : "rtmp",
+         "stream" : "b533e650-4035-45fa-aa61-2425704f5376",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 4,
+               "codec_id_name" : "PCMU",
+               "codec_type" : 1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 8000
+            },
+            {
+               "codec_id" : 1,
+               "codec_id_name" : "H265",
+               "codec_type" : 0,
+               "fps" : 24,
+               "height" : 720,
+               "ready" : true,
+               "width" : 1280
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 63,
+         "app" : "live",
+         "bytesSpeed" : 32671,
+         "createStamp" : 1754355237,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 38579,
+            "peer_ip" : "186.233.4.80",
+            "peer_port" : 554
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtsp://visualizar:infotec5384@186.233.4.80:554/cam/realmonitor?channel=1subtype=0",
+         "readerCount" : 0,
+         "schema" : "rtmp",
+         "stream" : "c4aa1174-3692-4958-8528-74a92b328637",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 2,
+               "codec_id_name" : "mpeg4-generic",
+               "codec_type" : 1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 8000
+            },
+            {
+               "codec_id" : 1,
+               "codec_id_name" : "H265",
+               "codec_type" : 0,
+               "fps" : 0,
+               "height" : 720,
+               "ready" : true,
+               "width" : 1280
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      },
+      {
+         "aliveSecond" : 75,
+         "app" : "live",
+         "bytesSpeed" : 1700,
+         "createStamp" : 1754355225,
+         "isRecordingHLS" : true,
+         "isRecordingMP4" : false,
+         "originSock" : {
+            "identifier" : "",
+            "local_ip" : "172.18.0.4",
+            "local_port" : 46557,
+            "peer_ip" : "201.182.96.145",
+            "peer_port" : 4502
+         },
+         "originType" : 4,
+         "originTypeStr" : "pull",
+         "originUrl" : "rtmp://connect001.safecameras.com.br:4502/live/54dsf4saf5",
+         "readerCount" : 0,
+         "schema" : "rtmp",
+         "stream" : "22fa141f-b78a-4c00-a64f-b0236b8b30e7",
+         "totalReaderCount" : 0,
+         "tracks" : [
+            {
+               "channels" : 1,
+               "codec_id" : 2,
+               "codec_id_name" : "mpeg4-generic",
+               "codec_type" : 1,
+               "ready" : true,
+               "sample_bit" : 16,
+               "sample_rate" : 8000
+            },
+            {
+               "codec_id" : 0,
+               "codec_id_name" : "H264",
+               "codec_type" : 0,
+               "fps" : 12,
+               "height" : 720,
+               "ready" : true,
+               "width" : 1280
+            }
+         ],
+         "vhost" : "__defaultVhost__"
+      }
+   ]
+}
+

@@ -1,162 +1,131 @@
 version: '3.8'
 
 services:
-  # PostgreSQL Database (Supabase local)
-  postgres:
-    image: postgres:15
-    container_name: newcam-postgres
-    environment:
-      POSTGRES_DB: newcam
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres123
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./database/init:/docker-entrypoint-initdb.d
-    networks:
-      - newcam-network
 
-  # Redis for caching and sessions
+
+  # Backend API - CORRIGIDO PARA PORTA 3002
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: newcam_backend
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=development
+      - PORT=3002
+
+      - JWT_SECRET=9QqL3M2K7vHQexkbfp6RvbCUB3GkV4MK
+      - ZLM_SECRET=035c73f7-bb6b-4889-a715-d9eb2d1925cc
+      - ZLM_BASE_URL=http://zlmediakit:80
+      - ZLM_API_URL=http://zlmediakit:80/index/api
+      - ZLMEDIAKIT_API_URL=http://zlmediakit:80
+      - ZLMEDIAKIT_SECRET=9QqL3M2K7vHQexkbfp6RvbCUB3GkV4MK
+      - RECORDINGS_PATH=/app/storage/recordings
+      - EXPORTS_PATH=/app/storage/exports
+      - REDIS_URL=redis://redis:6379
+      - INTERNAL_SERVICE_TOKEN=newcam-internal-service-2025
+      - SUPABASE_URL=https://grkvfzuadctextnbpajb.supabase.co
+      - SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdya3ZmenVhZGN0ZXh0bmJwYWpiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTMyMjQyMzgsImV4cCI6MjA2ODgwMDIzOH0.Simv8hH8aE9adQiTf6t1BZIcMPniNh9ecpjxEeki4mE
+      - SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdya3ZmenVhZGN0ZXh0bmJwYWpiIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MzIyNDIzOCwiZXhwIjoyMDY4ODAwMjM4fQ.XJoPu5InA_s3pfryZfSChBqZnu7zBV3vwH7ZM4jf04M
+    ports:
+      - "3002:3002"
+    volumes:
+      - ./backend/storage:/app/storage
+      - ./backend/uploads:/app/uploads
+
+    networks:
+      - newcam_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Frontend - CORRIGIDO PARA PORTA 3000
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: newcam_frontend
+    restart: unless-stopped
+    environment:
+      - VITE_API_URL=http://66.94.104.241:3002
+      - VITE_ZLM_URL=http://66.94.104.241:8000
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - newcam_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Worker - Cliente que se conecta ao backend
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    container_name: newcam_worker
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - BACKEND_URL=http://backend:3002
+      - WORKER_TOKEN=newcam-worker-token-2025
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SUPABASE_URL=https://grkvfzuadctextnbpajb.supabase.co
+      - SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdya3ZmenVhZGN0ZXh0bmJwYWpiIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MzIyNDIzOCwiZXhwIjoyMDY4ODAwMjM4fQ.XJoPu5InA_s3pfryZfSChBqZnu7zBV3vwH7ZM4jf04M
+    volumes:
+      - ./backend/storage:/app/storage
+    depends_on:
+      - backend
+      - redis
+    networks:
+      - newcam_network
+
+  # ZLMediaKit - CORRIGIDO PARA PORTA 8000
+  zlmediakit:
+    image: panjjo/zlmediakit:latest
+    container_name: newcam_zlmediakit
+    restart: unless-stopped
+    environment:
+      - ZLM_SECRET=9QqL3M2K7vHQexkbfp6RvbCUB3GkV4MK
+
+    ports:
+      - "8000:80"      # HTTP API
+      - "554:554"      # RTSP
+      - "1935:1935"    # RTMP
+      - "8080:80"      # HLS/HTTP-FLV (corrigido para porta 80 interna)
+    volumes:
+      - ./docker/zlmediakit/config.ini:/opt/media/conf/config.ini
+      - ./storage/www:/opt/media/bin/www
+      - ./storage/www/recordings:/opt/media/www/recordings
+    networks:
+      - newcam_network
+    healthcheck:
+      test: ["CMD", "sh", "-c", "ps aux | grep MediaServer | grep -v grep || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis
   redis:
     image: redis:7-alpine
-    container_name: newcam-redis
+    container_name: newcam_redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
     networks:
-      - newcam-network
-
-  # MinIO for local S3-compatible storage (development)
-  minio:
-    image: minio/minio:latest
-    container_name: newcam-minio
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin123
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    volumes:
-      - minio_data:/data
-    networks:
-      - newcam-network
-
-  # ZLMediaKit - New Enhanced Media Server
-  zlmediakit:
-    image: zlmediakit/zlmediakit:master
-    container_name: newcam-zlmediakit
-    restart: unless-stopped
-    shm_size: 2gb
-    ulimits:
-      nofile:
-        soft: 65536
-        hard: 65536
-      memlock:
-        soft: -1
-        hard: -1
-    environment:
-      - GOGC=50  
-      - GOMAXPROCS=4 
-      - LOG_LEVEL=debug
-      - TZ=America/Sao_Paulo
-    volumes:
-      - ./docker/zlmediakit/config.ini:/opt/media/conf/config.ini:ro
-      - ./storage/recordings:/opt/media/bin/www/record/proxy
-      - ./storage/www:/opt/media/bin/www
-    ports:
-      - "1935:1935"  # RTMP
-      - "8000:80"    # HTTP-HLS e API (porta interna 80)
-      - "554:554"    # RTSP
-    networks:
-      - newcam-network
-    
-  # ZLM Registrar - Automatic camera registration
-  zlm-registrar:
-    build:
-      context: ./docker/zlmediakit
-      dockerfile: Dockerfile.registrar
-    container_name: newcam-zlm-registrar
-    depends_on:
-      - zlmediakit
-    restart: unless-stopped
-    volumes:
-      - ./storage/recordings:/opt/media/bin/www/record/proxy
-    environment:
-      - GOGC=75
-      - TZ=America/Sao_Paulo
-    networks:
-      - newcam-network
-      
-  # Processor - Video processing and S3 upload
-  processor:
-    build:
-      context: ./docker/zlmediakit
-      dockerfile: Dockerfile.processor
-    container_name: newcam-processor
-    restart: unless-stopped
-    volumes:
-      - ./storage/recordings:/opt/media/bin/www/record/proxy
-      - ./storage/www:/opt/media/bin/www
-    environment:
-      - WASABI_BUCKET=${WASABI_BUCKET:-safe-cameras-03}
-      - WASABI_ENDPOINT=${WASABI_ENDPOINT:-https://s3.us-east-2.wasabisys.com}
-      - WASABI_ACCESS_KEY=${WASABI_ACCESS_KEY}
-      - WASABI_SECRET_KEY=${WASABI_SECRET_KEY}
-      - API_ENDPOINT=${API_ENDPOINT:-http://ns1.infotecms.com.br:8087/segmentos}
-      - TZ=America/Sao_Paulo
-    ports:
-      - "8090:8080"   # Health check
-    depends_on:
-      - zlmediakit
-    networks:
-      - newcam-network
-
-  # SRS Server - Alternative streaming server
-  srs:
-    image: ossrs/srs:5
-    container_name: newcam-srs
-    ports:
-      - "1936:1935"   # RTMP (alternative port)
-      - "8081:8080"   # HTTP API
-      - "1985:1985"   # HTTP API
-      - "8001:8000"   # HTTP Server (ajustado para evitar conflito)
-    volumes:
-      - ./docker/srs/srs.conf:/usr/local/srs/conf/srs.conf
-      - srs_data:/usr/local/srs/objs/nginx/html
-    environment:
-      - TZ=America/Sao_Paulo
-    networks:
-      - newcam-network
-    restart: unless-stopped
-
-  # NGINX for reverse proxy and static files
-  nginx:
-    image: nginx:alpine
-    container_name: newcam-nginx
-    ports:
-      - "80:80"
-      - "8082:80"
-    volumes:
-      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf
-      - ./storage/streams:/usr/share/nginx/html/streams
-      - ./storage/recordings:/usr/share/nginx/html/recordings
-    depends_on:
-      - zlmediakit
-      - srs
-    networks:
-      - newcam-network
-    restart: unless-stopped
+      - newcam_network
 
 volumes:
-  postgres_data:
   redis_data:
-  minio_data:
-  zlmediakit_data:
-  srs_data:
 
 networks:
-  newcam-network:
+  newcam_network:
     driver: bridge

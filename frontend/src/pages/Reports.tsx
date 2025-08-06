@@ -134,15 +134,6 @@ const Reports: React.FC = () => {
   const exportReport = async (format: 'pdf' | 'csv' | 'excel') => {
     setExporting(true);
     try {
-      // Construir parâmetros da query
-      const params = {
-        type: filters.reportType,
-        start_date: filters.startDate,
-        end_date: filters.endDate,
-        format: format,
-        ...(filters.cameraId && { camera_id: filters.cameraId })
-      };
-      
       // Gerar nome do arquivo
       const filename = `relatorio_${filters.reportType}_${new Date().toISOString().split('T')[0]}.${format}`;
       

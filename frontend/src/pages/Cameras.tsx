@@ -1,19 +1,22 @@
 import React, { useState, useEffect } from 'react';
-import { Camera, Play, Pause, RotateCcw, Settings, Grid3X3, Maximize2, AlertCircle, Plus, X, Save, Trash2, Edit } from 'lucide-react';
+import { Camera, Play, Pause, RotateCcw, Settings, Grid3X3, Maximize2, AlertCircle, Plus, X, Save, Trash2, Edit, Square, Wifi } from 'lucide-react';
 import { toast } from 'sonner';
 import { useLocation } from 'react-router-dom';
 import { api, endpoints } from '@/lib/api';
-import VideoPlayer from '@/components/VideoPlayer';
+import UnifiedVideoPlayer from '@/components/UnifiedVideoPlayer';
 import { useAuth } from '@/contexts/AuthContext';
 
 interface CameraData {
   id: string;
   name: string;
-  rtsp_url: string;
+  rtsp_url?: string;
+  rtmp_url?: string;
   status: 'online' | 'offline' | 'error';
   location?: string;
   recording: boolean;
   recording_enabled?: boolean;
+  continuous_recording?: boolean;
+  retention_days?: number;
   last_seen?: string;
 }
 
@@ -41,6 +44,12 @@ const Cameras: React.FC = () => {
   const [filteredCameras, setFilteredCameras] = useState<CameraData[]>([]);
   const [streamStatus, setStreamStatus] = useState<Map<string, StreamStatus>>(new Map());
   const [selectedCamera, setSelectedCamera] = useState<string | null>(null);
+
+  // Função para lidar com clique na câmera no grid
+  const handleCameraClick = (cameraId: string) => {
+    setSelectedCamera(cameraId);
+    setViewMode('single');
+  };
   const [viewMode, setViewMode] = useState<'grid' | 'single'>('grid');
   const [loading, setLoading] = useState(true);
   const [currentQuality, setCurrentQuality] = useState<string>('720p');
@@ -50,14 +59,13 @@ const Cameras: React.FC = () => {
   const location = useLocation();
   const [formData, setFormData] = useState({
     name: '',
-    ip_address: '',
     rtsp_url: '',
     rtmp_url: '',
     location: '',
     stream_type: 'rtsp' as 'rtsp' | 'rtmp',
     type: 'ip', // Campo obrigatório para validação do backend
     recording_enabled: false,
-    quality_profile: 'medium',
+    continuous_recording: false,
     retention_days: 30
   });
   const [saving, setSaving] = useState(false);
@@ -93,14 +101,24 @@ const Cameras: React.FC = () => {
 
   const handleOpenSettings = (camera: CameraData) => {
     setSelectedCameraForSettings(camera);
+    
+    // Detectar automaticamente o tipo de stream baseado nos dados da câmera
+    const hasRtmpUrl = camera.rtmp_url && camera.rtmp_url.trim() !== '';
+    const hasRtspUrl = camera.rtsp_url && camera.rtsp_url.trim() !== '';
+    
+    // Determinar o tipo de stream: priorizar RTMP se ambos existirem
+    const streamType = hasRtmpUrl ? 'rtmp' : 'rtsp';
+    
     setFormData({
       name: camera.name,
-      ip_address: '', // Não temos IP no modelo atual
-      rtsp_url: camera.rtsp_url,
-      rtmp_url: '',
+      rtsp_url: camera.rtsp_url || '',
+      rtmp_url: camera.rtmp_url || '',
       location: camera.location || '',
-      stream_type: 'rtsp',
-      type: 'ip' // Campo obrigatório para validação do backend
+      stream_type: streamType,
+      type: 'ip', // Campo obrigatório para validação do backend
+      recording_enabled: camera.recording_enabled || false,
+      continuous_recording: camera.continuous_recording || false,
+      retention_days: camera.retention_days || 30
     });
     setShowSettingsModal(true);
   };
@@ -111,11 +129,35 @@ const Cameras: React.FC = () => {
     
     setSaving(true);
     try {
-      await api.put(endpoints.cameras.update(selectedCameraForSettings.id), {
+      // Preparar payload baseado no tipo de stream
+      const updatePayload: {
+        name: string;
+        location: string;
+        recording_enabled: boolean;
+        continuous_recording: boolean;
+        retention_days: number;
+        rtsp_url?: string | null;
+        rtmp_url?: string | null;
+      } = {
         name: formData.name,
-        rtsp_url: formData.rtsp_url,
-        location: formData.location
-      });
+        location: formData.location,
+        recording_enabled: formData.recording_enabled,
+        continuous_recording: formData.continuous_recording,
+        retention_days: formData.retention_days
+      };
+      
+      // Adicionar URL baseada no tipo de stream
+      if (formData.stream_type === 'rtsp') {
+        updatePayload.rtsp_url = formData.rtsp_url;
+        updatePayload.rtmp_url = null; // Limpar RTMP URL se mudou para RTSP
+      } else if (formData.stream_type === 'rtmp') {
+        updatePayload.rtmp_url = formData.rtmp_url;
+        updatePayload.rtsp_url = null; // Limpar RTSP URL se mudou para RTMP
+      }
+      
+      console.log('Enviando dados de atualização da câmera:', updatePayload);
+      
+      await api.put(endpoints.cameras.update(selectedCameraForSettings.id), updatePayload);
       
       toast.success('Câmera atualizada com sucesso!');
       setShowSettingsModal(false);
@@ -364,16 +406,13 @@ const Cameras: React.FC = () => {
 
   // Auto-preenchimento do IP baseado na URL RTMP
   useEffect(() => {
-    if (formData.stream_type === 'rtmp' && formData.rtmp_url && !formData.ip_address) {
+    if (formData.stream_type === 'rtmp' && formData.rtmp_url) {
       const hostname = extractHostnameFromUrl(formData.rtmp_url);
       if (hostname) {
-        setFormData(prev => ({
-          ...prev,
-          ip_address: hostname
-        }));
+        // Hostname extraído mas não mais usado para ip_address
       }
     }
-  }, [formData.rtmp_url, formData.stream_type, formData.ip_address]);
+  }, [formData.rtmp_url, formData.stream_type]);
 
   const handleStartStream = async (cameraId: string) => {
     try {
@@ -530,7 +569,6 @@ const Cameras: React.FC = () => {
       
       setFormData(prev => ({
         ...prev,
-        ip_address: hostname,
         name: prev.name || `Câmera ${hostname}`
       }));
     } catch {
@@ -542,14 +580,13 @@ const Cameras: React.FC = () => {
     const exampleUrl = 'rtsp://visualizar:infotec5384@170.245.45.10:37777/h264/ch4/main/av_stream';
     setFormData({
       name: 'Câmera Exemplo',
-      ip_address: '170.245.45.10',
       rtsp_url: exampleUrl,
       rtmp_url: '',
       location: 'Portaria Principal',
       stream_type: 'rtsp',
       type: 'ip', // Campo obrigatório para validação do backend
       recording_enabled: false,
-      quality_profile: 'medium',
+      continuous_recording: false,
       retention_days: 30
     });
   };
@@ -611,23 +648,12 @@ const Cameras: React.FC = () => {
         }
       }
 
-      // Validar que pelo menos uma URL ou IP foi fornecido
+      // Validar que uma URL foi fornecida
       const hasUrl = (formData.stream_type === 'rtmp' && formData.rtmp_url.trim()) || 
                      (formData.stream_type === 'rtsp' && formData.rtsp_url.trim());
-      const hasIp = formData.ip_address.trim();
       
-      console.log('🔍 DEBUG: Validação final URL/IP:', {
-        stream_type: formData.stream_type,
-        hasUrl,
-        hasIp,
-        rtmp_condition: formData.stream_type === 'rtmp' && formData.rtmp_url.trim(),
-        rtsp_condition: formData.stream_type === 'rtsp' && formData.rtsp_url.trim(),
-        will_fail: !hasUrl && !hasIp
-      });
-      
-      if (!hasUrl && !hasIp) {
-        console.log('❌ DEBUG: Falha na validação - nem URL nem IP fornecidos');
-        toast.error('É necessário fornecer pelo menos uma URL de stream ou endereço IP');
+      if (!hasUrl) {
+        toast.error('É necessário fornecer uma URL de stream');
         return;
       }
 
@@ -637,20 +663,7 @@ const Cameras: React.FC = () => {
         stream_type: formData.stream_type || 'rtsp' // Garantir que sempre tenha um valor
       };
       
-      // Validação adicional para garantir que pelo menos uma URL ou IP seja fornecido
-      const hasRtmpUrl = formData.stream_type === 'rtmp' && formData.rtmp_url.trim();
-      const hasRtspUrl = formData.stream_type === 'rtsp' && formData.rtsp_url.trim();
-      const hasIpAddress = formData.ip_address.trim();
-      
-      if (!hasRtmpUrl && !hasRtspUrl && !hasIpAddress) {
-        toast.error('É necessário fornecer pelo menos uma URL de stream ou endereço IP');
-        return;
-      }
-
       // Adicionar campos opcionais apenas se preenchidos
-      if (formData.ip_address.trim()) {
-        payload.ip_address = formData.ip_address.trim();
-      }
       
       if (formData.location.trim()) {
         payload.location = formData.location.trim();
@@ -673,14 +686,13 @@ const Cameras: React.FC = () => {
       setShowAddModal(false);
       setFormData({
         name: '',
-        ip_address: '',
         rtsp_url: '',
         rtmp_url: '',
         location: '',
         stream_type: 'rtsp',
         type: 'ip', // Campo obrigatório para validação do backend
         recording_enabled: false,
-        quality_profile: 'medium',
+        continuous_recording: false,
         retention_days: 30
       });
       
@@ -727,18 +739,32 @@ const Cameras: React.FC = () => {
     }
   };
 
-  const handleCloseModal = () => {
-    setShowAddModal(false);
+  const handleOpenAddModal = () => {
     setFormData({
       name: '',
-      ip_address: '',
       rtsp_url: '',
       rtmp_url: '',
       location: '',
       stream_type: 'rtsp',
-      type: 'ip', // Campo obrigatório para validação do backend
+      type: 'ip',
       recording_enabled: false,
-      quality_profile: 'medium',
+      continuous_recording: false,
+      retention_days: 30
+    });
+    setShowAddModal(true);
+  };
+
+  const handleCloseModal = () => {
+    setShowAddModal(false);
+    setFormData({
+      name: '',
+      rtsp_url: '',
+      rtmp_url: '',
+      location: '',
+      stream_type: 'rtsp',
+      type: 'ip',
+      recording_enabled: false,
+      continuous_recording: false,
       retention_days: 30
     });
   };
@@ -800,7 +826,7 @@ const Cameras: React.FC = () => {
             
             <div className="flex items-center space-x-4">
               <button
-                onClick={() => setShowAddModal(true)}
+                onClick={handleOpenAddModal}
                 className="bg-primary-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary-700 transition-colors flex items-center"
               >
                 <Plus className="h-4 w-4 mr-2" />
@@ -841,36 +867,25 @@ const Cameras: React.FC = () => {
             {filteredCameras.map((camera) => {
               const status = streamStatus.get(camera.id);
               return (
-                <div key={camera.id} className="bg-white rounded-lg shadow-sm border overflow-hidden">
-                  {/* Video Player */}
-                  <div className="aspect-video bg-gray-900 relative">
-                    {status?.status === 'active' && status?.urls?.hls ? (
-                      <VideoPlayer
-                        src={status.urls.hls}
-                        poster=""
-                        className="w-full h-full"
-                        controls={true}
-                        autoPlay={true}
-                        muted={true}
-                        token={token}
-                      />
-                    ) : status?.status === 'active' ? (
-                      <div className="w-full h-full flex items-center justify-center text-white">
-                        <div className="text-center">
-                          <Play className="h-12 w-12 mx-auto mb-2 opacity-50" />
-                          <p className="text-sm opacity-75">Stream Ativo</p>
-                          <p className="text-xs opacity-50">{status.bitrate} kbps</p>
-                          <p className="text-xs opacity-50 mt-1">Aguardando URL do stream...</p>
-                        </div>
+                <div key={camera.id} className="bg-white rounded-lg shadow-sm border overflow-hidden hover:shadow-md transition-shadow cursor-pointer" onClick={() => handleCameraClick(camera.id)}>
+                  {/* Camera Preview Area - Clicável */}
+                  <div className="aspect-video bg-gray-900 relative hover:bg-gray-800 transition-colors">
+                    <div className="w-full h-full flex items-center justify-center text-white">
+                      <div className="text-center">
+                        <Camera className="h-16 w-16 mx-auto mb-3 opacity-70" />
+                        <p className="text-lg font-medium mb-1">{camera.name}</p>
+                        {status?.status === 'active' ? (
+                          <div>
+                            <p className="text-sm text-green-400 mb-1">Stream Ativo</p>
+                            {status.bitrate && (
+                              <p className="text-xs opacity-75">{status.bitrate} kbps</p>
+                            )}
+                          </div>
+                        ) : (
+                          <p className="text-sm opacity-75">Clique para visualizar</p>
+                        )}
                       </div>
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-gray-400">
-                        <div className="text-center">
-                          <Camera className="h-12 w-12 mx-auto mb-2 opacity-50" />
-                          <p className="text-sm">Stream Inativo</p>
-                        </div>
-                      </div>
-                    )}
+                    </div>
                     
                     {/* Status Indicator */}
                     <div className="absolute top-3 left-3">
@@ -933,32 +948,19 @@ const Cameras: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Controls */}
-                    <div className="flex space-x-2">
+                    {/* Stream Status Info */}
+                    <div className="text-center">
                       {status?.status === 'active' ? (
-                        <button
-                          onClick={() => handleStopStream(camera.id)}
-                          className="flex-1 bg-red-600 text-white px-3 py-2 rounded-md text-sm font-medium hover:bg-red-700 transition-colors flex items-center justify-center"
-                        >
-                          <Pause className="h-4 w-4 mr-1" />
-                          Parar
-                        </button>
+                        <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                          <div className="w-2 h-2 bg-green-500 rounded-full mr-1 animate-pulse"></div>
+                          Stream Ativo
+                        </span>
                       ) : (
-                        <button
-                          onClick={() => handleStartStream(camera.id)}
-                          className="flex-1 bg-primary-600 text-white px-3 py-2 rounded-md text-sm font-medium hover:bg-primary-700 transition-colors flex items-center justify-center"
-                        >
-                          <Play className="h-4 w-4 mr-1" />
-                          {camera.status === 'online' ? 'Iniciar' : 'Tentar Iniciar'}
-                        </button>
+                        <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                          <div className="w-2 h-2 bg-gray-500 rounded-full mr-1"></div>
+                          Stream Inativo
+                        </span>
                       )}
-                      
-                      <button
-                        onClick={() => handleTestConnection(camera.id)}
-                        className="px-3 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
-                      >
-                        <RotateCcw className="h-4 w-4" />
-                      </button>
                     </div>
 
                     {/* Last Seen */}
@@ -994,51 +996,152 @@ const Cameras: React.FC = () => {
             </div>
             
             {selectedCamera ? (
-              <div className="aspect-video bg-gray-900 relative">
-                {(() => {
-                  const camera = filteredCameras.find(c => c.id === selectedCamera);
-                  const status = streamStatus.get(selectedCamera);
-                  
-                  if (status?.status === 'active' && status?.urls?.hls) {
-                    return (
-                      <VideoPlayer
-                        src={status.urls.hls}
-                        poster=""
-                        className="w-full h-full"
-                        controls={true}
-                        autoPlay={true}
-                        muted={false}
-                        token={token}
-                        onQualityChange={handleQualityChange}
-                        availableQualities={availableQualities}
-                        currentQuality={currentQuality}
-                      />
-                    );
-                  }
-                  
-                  return (
-                    <div className="w-full h-full flex items-center justify-center text-white">
-                      <div className="text-center">
-                        <Camera className="h-16 w-16 mx-auto mb-4 opacity-50" />
-                        <p className="text-lg mb-2">{camera?.name}</p>
-                        {status?.status === 'active' ? (
-                          <p className="text-sm opacity-75">Aguardando URL do stream...</p>
-                        ) : (
-                          <div>
-                            <p className="text-sm opacity-75 mb-2">Stream não iniciado</p>
+              <div className="space-y-4">
+                {/* Controles da Câmera Individual */}
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center space-x-4">
+                    <h3 className="text-lg font-medium text-gray-900 ml-4">
+                      {filteredCameras.find(c => c.id === selectedCamera)?.name}
+                    </h3>
+                    <div className="flex items-center space-x-2">
+                      {(() => {
+                        const camera = filteredCameras.find(c => c.id === selectedCamera);
+                        const status = streamStatus.get(selectedCamera);
+                        return (
+                          <>
+                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                              camera?.status === 'online' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                            }`}>
+                              {camera?.status === 'online' ? 'Online' : 'Offline'}
+                            </span>
+                            {camera?.recording_enabled && (
+                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                                <div className="w-2 h-2 bg-red-500 rounded-full mr-1 animate-pulse"></div>
+                                REC
+                              </span>
+                            )}
+                            {camera?.continuous_recording && (
+                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                                24/7
+                              </span>
+                            )}
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    {(() => {
+                      const camera = filteredCameras.find(c => c.id === selectedCamera);
+                      const status = streamStatus.get(selectedCamera);
+                      return (
+                        <>
+                          {/* Botão de Configurações */}
+                          <button
+                            onClick={() => {
+                              const camera = filteredCameras.find(c => c.id === selectedCamera);
+                              if (camera) {
+                                setSelectedCameraForSettings(camera);
+                                setFormData({
+                                  name: camera.name || '',
+                                  rtsp_url: camera.rtsp_url || '',
+                                  rtmp_url: camera.rtmp_url || '',
+                                  location: camera.location || '',
+                                  stream_type: (camera.rtmp_url ? 'rtmp' : 'rtsp') as 'rtsp' | 'rtmp',
+                                  type: 'ip',
+                                  recording_enabled: camera.recording_enabled || false,
+                                  continuous_recording: camera.continuous_recording || false,
+                                  retention_days: camera.retention_days || 30
+                                });
+                                setShowSettingsModal(true);
+                              }
+                            }}
+                            className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors"
+                            title="Configurações da Câmera"
+                          >
+                            <Settings className="h-5 w-5" />
+                          </button>
+                          
+                          {/* Botão de Stream */}
+                          {status?.status === 'active' ? (
+                            <button
+                              onClick={() => handleStopStream(selectedCamera)}
+                              className="p-2 text-red-600 hover:text-red-700 hover:bg-red-50 rounded-md transition-colors"
+                              title="Parar Stream"
+                            >
+                              <Square className="h-5 w-5" />
+                            </button>
+                          ) : (
                             <button
                               onClick={() => handleStartStream(selectedCamera)}
-                              className="bg-primary-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-primary-700 transition-colors flex items-center mx-auto"
+                              className="p-2 text-green-600 hover:text-green-700 hover:bg-green-50 rounded-md transition-colors"
+                              title="Iniciar Stream"
                             >
-                              <Play className="h-4 w-4 mr-1" />
-                              {camera?.status === 'online' ? 'Iniciar Stream' : 'Tentar Iniciar Stream'}
+                              <Play className="h-5 w-5" />
                             </button>
+                          )}
+                          
+                          {/* Botão de Teste */}
+                          <button
+                            onClick={() => handleTestConnection(selectedCamera)}
+                            className="p-2 text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-md transition-colors"
+                            title="Testar Conexão"
+                          >
+                            <Wifi className="h-5 w-5" />
+                          </button>
+                        </>
+                      );
+                    })()}
+                  </div>
+                </div>
+                
+                {/* Player de Vídeo */}
+                <div className="aspect-video bg-gray-900 relative">
+                  {(() => {
+                      const camera = filteredCameras.find(c => c.id === selectedCamera);
+                      const status = streamStatus.get(selectedCamera);
+                      
+                      if (status?.status === 'active' && status?.urls?.hls) {
+                        return (
+                          <UnifiedVideoPlayer
+                            src={status.urls.hls}
+                            poster=""
+                            className="w-full h-full"
+                            controls={true}
+                            autoPlay={true}
+                            muted={false}
+                            token={token}
+                            mode="advanced"
+                            showHealthCheck={true}
+                            cameraId={selectedCamera}
+                          />
+                        );
+                      }
+                      
+                      return (
+                        <div className="w-full h-full flex items-center justify-center text-white">
+                          <div className="text-center">
+                            <Camera className="h-16 w-16 mx-auto mb-4 opacity-50" />
+                            <p className="text-lg mb-2">{camera?.name}</p>
+                            {status?.status === 'active' ? (
+                              <p className="text-sm opacity-75">Aguardando URL do stream...</p>
+                            ) : (
+                              <div>
+                                <p className="text-sm opacity-75 mb-2">Stream não iniciado</p>
+                                <button
+                                  onClick={() => handleStartStream(selectedCamera)}
+                                  className="bg-primary-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-primary-700 transition-colors flex items-center mx-auto"
+                                >
+                                  <Play className="h-4 w-4 mr-1" />
+                                  {camera?.status === 'online' ? 'Iniciar Stream' : 'Tentar Iniciar Stream'}
+                                </button>
+                              </div>
+                            )}
                           </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })()}
+                        </div>
+                      );
+                    })()}
+                </div>
               </div>
             ) : (
               <div className="aspect-video bg-gray-100 flex items-center justify-center">
@@ -1093,23 +1196,7 @@ const Cameras: React.FC = () => {
                   />
                 </div>
                 
-                <div>
-                  <label htmlFor="ip_address" className="block text-sm font-medium text-gray-700 mb-1">
-                    Endereço IP
-                  </label>
-                  <input
-                    type="text"
-                    id="ip_address"
-                    name="ip_address"
-                    value={formData.ip_address}
-                    onChange={handleInputChange}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    placeholder="192.168.1.100"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">
-                    Opcional se URL RTSP/RTMP for fornecida
-                  </p>
-                </div>
+
                 
                 <div>
                   <label htmlFor="stream_type" className="block text-sm font-medium text-gray-700 mb-1">
@@ -1213,22 +1300,26 @@ const Cameras: React.FC = () => {
                   
                   {formData.recording_enabled && (
                     <div className="mt-4 space-y-3">
-                      <div>
-                        <label htmlFor="quality_profile" className="block text-sm font-medium text-gray-700 mb-1">
-                          Qualidade de Gravação
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <label htmlFor="continuous_recording" className="block text-sm font-medium text-gray-700">
+                            Gravação Contínua (24/7)
+                          </label>
+                          <p className="text-xs text-gray-500 mt-1">
+                            Ativar gravação contínua 24 horas por dia
+                          </p>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer">
+                          <input
+                            type="checkbox"
+                            id="continuous_recording"
+                            name="continuous_recording"
+                            checked={formData.continuous_recording || false}
+                            onChange={(e) => setFormData(prev => ({ ...prev, continuous_recording: e.target.checked }))}
+                            className="sr-only peer"
+                          />
+                          <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-600"></div>
                         </label>
-                        <select
-                          id="quality_profile"
-                          name="quality_profile"
-                          value={formData.quality_profile || 'medium'}
-                          onChange={handleSelectChange}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                        >
-                          <option value="low">Baixa (720p)</option>
-                          <option value="medium">Média (1080p)</option>
-                          <option value="high">Alta (1440p)</option>
-                          <option value="ultra">Ultra (4K)</option>
-                        </select>
                       </div>
                       
                       <div>
@@ -1322,21 +1413,66 @@ const Cameras: React.FC = () => {
                   />
                 </div>
                 
+                {/* Seletor de Tipo de Stream */}
                 <div>
-                  <label htmlFor="edit-rtsp_url" className="block text-sm font-medium text-gray-700 mb-1">
-                    URL RTSP *
+                  <label htmlFor="edit-stream_type" className="block text-sm font-medium text-gray-700 mb-1">
+                    Tipo de Stream *
                   </label>
-                  <input
-                    type="text"
-                    id="edit-rtsp_url"
-                    name="rtsp_url"
-                    value={formData.rtsp_url}
-                    onChange={handleInputChange}
-                    required
+                  <select
+                    id="edit-stream_type"
+                    name="stream_type"
+                    value={formData.stream_type}
+                    onChange={(e) => setFormData(prev => ({ ...prev, stream_type: e.target.value as 'rtsp' | 'rtmp' }))}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    placeholder="rtsp://usuario:senha@192.168.1.100:554/stream"
-                  />
+                  >
+                    <option value="rtsp">RTSP</option>
+                    <option value="rtmp">RTMP</option>
+                  </select>
                 </div>
+                
+                {/* Campo URL RTSP */}
+                {formData.stream_type === 'rtsp' && (
+                  <div>
+                    <label htmlFor="edit-rtsp_url" className="block text-sm font-medium text-gray-700 mb-1">
+                      URL RTSP *
+                    </label>
+                    <input
+                      type="text"
+                      id="edit-rtsp_url"
+                      name="rtsp_url"
+                      value={formData.rtsp_url}
+                      onChange={handleInputChange}
+                      required
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      placeholder="rtsp://usuario:senha@192.168.1.100:554/stream"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Exemplo: rtsp://visualizar:infotec5384@170.245.45.10:37777/h264/ch4/main/av_stream
+                    </p>
+                  </div>
+                )}
+                
+                {/* Campo URL RTMP */}
+                 {formData.stream_type === 'rtmp' && (
+                   <div>
+                     <label htmlFor="edit-rtmp_url" className="block text-sm font-medium text-gray-700 mb-1">
+                       URL RTMP *
+                     </label>
+                     <input
+                       type="text"
+                       id="edit-rtmp_url"
+                       name="rtmp_url"
+                       value={formData.rtmp_url}
+                       onChange={handleInputChange}
+                       required
+                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                       placeholder="rtmp://servidor:1935/live/stream"
+                     />
+                     <p className="text-xs text-gray-500 mt-1">
+                       Exemplo: rtmp://localhost:1935/live/camera1
+                     </p>
+                   </div>
+                 )}
                 
                 <div>
                   <label htmlFor="edit-location" className="block text-sm font-medium text-gray-700 mb-1">
@@ -1381,22 +1517,26 @@ const Cameras: React.FC = () => {
                   
                   {formData.recording_enabled && (
                     <div className="mt-4 space-y-3">
-                      <div>
-                        <label htmlFor="edit-quality_profile" className="block text-sm font-medium text-gray-700 mb-1">
-                          Qualidade de Gravação
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <label htmlFor="edit-continuous_recording" className="block text-sm font-medium text-gray-700">
+                            Gravação Contínua (24/7)
+                          </label>
+                          <p className="text-xs text-gray-500 mt-1">
+                            Ativar gravação contínua 24 horas por dia
+                          </p>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer">
+                          <input
+                            type="checkbox"
+                            id="edit-continuous_recording"
+                            name="continuous_recording"
+                            checked={formData.continuous_recording || false}
+                            onChange={(e) => setFormData(prev => ({ ...prev, continuous_recording: e.target.checked }))}
+                            className="sr-only peer"
+                          />
+                          <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-600"></div>
                         </label>
-                        <select
-                          id="edit-quality_profile"
-                          name="quality_profile"
-                          value={formData.quality_profile || 'medium'}
-                          onChange={handleSelectChange}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                        >
-                          <option value="low">Baixa (720p)</option>
-                          <option value="medium">Média (1080p)</option>
-                          <option value="high">Alta (1440p)</option>
-                          <option value="ultra">Ultra (4K)</option>
-                        </select>
                       </div>
                       
                       <div>

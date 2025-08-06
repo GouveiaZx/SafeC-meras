@@ -3,15 +3,20 @@
  * Coleta e fornece métricas em tempo real do sistema
  */
 
+import dotenv from 'dotenv';
 import os from 'os';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import { supabaseAdmin } from '../config/database.js';
-import { logger } from '../config/logger.js';
+import logger from '../utils/logger.js';
 
+// Carregar variáveis de ambiente
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname = dirname(__filename);
+const envPath = join(__dirname, '..', '..', '.env');
+dotenv.config({ path: envPath });
 
 class MetricsService {
   constructor() {
@@ -204,7 +209,7 @@ class MetricsService {
       
       const { data: cameras, error } = await supabaseAdmin
         .from('cameras')
-        .select('id, status, recording_enabled, active');
+        .select('id, status, is_recording, is_streaming, active');
 
       if (error) {
         // Se a tabela não existir, usar valores padrão
@@ -228,8 +233,8 @@ class MetricsService {
       const offline = activeCameras.filter(c => c.status === 'offline').length;
       const error_count = activeCameras.filter(c => c.status === 'error').length;
       const maintenance = activeCameras.filter(c => c.status === 'maintenance').length;
-      const streaming = online; // Assumir que câmeras online estão fazendo streaming
-      const recording = activeCameras.filter(c => c.recording_enabled && c.status === 'online').length;
+      const streaming = activeCameras.filter(c => c.is_streaming === true).length;
+      const recording = activeCameras.filter(c => c.is_recording === true).length;
 
       this.metrics.cameras = {
         total,
@@ -238,6 +243,8 @@ class MetricsService {
         streaming,
         recording
       };
+      
+      logger.debug(`📊 Métricas das câmeras coletadas: ${total} total, ${online} online, ${recording} gravando`);
 
     } catch (error) {
       logger.error('Erro ao coletar métricas das câmeras:', error.message);
@@ -510,6 +517,9 @@ class MetricsService {
       const systemMetrics = this.metrics.system || {};
       const networkMetrics = this.metrics.network || {};
       
+      // Calcular métricas do dashboard
+      const dashboardMetrics = await this.calculateDashboardMetrics();
+      
       const metricsData = {
         timestamp: new Date().toISOString(),
         cpu_usage: parseFloat((systemMetrics.cpu || 0).toFixed(2)),
@@ -528,7 +538,8 @@ class MetricsService {
         metadata: {
           cameras: this.metrics.cameras || {},
           storage: this.metrics.storage || {},
-          database: this.metrics.database || {}
+          database: this.metrics.database || {},
+          dashboard: dashboardMetrics
         }
       };
       
@@ -545,6 +556,69 @@ class MetricsService {
       
     } catch (error) {
       logger.error('Erro ao salvar métricas no histórico:', error);
+    }
+  }
+
+  /**
+   * Calcula métricas específicas do dashboard
+   */
+  async calculateDashboardMetrics() {
+    try {
+      const { supabaseAdmin } = await import('../config/database.js');
+      
+      // Calcular total de gravações
+      const { count: totalRecordings } = await supabaseAdmin
+        .from('recordings')
+        .select('*', { count: 'exact', head: true });
+      
+      // Calcular uploads S3
+      const { count: s3Uploads } = await supabaseAdmin
+        .from('recordings')
+        .select('*', { count: 'exact', head: true })
+        .eq('upload_status', 'uploaded')
+        .not('s3_url', 'is', null);
+      
+      // Calcular armazenamento total
+      const { data: storageData } = await supabaseAdmin
+        .from('recordings')
+        .select('file_size')
+        .not('file_size', 'is', null);
+      
+      const totalStorageBytes = storageData?.reduce((sum, record) => sum + (record.file_size || 0), 0) || 0;
+      const totalStorageGB = totalStorageBytes / (1024 * 1024 * 1024);
+      
+      // Calcular câmeras online
+      const { count: onlineCameras } = await supabaseAdmin
+        .from('cameras')
+        .select('*', { count: 'exact', head: true })
+        .eq('status', 'online');
+      
+      // Calcular gravações ativas
+      const { count: activeRecordings } = await supabaseAdmin
+        .from('recordings')
+        .select('*', { count: 'exact', head: true })
+        .eq('status', 'recording');
+      
+      return {
+        total_recordings: totalRecordings || 0,
+        s3_uploads: s3Uploads || 0,
+        total_storage_gb: parseFloat(totalStorageGB.toFixed(2)),
+        online_cameras: onlineCameras || 0,
+        active_recordings: activeRecordings || 0,
+        last_updated: new Date().toISOString()
+      };
+      
+    } catch (error) {
+      logger.error('Erro ao calcular métricas do dashboard:', error);
+      return {
+        total_recordings: 0,
+        s3_uploads: 0,
+        total_storage_gb: 0,
+        online_cameras: 0,
+        active_recordings: 0,
+        last_updated: new Date().toISOString(),
+        error: error.message
+      };
     }
   }
 

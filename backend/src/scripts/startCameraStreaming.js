@@ -3,7 +3,7 @@
  * NewCAM - Sistema de Monitoramento
  */
 
-import streamingService from '../services/StreamingService.js';
+import unifiedStreamingService from '../services/UnifiedStreamingService.js';
 import { createModuleLogger } from '../config/logger.js';
 import { supabase, supabaseAdmin } from '../config/database.js';
 
@@ -35,7 +35,7 @@ async function startCameraStreaming() {
     
     // 2. Inicializar serviço de streaming
     console.log('\n🔧 Inicializando serviço de streaming...');
-    await streamingService.init();
+    await unifiedStreamingService.init();
     console.log('✅ Serviço de streaming inicializado');
     
     // 3. Processar cada câmera
@@ -56,17 +56,17 @@ async function startCameraStreaming() {
         console.log(`  📡 Status atualizado para 'offline'`);
         
         // Tentar iniciar stream
-        try {
-          const streamResult = await streamingService.startStream(camera, {
-            quality: 'medium',
-            format: 'hls',
-            audio: true
-          });
-          
+        const streamResult = await unifiedStreamingService.startStream(camera.id, {
+          quality: 'medium',
+          format: 'hls',
+          audio: true
+        });
+        
+        if (streamResult && streamResult.success) {
           console.log(`  🎯 Stream iniciado:`, {
-            streamId: streamResult.id,
-            urls: streamResult.urls,
-            server: streamResult.server
+            streamId: streamResult.data.id,
+            urls: streamResult.data.urls,
+            server: streamResult.data.server
           });
           
           // Atualizar status para 'online' e adicionar informações de streaming
@@ -75,7 +75,7 @@ async function startCameraStreaming() {
             .update({ 
               status: 'online',
               is_streaming: true,
-              hls_url: streamResult.urls?.hls || streamResult.hlsUrl,
+              hls_url: streamResult.data.urls?.hls || streamResult.data.hlsUrl,
               last_seen: new Date().toISOString(),
               updated_at: new Date().toISOString()
             })
@@ -83,8 +83,8 @@ async function startCameraStreaming() {
           
           console.log(`  ✅ Câmera ${camera.name} está ONLINE e transmitindo!`);
           
-        } catch (streamError) {
-          console.log(`  ⚠️  Erro ao iniciar stream: ${streamError.message}`);
+        } else {
+          console.log(`  ⚠️  Erro ao iniciar stream: ${streamResult.error || streamResult.message}`);
           
           // Mesmo com erro de stream, marcar como online (pode ser problema temporário)
           await supabaseAdmin

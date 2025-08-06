@@ -24,16 +24,13 @@ import {
   AuthorizationError 
 } from '../middleware/errorHandler.js';
 import { createModuleLogger } from '../config/logger.js';
-import { StreamingService } from '../services/StreamingService.js';
-import RecordingService from '../services/RecordingService.js';
+import unifiedStreamingService from '../services/UnifiedStreamingService.js';
 
 // Função utilitária local
 function isValidUUID(uuid) {
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   return uuidRegex.test(uuid);
 }
-
-const streamingService = new StreamingService();
 
 const router = express.Router();
 const logger = createModuleLogger('CameraRoutes');
@@ -128,14 +125,23 @@ router.get('/',
  * @access Private (Admin/Operator)
  */
 router.get('/stats',
-  requireRole(['admin', 'operator']),
   asyncHandler(async (req, res) => {
+    // Função auxiliar para contar com fallback
+    const safeCount = async (filters) => {
+      try {
+        return await Camera.count(filters);
+      } catch (error) {
+        logger.warn(`Erro ao contar câmeras com filtros ${JSON.stringify(filters)}: ${error.message}`);
+        return 0;
+      }
+    };
+
     const [totalCameras, onlineCameras, activeCameras, ipCameras, analogCameras] = await Promise.all([
-      Camera.count(),
-      Camera.count({ status: 'online' }),
-      Camera.count({ active: true }),
-      Camera.count({ type: 'ip' }),
-      Camera.count({ type: 'analog' })
+      safeCount(),
+      safeCount({ status: 'online' }),
+      safeCount({ active: true }),
+      safeCount({ type: 'ip' }),
+      safeCount({ type: 'analog' })
     ]);
 
     const stats = {
@@ -147,14 +153,14 @@ router.get('/stats',
       byType: {
         ip: ipCameras,
         analog: analogCameras,
-        usb: await Camera.count({ type: 'usb' }),
-        virtual: await Camera.count({ type: 'virtual' })
+        usb: await safeCount({ type: 'usb' }),
+        virtual: await safeCount({ type: 'virtual' })
       },
       byStatus: {
         online: onlineCameras,
-        offline: await Camera.count({ status: 'offline' }),
-        error: await Camera.count({ status: 'error' }),
-        maintenance: await Camera.count({ status: 'maintenance' })
+        offline: await safeCount({ status: 'offline' }),
+        error: await safeCount({ status: 'error' }),
+        maintenance: await safeCount({ status: 'maintenance' })
       }
     };
 
@@ -281,17 +287,12 @@ router.post('/',
     } = req.validatedData;
 
     // Validação customizada: deve ter pelo menos IP ou URL de stream
-    console.log('🔍 [TEMP DEBUG CAMERA CREATE] Validação customizada:', {
-      ip_address,
-      rtsp_url,
-      rtmp_url,
-      hasIp: !!ip_address,
-      hasRtsp: !!rtsp_url,
-      hasRtmp: !!rtmp_url
-    });
+    // Tratar strings vazias como valores inválidos
+    const hasValidIp = ip_address && ip_address.trim() !== '';
+    const hasValidRtsp = rtsp_url && rtsp_url.trim() !== '';
+    const hasValidRtmp = rtmp_url && rtmp_url.trim() !== '';
     
-    if (!ip_address && !rtsp_url && !rtmp_url) {
-      console.log('🔍 [TEMP DEBUG CAMERA CREATE] ERRO: Nenhum campo obrigatório fornecido');
+    if (!hasValidIp && !hasValidRtsp && !hasValidRtmp) {
       throw new ValidationError('Deve ser fornecido pelo menos um: IP da câmera, URL RTSP ou URL RTMP');
     }
 
@@ -448,7 +449,26 @@ router.put('/:id',
       required: false,
       type: 'boolean'
     },
-
+    continuous_recording: {
+      required: false,
+      type: 'boolean'
+    },
+    retention_days: {
+      required: false,
+      type: 'integer',
+      min: 1,
+      max: 365
+    },
+    rtsp_url: {
+      required: false,
+      type: 'nonEmptyString',
+      maxLength: 500
+    },
+    rtmp_url: {
+      required: false,
+      type: 'nonEmptyString',
+      maxLength: 500
+    },
     active: {
       required: false,
       type: 'boolean'
@@ -581,7 +601,7 @@ router.post('/:id/test-connection',
     }
 
     // Testar conexão real com a câmera
-    const testResult = await streamingService.testCameraConnection(camera);
+    const testResult = await unifiedStreamingService.testCameraConnection(camera);
 
     // Atualizar status baseado no teste
     const newStatus = testResult.success ? 'online' : 'offline';
@@ -680,165 +700,6 @@ router.put('/:id/thumbnail',
   })
 );
 
-/**
- * @route GET /api/cameras/:id/recordings
- * @desc Listar gravações da câmera
- * @access Private
- */
-router.get('/:id/recordings',
-  validateParams({
-    id: {
-      required: true,
-      type: 'uuid',
-      message: 'ID da câmera deve ser um UUID válido'
-    }
-  }),
-  requireCameraAccess,
-  requirePermission('recordings.view'),
-  asyncHandler(async (req, res) => {
-    const { id } = req.params;
-    const {
-      page = 1,
-      limit = 10,
-      startDate = null,
-      endDate = null
-    } = req.query;
-
-    const camera = await Camera.findById(id);
-    if (!camera) {
-      throw new NotFoundError('Câmera não encontrada');
-    }
-
-    // Buscar gravações da câmera usando RecordingService
-    const searchParams = {
-      camera_id: id,
-      start_date: startDate,
-      end_date: endDate,
-      page: parseInt(page),
-      limit: parseInt(limit),
-      user_id: req.user.id
-    };
-
-    const recordings = await RecordingService.searchRecordings(searchParams);
-
-    res.json({
-      message: 'Gravações listadas com sucesso',
-      data: recordings
-    });
-  })
-);
-
-/**
- * @route POST /api/cameras/:id/recording/start
- * @desc Iniciar gravação de uma câmera
- * @access Private
- */
-router.post('/:id/recording/start',
-  requireCameraAccess,
-  validateParams({
-    id: {
-      required: true,
-      type: 'uuid',
-      message: 'ID da câmera deve ser um UUID válido'
-    }
-  }),
-  asyncHandler(async (req, res) => {
-    const { id } = req.params;
-    
-    logger.info(`[API] Iniciando gravação para câmera ${id}`);
-    
-    try {
-      const result = await RecordingService.startRecording(id);
-      
-      res.json({
-        success: true,
-        message: 'Gravação iniciada com sucesso',
-        data: result
-      });
-    } catch (error) {
-      logger.error(`[API] Erro ao iniciar gravação:`, error);
-      res.status(500).json({
-        success: false,
-        message: 'Erro ao iniciar gravação',
-        error: error.message
-      });
-    }
-  })
-);
-
-/**
- * @route POST /api/cameras/:id/recording/stop
- * @desc Parar gravação de uma câmera
- * @access Private
- */
-router.post('/:id/recording/stop',
-  requireCameraAccess,
-  validateParams({
-    id: {
-      required: true,
-      type: 'uuid',
-      message: 'ID da câmera deve ser um UUID válido'
-    }
-  }),
-  asyncHandler(async (req, res) => {
-    const { id } = req.params;
-    const { recordingId } = req.body;
-    
-    logger.info(`[API] Parando gravação para câmera ${id}`);
-    
-    try {
-      const result = await RecordingService.stopRecording(id, recordingId);
-      
-      res.json({
-        success: true,
-        message: 'Gravação parada com sucesso',
-        data: result
-      });
-    } catch (error) {
-      logger.error(`[API] Erro ao parar gravação:`, error);
-      res.status(500).json({
-        success: false,
-        message: 'Erro ao parar gravação',
-        error: error.message
-      });
-    }
-  })
-);
-
-/**
- * @route GET /api/cameras/:id/recording/status
- * @desc Verificar status de gravação de uma câmera
- * @access Private
- */
-router.get('/:id/recording/status',
-  requireCameraAccess,
-  validateParams({
-    id: {
-      required: true,
-      type: 'uuid',
-      message: 'ID da câmera deve ser um UUID válido'
-    }
-  }),
-  asyncHandler(async (req, res) => {
-    const { id } = req.params;
-    
-    try {
-      const activeRecordings = await RecordingService.getActiveRecordings(id);
-      
-      res.json({
-        success: true,
-        isRecording: activeRecordings.length > 0,
-        activeRecordings
-      });
-    } catch (error) {
-      logger.error(`[API] Erro ao verificar status:`, error);
-      res.status(500).json({
-        success: false,
-        message: 'Erro ao verificar status de gravação',
-        error: error.message
-      });
-    }
-  })
-);
+// Rotas de gravação foram movidas para /api/recordings/cameras/:id/...
 
 export default router;

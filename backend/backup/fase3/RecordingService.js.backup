@@ -1,0 +1,2404 @@
+import { createClient } from '@supabase/supabase-js';
+import fs from 'fs/promises';
+import { createReadStream } from 'fs';
+import path from 'path';
+import archiver from 'archiver';
+import { v4 as uuidv4 } from 'uuid';
+import axios from 'axios';
+import { createModuleLogger } from '../config/logger.js';
+import { Camera } from '../models/Camera.js';
+import uploadQueueService from './UploadQueueService.js';
+import { redisClient } from '../config/redis.js';
+import alertService from './AlertService.js';
+
+const logger = createModuleLogger('RecordingService');
+
+class RecordingService {
+  constructor() {
+    // Usando SERVICE_ROLE_KEY para operações administrativas
+    this.supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE_KEY
+    );
+    
+    // Diretórios de armazenamento
+    this.recordingsPath = process.env.RECORDINGS_PATH || './storage/recordings';
+    this.exportsPath = process.env.EXPORTS_PATH || './storage/exports';
+    
+    // Jobs de exportação em andamento
+    this.exportJobs = new Map();
+    
+    // Serviço de upload
+    this.uploadQueueService = uploadQueueService;
+    
+    // Propriedades de monitoramento contínuo
+    this.streamingService = null; // Será inicializado quando necessário
+    this.isRunning = false;
+    this.monitoringInterval = null;
+    this.checkInterval = 30000; // 30 segundos
+    this.activeRecordings = new Map(); // cameraId -> recordingInfo
+    
+    this.initializeStorage();
+    this.initializeUploadService();
+  }
+  
+  /**
+   * Inicializar serviço de upload
+   */
+  async initializeUploadService() {
+    try {
+      await this.uploadQueueService.initialize();
+      logger.info('[RecordingService] Serviço de upload inicializado');
+    } catch (error) {
+      logger.error('[RecordingService] Erro ao inicializar serviço de upload:', error);
+    }
+  }
+  
+  /**
+   * Inicializar diretórios de armazenamento
+   */
+  async initializeStorage() {
+    try {
+      await fs.mkdir(this.recordingsPath, { recursive: true });
+      await fs.mkdir(this.exportsPath, { recursive: true });
+      logger.info('Diretórios de armazenamento inicializados');
+    } catch (error) {
+      logger.error('Erro ao inicializar armazenamento:', error);
+    }
+  }
+  
+  /**
+   * Iniciar gravação de uma câmera
+   */
+  async startRecording(cameraId) {
+    try {
+      logger.info(`[RecordingService] 🎬 Iniciando gravação para câmera ${cameraId}`);
+      
+      // Verificar variáveis de ambiente necessárias
+      if (!process.env.ZLMEDIAKIT_API_URL) {
+        logger.error('[RecordingService] ❌ ZLMEDIAKIT_API_URL não configurado');
+        throw new Error('ZLMEDIAKIT_API_URL não está configurado');
+      }
+      
+      if (!process.env.ZLMEDIAKIT_SECRET) {
+        logger.error('[RecordingService] ❌ ZLMEDIAKIT_SECRET não configurado');
+        throw new Error('ZLMEDIAKIT_SECRET não está configurado');
+      }
+      
+      logger.info(`[RecordingService] 🔍 Buscando dados da câmera ${cameraId}`);
+      
+      // Buscar dados da câmera
+      const { data: camera, error: cameraError } = await this.supabase
+        .from('cameras')
+        .select('*')
+        .eq('id', cameraId)
+        .single();
+      
+      if (cameraError || !camera) {
+        logger.error(`[RecordingService] ❌ Câmera ${cameraId} não encontrada:`, cameraError);
+        throw new Error(`Câmera ${cameraId} não encontrada`);
+      }
+      
+      logger.info(`[RecordingService] ✅ Câmera encontrada:`, {
+        id: camera.id,
+        name: camera.name,
+        rtsp_url: camera.rtsp_url ? `${camera.rtsp_url.substring(0, 20)}...` : 'null',
+        recording_enabled: camera.recording_enabled,
+        continuous_recording: camera.continuous_recording
+      });
+      
+      // Extrair informações do stream
+      // Usar o ID da câmera como stream (mesmo padrão do StreamingService)
+      const streamInfo = {
+        vhost: '__defaultVhost__',
+        app: 'live',
+        stream: cameraId
+      };
+      
+      // Configurar parâmetros de gravação
+      const recordParams = {
+        type: 0, // 0=hls+mp4, 1=hls, 2=mp4
+        vhost: streamInfo.vhost,
+        app: streamInfo.app,
+        stream: streamInfo.stream,
+        customized_path: `recordings/${cameraId}`,
+        max_second: 1800, // 30 minutos máximo por arquivo (segmentos de 30min)
+        secret: process.env.ZLMEDIAKIT_SECRET
+      };
+      
+      logger.info(`[RecordingService] Parâmetros de gravação:`, recordParams);
+      
+      // Chamar API do ZLMediaKit
+      const zlmResponse = await axios.get(
+        `${process.env.ZLMEDIAKIT_API_URL}/index/api/startRecord`,
+        {
+          params: recordParams,
+          timeout: 10000
+        }
+      );
+      
+      logger.info(`[RecordingService] Resposta ZLMediaKit:`, zlmResponse.data);
+      
+      if (zlmResponse.data.code !== 0) {
+        throw new Error(`ZLMediaKit erro: ${zlmResponse.data.msg}`);
+      }
+      
+      // Criar registro de gravação no banco
+      logger.info(`[RecordingService] 💾 Criando registro de gravação no banco de dados`);
+      const recordingId = await this.createRecordingRecord(cameraId, recordParams);
+      
+      logger.info(`[RecordingService] ✅ Gravação iniciada com sucesso:`, {
+        recordingId,
+        cameraId,
+        cameraName: camera.name,
+        zlmCode: zlmResponse.data.code,
+        zlmMsg: zlmResponse.data.msg
+      });
+      
+      return {
+        success: true,
+        recordingId,
+        message: 'Gravação iniciada com sucesso',
+        zlmResponse: zlmResponse.data
+      };
+      
+    } catch (error) {
+      logger.error(`[RecordingService] Erro crítico ao iniciar gravação para câmera ${cameraId}:`, {
+        error: error.message,
+        stack: error.stack,
+        cameraId,
+        zlmApiUrl: process.env.ZLMEDIAKIT_API_URL,
+        zlmSecret: process.env.ZLMEDIAKIT_SECRET ? 'configurado' : 'não configurado',
+        timestamp: new Date().toISOString(),
+        errorType: error.constructor.name
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Parar gravação de uma câmera
+   */
+  async stopRecording(cameraId, recordingId = null) {
+    try {
+      logger.info(`[RecordingService] Parando gravação para câmera ${cameraId}`);
+      
+      // Buscar dados da câmera
+      const { data: camera, error: cameraError } = await this.supabase
+        .from('cameras')
+        .select('*')
+        .eq('id', cameraId)
+        .single();
+      
+      if (cameraError || !camera) {
+        throw new Error(`Câmera ${cameraId} não encontrada`);
+      }
+      
+      // Usar o ID da câmera como stream (mesmo padrão do StreamingService)
+      const streamInfo = {
+        vhost: '__defaultVhost__',
+        app: 'live',
+        stream: cameraId
+      };
+      
+      // Configurar parâmetros para parar gravação
+      const stopParams = {
+        type: 0,
+        vhost: streamInfo.vhost,
+        app: streamInfo.app,
+        stream: streamInfo.stream,
+        secret: process.env.ZLMEDIAKIT_SECRET
+      };
+      
+      logger.info(`[RecordingService] Parâmetros para parar:`, stopParams);
+      
+      // Chamar API do ZLMediaKit
+      const zlmResponse = await axios.get(
+        `${process.env.ZLMEDIAKIT_API_URL}/index/api/stopRecord`,
+        {
+          params: stopParams,
+          timeout: 10000
+        }
+      );
+      
+      logger.info(`[RecordingService] Resposta ZLMediaKit (stop):`, zlmResponse.data);
+      
+      // Atualizar status no banco se recordingId fornecido
+      if (recordingId) {
+        await this.updateRecordingStatus(recordingId, 'completed', {
+          end_time: new Date().toISOString()
+        });
+        
+        // Processar arquivo de gravação para upload
+        try {
+          // Aguardar um pouco para o arquivo ser finalizado pelo ZLMediaKit
+          setTimeout(async () => {
+            try {
+              // Buscar o arquivo de gravação gerado
+              const recordingPath = path.join(this.recordingsPath, cameraId);
+              const files = await fs.readdir(recordingPath).catch(() => []);
+              
+              if (files.length > 0) {
+                // Pegar o arquivo mais recente
+                const latestFile = files
+                  .map(file => ({ name: file, path: path.join(recordingPath, file) }))
+                  .sort((a, b) => {
+                    try {
+                      const statA = require('fs').statSync(a.path);
+                      const statB = require('fs').statSync(b.path);
+                      return statB.mtime - statA.mtime;
+                    } catch {
+                      return 0;
+                    }
+                  })[0];
+                
+                if (latestFile) {
+                  logger.info(`[RecordingService] Processando arquivo de gravação: ${latestFile.path}`);
+                  await this.processRecordingFile(latestFile.path, cameraId, recordingId);
+                }
+              }
+            } catch (error) {
+              logger.error(`[RecordingService] Erro ao processar arquivo de gravação: ${error.message}`);
+            }
+          }, 5000); // Aguardar 5 segundos
+        } catch (error) {
+          logger.error(`[RecordingService] Erro ao configurar processamento de arquivo: ${error.message}`);
+        }
+      }
+      
+      logger.info(`[RecordingService] Gravação parada com sucesso`);
+      
+      return {
+        success: true,
+        message: 'Gravação parada com sucesso',
+        zlmResponse: zlmResponse.data
+      };
+      
+    } catch (error) {
+      logger.error(`[RecordingService] Erro ao parar gravação:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Extrair informações de stream da URL RTSP
+   */
+  parseRtspUrl(rtspUrl) {
+    try {
+      // Exemplo: rtsp://user:pass@ip:port/app/stream
+      const url = new URL(rtspUrl);
+      const pathParts = url.pathname.split('/').filter(p => p);
+      
+      // Para URLs do tipo rtsp://user:pass@ip:port/stream
+      // ou rtsp://user:pass@ip:port/app/stream
+      let app = 'live';
+      let stream = pathParts[0];
+      
+      if (pathParts.length >= 2) {
+        app = pathParts[0];
+        stream = pathParts[1];
+      } else if (pathParts.length === 1) {
+        stream = pathParts[0];
+      } else {
+        stream = `camera_${Date.now()}`;
+      }
+      
+      return {
+        vhost: '__defaultVhost__',
+        app: app,
+        stream: stream
+      };
+    } catch (error) {
+      logger.warn(`[RecordingService] Erro ao parsear RTSP URL: ${error.message}`);
+      return {
+        vhost: '__defaultVhost__',
+        app: 'live',
+        stream: `camera_${Date.now()}`
+      };
+    }
+  }
+
+  /**
+   * Criar registro de gravação no banco de dados
+   */
+  async createRecordingRecord(cameraId, params) {
+    try {
+      const recordingId = uuidv4();
+      
+      const now = new Date().toISOString();
+      
+      const { data, error } = await this.supabase
+        .from('recordings')
+        .insert([{
+          id: recordingId,
+          camera_id: cameraId,
+          filename: `recording_${Date.now()}`,
+          file_path: params.customized_path,
+          status: 'recording',
+          start_time: now,
+          created_at: now,
+          metadata: {
+            vhost: params.vhost,
+            app: params.app,
+            stream: params.stream,
+            type: params.type
+          }
+        }])
+        .select()
+        .single();
+      
+      if (error) {
+        throw error;
+      }
+      
+      return recordingId;
+    } catch (error) {
+      logger.error('Erro ao criar registro de gravação:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Atualizar status de gravação
+   */
+  async updateRecordingStatus(recordingId, status, additionalData = {}) {
+    try {
+      const { error } = await this.supabase
+        .from('recordings')
+        .update({
+          status: status,
+          updated_at: new Date().toISOString(),
+          ...additionalData
+        })
+        .eq('id', recordingId);
+      
+      if (error) {
+        throw error;
+      }
+      
+      logger.info(`[RecordingService] Status de gravação ${recordingId} atualizado para: ${status}`);
+    } catch (error) {
+      logger.error('Erro ao atualizar status de gravação:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Buscar todas as gravações
+   */
+  async getRecordings() {
+    try {
+      const { data, error } = await this.supabase
+        .from('recordings')
+        .select(`
+          *,
+          cameras:camera_id (id, name)
+        `)
+        .order('created_at', { ascending: false });
+      
+      if (error) {
+        throw error;
+      }
+      
+      return data;
+    } catch (error) {
+      logger.error('Erro ao buscar gravações:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Buscar gravações com filtros e paginação
+   * @param {string} userId - ID do usuário
+   * @param {Object} filters - Filtros de busca
+   * @returns {Promise<Object>} - Resultado com gravações e metadados
+   */
+  async searchRecordings(userId, filters = {}) {
+    try {
+      logger.info(`[RecordingService] Buscando gravações para usuário ${userId} com filtros:`, filters);
+      
+      // Obter câmeras do usuário
+      const { Camera } = await import('../models/Camera.js');
+      const userCameras = await Camera.findByUserId(userId);
+      
+      if (!userCameras || userCameras.length === 0) {
+        return {
+          recordings: [],
+          page: parseInt(filters.page) || 1,
+          limit: parseInt(filters.limit) || 20,
+          total: 0,
+          pages: 0,
+          appliedFilters: filters
+        };
+      }
+      
+      const cameraIds = userCameras.map(cam => cam.id);
+      
+      // Construir query base
+      let query = this.supabase
+        .from('recordings')
+        .select(`
+          *,
+          cameras:camera_id (id, name, location)
+        `, { count: 'exact' })
+        .in('camera_id', cameraIds);
+      
+      // Aplicar filtros
+      if (filters.camera_id) {
+        query = query.eq('camera_id', filters.camera_id);
+      }
+      
+      if (filters.start_date) {
+        query = query.gte('created_at', filters.start_date);
+      }
+      
+      if (filters.end_date) {
+        query = query.lte('created_at', filters.end_date);
+      }
+      
+      if (filters.duration_min) {
+        query = query.gte('duration', filters.duration_min);
+      }
+      
+      if (filters.duration_max) {
+        query = query.lte('duration', filters.duration_max);
+      }
+      
+      if (filters.file_size_min) {
+        query = query.gte('file_size', filters.file_size_min);
+      }
+      
+      if (filters.file_size_max) {
+        query = query.lte('file_size', filters.file_size_max);
+      }
+      
+      if (filters.quality) {
+        query = query.eq('quality', filters.quality);
+      }
+      
+      if (filters.event_type) {
+        query = query.eq('event_type', filters.event_type);
+      }
+      
+      // Ordenação
+      const sortBy = filters.sort_by || 'created_at';
+      const sortOrder = filters.sort_order === 'asc' ? { ascending: true } : { ascending: false };
+      query = query.order(sortBy, sortOrder);
+      
+      // Paginação
+      const page = parseInt(filters.page) || 1;
+      const limit = parseInt(filters.limit) || 20;
+      const offset = (page - 1) * limit;
+      
+      query = query.range(offset, offset + limit - 1);
+      
+      const { data, error, count } = await query;
+      
+      if (error) {
+        throw error;
+      }
+      
+      const total = count || 0;
+      const pages = Math.ceil(total / limit);
+      
+      logger.info(`[RecordingService] Encontradas ${total} gravações para usuário ${userId}`);
+      
+      // Mapear dados para o formato esperado pelo frontend
+      const mappedRecordings = (data || []).map(recording => ({
+        id: recording.id,
+        cameraId: recording.camera_id,
+        cameraName: recording.cameras?.name || 'Câmera Desconhecida',
+        filename: recording.filename,
+        startTime: recording.created_at,
+        endTime: recording.end_time || recording.updated_at,
+        duration: recording.duration || 0,
+        size: recording.file_size || 0,
+        status: recording.status,
+        localPath: recording.file_path,
+        s3Url: recording.s3_url,
+        quality: recording.quality,
+        resolution: recording.resolution,
+        segments: recording.segments || []
+      }));
+      
+      return {
+        recordings: mappedRecordings,
+        page,
+        limit,
+        total,
+        pages,
+        appliedFilters: filters
+      };
+      
+    } catch (error) {
+      logger.error('[RecordingService] Erro ao buscar gravações:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Buscar gravações por câmera
+   */
+  async getRecordingsByCamera(cameraId) {
+    try {
+      const { data, error } = await this.supabase
+        .from('recordings')
+        .select(`
+          *,
+          cameras:camera_id (id, name)
+        `)
+        .eq('camera_id', cameraId)
+        .order('created_at', { ascending: false });
+      
+      if (error) {
+        throw error;
+      }
+      
+      // Mapear dados para o formato esperado pelo frontend
+      const mappedRecordings = (data || []).map(recording => ({
+        id: recording.id,
+        cameraId: recording.camera_id,
+        cameraName: recording.cameras?.name || 'Câmera Desconhecida',
+        filename: recording.filename,
+        startTime: recording.created_at,
+        endTime: recording.end_time || recording.updated_at,
+        duration: recording.duration || 0,
+        size: recording.file_size || 0,
+        status: recording.status,
+        localPath: recording.file_path,
+        s3Url: recording.s3_url,
+        quality: recording.quality,
+        resolution: recording.resolution,
+        segments: recording.segments || []
+      }));
+      
+      return mappedRecordings;
+    } catch (error) {
+      logger.error('Erro ao buscar gravações por câmera:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Buscar gravação por ID
+   */
+  async getRecordingById(recordingId, userId = null) {
+    try {
+      const { data, error } = await this.supabase
+        .from('recordings')
+        .select(`
+          *,
+          cameras:camera_id (id, name)
+        `)
+        .eq('id', recordingId)
+        .single();
+      
+      if (error) {
+        throw error;
+      }
+      
+      // Mapear dados para o formato esperado pelo frontend
+      if (data) {
+        return {
+          id: data.id,
+          camera_id: data.camera_id, // Manter camera_id para compatibilidade com stopRecording
+          cameraId: data.camera_id,
+          cameraName: data.cameras?.name || 'Câmera Desconhecida',
+          filename: data.filename,
+          startTime: data.created_at,
+          endTime: data.end_time || data.updated_at,
+          duration: data.duration || 0,
+          size: data.file_size || 0,
+          status: data.status,
+          localPath: data.file_path,
+          s3Url: data.s3_url,
+          quality: data.quality,
+          resolution: data.resolution,
+          segments: data.segments || []
+        };
+      }
+      
+      return null;
+    } catch (error) {
+      logger.error('Erro ao buscar gravação:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Buscar gravação por ID (acesso público para desenvolvimento)
+   */
+  async getRecordingByIdPublic(recordingId) {
+    try {
+      const { data, error } = await this.supabase
+        .from('recordings')
+        .select(`
+          *,
+          cameras:camera_id (id, name)
+        `)
+        .eq('id', recordingId)
+        .single();
+      
+      if (error) {
+        throw error;
+      }
+      
+      // Mapear dados para o formato esperado pelo frontend
+      if (data) {
+        return {
+          id: data.id,
+          cameraId: data.camera_id,
+          cameraName: data.cameras?.name || 'Câmera Desconhecida',
+          filename: data.filename,
+          startTime: data.created_at,
+          endTime: data.end_time || data.updated_at,
+          duration: data.duration || 0,
+          size: data.file_size || 0,
+          status: data.status,
+          localPath: data.file_path,
+          s3_url: data.s3_url,
+          file_path: data.file_path,
+          quality: data.quality,
+          resolution: data.resolution,
+          segments: data.segments || []
+        };
+      }
+      
+      return null;
+    } catch (error) {
+      logger.error('Erro ao buscar gravação (público):', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Deletar gravação
+   */
+  async deleteRecording(recordingId) {
+    try {
+      // Buscar gravação para obter caminho do arquivo
+      const recording = await this.getRecordingById(recordingId);
+      
+      if (!recording) {
+        throw new Error('Gravação não encontrada');
+      }
+      
+      // Deletar arquivo se existir
+      if (recording.file_path) {
+        const filePath = path.join(this.recordingsPath, recording.file_path);
+        try {
+          await fs.unlink(filePath);
+          logger.info(`[RecordingService] Arquivo deletado: ${filePath}`);
+        } catch (fileError) {
+          logger.warn(`[RecordingService] Erro ao deletar arquivo: ${fileError.message}`);
+        }
+      }
+      
+      // Deletar do banco
+      const { error } = await this.supabase
+        .from('recordings')
+        .delete()
+        .eq('id', recordingId);
+      
+      if (error) {
+        throw error;
+      }
+      
+      logger.info(`[RecordingService] Gravação ${recordingId} deletada com sucesso`);
+      
+      return { success: true, message: 'Gravação deletada com sucesso' };
+    } catch (error) {
+      logger.error('Erro ao deletar gravação:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Exportar gravação
+   */
+  async exportRecording(recordingId, format = 'zip') {
+    try {
+      const recording = await this.getRecordingById(recordingId);
+      
+      if (!recording) {
+        throw new Error('Gravação não encontrada');
+      }
+      
+      const exportId = uuidv4();
+      const exportPath = path.join(this.exportsPath, `${exportId}.${format}`);
+      
+      // Adicionar job ao mapa de exportações
+      this.exportJobs.set(exportId, {
+        status: 'processing',
+        progress: 0,
+        recordingId,
+        format,
+        exportPath
+      });
+      
+      // Processar exportação em background
+      this.processExport(exportId, recording, format);
+      
+      return {
+        exportId,
+        status: 'processing',
+        message: 'Exportação iniciada'
+      };
+    } catch (error) {
+      logger.error('Erro ao exportar gravação:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Processar exportação em background
+   */
+  async processExport(exportId, recording, format) {
+    try {
+      const job = this.exportJobs.get(exportId);
+      if (!job) return;
+      
+      job.progress = 10;
+      
+      // Verificar se o arquivo existe
+      const sourcePath = path.join(this.recordingsPath, recording.file_path);
+      
+      if (!await this.fileExists(sourcePath)) {
+        throw new Error('Arquivo de gravação não encontrado');
+      }
+      
+      job.progress = 30;
+      
+      if (format === 'zip') {
+        await this.createZipExport(sourcePath, job.exportPath);
+      } else {
+        throw new Error(`Formato de exportação não suportado: ${format}`);
+      }
+      
+      job.progress = 100;
+      job.status = 'completed';
+      
+      logger.info(`[RecordingService] Exportação ${exportId} concluída`);
+      
+    } catch (error) {
+      const job = this.exportJobs.get(exportId);
+      if (job) {
+        job.status = 'failed';
+        job.error = error.message;
+      }
+      
+      logger.error(`[RecordingService] Erro na exportação ${exportId}:`, error);
+    }
+  }
+
+  /**
+   * Criar exportação ZIP
+   */
+  async createZipExport(sourcePath, exportPath) {
+    return new Promise((resolve, reject) => {
+      const output = fs.createWriteStream(exportPath);
+      const archive = archiver('zip', { zlib: { level: 9 } });
+      
+      output.on('close', resolve);
+      archive.on('error', reject);
+      
+      archive.pipe(output);
+      archive.file(sourcePath, { name: path.basename(sourcePath) });
+      archive.finalize();
+    });
+  }
+
+  /**
+   * Verificar se arquivo existe
+   */
+  async fileExists(filePath) {
+    try {
+      await fs.access(filePath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Buscar status de exportação
+   */
+  getExportStatus(exportId) {
+    const job = this.exportJobs.get(exportId);
+    if (!job) {
+      return { status: 'not_found', message: 'Exportação não encontrada' };
+    }
+    
+    return {
+      exportId,
+      status: job.status,
+      progress: job.progress,
+      error: job.error,
+      downloadUrl: job.status === 'completed' ? `/api/recordings/export/${exportId}/download` : null
+    };
+  }
+
+  /**
+   * Baixar arquivo exportado
+   */
+  async downloadExport(exportId) {
+    const job = this.exportJobs.get(exportId);
+    if (!job || job.status !== 'completed') {
+      throw new Error('Exportação não encontrada ou não concluída');
+    }
+    
+    const exists = await this.fileExists(job.exportPath);
+    if (!exists) {
+      throw new Error('Arquivo de exportação não encontrado');
+    }
+    
+    return {
+      filePath: job.exportPath,
+      fileName: `recording_${job.recordingId}.${job.format}`,
+      mimeType: job.format === 'zip' ? 'application/zip' : 'application/octet-stream'
+    };
+  }
+
+  /**
+   * Limpar exportações antigas
+   */
+  async cleanupOldExports() {
+    try {
+      const files = await fs.readdir(this.exportsPath);
+      const now = Date.now();
+      const maxAge = 24 * 60 * 60 * 1000; // 24 horas
+      
+      for (const file of files) {
+        const filePath = path.join(this.exportsPath, file);
+        const stats = await fs.stat(filePath);
+        
+        if (now - stats.mtime.getTime() > maxAge) {
+          await fs.unlink(filePath);
+          logger.info(`[RecordingService] Exportação antiga deletada: ${file}`);
+        }
+      }
+    } catch (error) {
+      logger.error('Erro ao limpar exportações antigas:', error);
+    }
+  }
+
+  /**
+   * Obter estatísticas de gravações
+   */
+  async getRecordingStats(userId, period = '7d') {
+    try {
+      logger.info(`[RecordingService] Buscando estatísticas para usuário ${userId}, período: ${period}`);
+      
+      // Obter câmeras do usuário
+      const userCameras = await Camera.findByUserId(userId);
+      
+      if (!userCameras || userCameras.length === 0) {
+        return {
+          total: 0,
+          today: 0,
+          totalSize: 0,
+          avgDuration: 0,
+          activeRecordings: 0
+        };
+      }
+
+      const cameraIds = userCameras.map(camera => camera.id);
+      
+      // Calcular data de início baseada no período
+      const now = new Date();
+      const startDate = new Date();
+      
+      switch (period) {
+        case '24h':
+          startDate.setHours(now.getHours() - 24);
+          break;
+        case '7d':
+          startDate.setDate(now.getDate() - 7);
+          break;
+        case '30d':
+          startDate.setDate(now.getDate() - 30);
+          break;
+        default:
+          startDate.setDate(now.getDate() - 7);
+      }
+      
+      // Buscar gravações do período filtradas pelas câmeras do usuário
+      const { data: recordings, error } = await this.supabase
+        .from('recordings')
+        .select('*')
+        .in('camera_id', cameraIds)
+        .gte('created_at', startDate.toISOString())
+        .lte('created_at', now.toISOString());
+      
+      if (error) {
+        throw error;
+      }
+      
+      // Calcular estatísticas
+      const total = recordings.length;
+      const today = recordings.filter(r => {
+        const recordingDate = new Date(r.created_at);
+        return recordingDate.toDateString() === now.toDateString();
+      }).length;
+      
+      const totalSize = recordings.reduce((sum, r) => sum + (r.file_size || 0), 0);
+      const avgDuration = recordings.length > 0 
+        ? recordings.reduce((sum, r) => sum + (r.duration || 0), 0) / recordings.length 
+        : 0;
+      
+      const activeRecordings = recordings.filter(r => r.status === 'recording').length;
+      
+      // Obter gravações contínuas ativas do Map local
+      const userCameraIds = userCameras.map(c => c.id);
+      const userContinuousRecordings = Array.from(this.activeRecordings.entries())
+        .filter(([cameraId]) => userCameraIds.includes(cameraId));
+      
+      const continuousActiveRecordings = userContinuousRecordings.length;
+      
+      logger.info(`[RecordingService] 📊 Gravações contínuas ativas:`, {
+        totalContinuousActive: this.activeRecordings.size,
+        userContinuousActive: continuousActiveRecordings,
+        userCameraIds,
+        continuousRecordings: userContinuousRecordings.map(([cameraId, info]) => ({
+          cameraId,
+          recordingId: info.recordingId,
+          startTime: info.startTime
+        }))
+      });
+      
+      // Somar gravações ativas do banco + gravações contínuas ativas
+      const totalActiveRecordings = activeRecordings + continuousActiveRecordings;
+      
+      logger.info(`[RecordingService] 📊 Estatísticas calculadas:`, {
+        userId,
+        period,
+        totalRecordings: total,
+        todayRecordings: today,
+        totalSizeBytes: totalSize,
+        avgDurationSeconds: avgDuration,
+        activeRecordingsFromDB: activeRecordings,
+        continuousActiveRecordings,
+        totalActiveRecordings,
+        recordingsWithRecordingStatus: recordings.filter(r => r.status === 'recording').map(r => ({
+          id: r.id,
+          camera_id: r.camera_id,
+          status: r.status,
+          created_at: r.created_at
+        }))
+      });
+      
+      return {
+        total,
+        today,
+        totalSize,
+        avgDuration,
+        activeRecordings: totalActiveRecordings
+      };
+      
+    } catch (error) {
+      logger.error('[RecordingService] Erro ao buscar estatísticas:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Obter tendências de gravações
+   */
+  async getTrends(userId, period = '24h') {
+    try {
+      logger.info(`[RecordingService] Buscando tendências para usuário ${userId}, período: ${period}`);
+      
+      // Obter câmeras do usuário
+      const userCameras = await Camera.findByUserId(userId);
+      
+      if (!userCameras || userCameras.length === 0) {
+        // Retornar array vazio para 24 horas se não há câmeras
+        const hourly = [];
+        for (let i = 0; i < 24; i++) {
+          const hour = `${i.toString().padStart(2, '0')}:00`;
+          hourly.push({
+            time: hour,
+            uploads: 0,
+            failures: 0,
+            size: 0
+          });
+        }
+        return { hourly };
+      }
+
+      const cameraIds = userCameras.map(camera => camera.id);
+      
+      // Calcular data de início baseada no período
+      const now = new Date();
+      const startDate = new Date();
+      
+      switch (period) {
+        case '24h':
+          startDate.setHours(now.getHours() - 24);
+          break;
+        case '7d':
+          startDate.setDate(now.getDate() - 7);
+          break;
+        case '30d':
+          startDate.setDate(now.getDate() - 30);
+          break;
+        default:
+          startDate.setHours(now.getHours() - 24);
+      }
+      
+      // Buscar gravações do período filtradas pelas câmeras do usuário
+      const { data: recordings, error } = await this.supabase
+        .from('recordings')
+        .select('*')
+        .in('camera_id', cameraIds)
+        .gte('created_at', startDate.toISOString())
+        .lte('created_at', now.toISOString())
+        .order('created_at', { ascending: true });
+      
+      if (error) {
+        throw error;
+      }
+      
+      // Agrupar por hora para tendências
+      const hourlyData = {};
+      
+      recordings.forEach(recording => {
+        const date = new Date(recording.created_at);
+        const hour = `${date.getHours().toString().padStart(2, '0')}:00`;
+        
+        if (!hourlyData[hour]) {
+          hourlyData[hour] = {
+            time: hour,
+            uploads: 0,
+            failures: 0,
+            size: 0
+          };
+        }
+        
+        hourlyData[hour].uploads++;
+        if (recording.status === 'failed') {
+          hourlyData[hour].failures++;
+        }
+        hourlyData[hour].size += recording.file_size || 0;
+      });
+      
+      // Converter para array e preencher horas vazias
+      const hourly = [];
+      for (let i = 0; i < 24; i++) {
+        const hour = `${i.toString().padStart(2, '0')}:00`;
+        hourly.push(hourlyData[hour] || {
+          time: hour,
+          uploads: 0,
+          failures: 0,
+          size: 0
+        });
+      }
+      
+      return { hourly };
+      
+    } catch (error) {
+      logger.error('[RecordingService] Erro ao buscar tendências:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Obter gravações ativas
+   * @param {string} param - userId ou cameraId
+   * @returns {Promise<Object>} - Objeto com data contendo array de gravações ativas
+   */
+  async getActiveRecordings(param) {
+    try {
+      logger.info(`[RecordingService] 🔍 Buscando gravações ativas para: ${param}`);
+      
+      let query = this.supabase
+        .from('recordings')
+        .select(`
+          *,
+          cameras:camera_id (
+            id,
+            name,
+            location
+          )
+        `)
+        .eq('status', 'recording')
+        .order('created_at', { ascending: false });
+
+      // Verificar se é um UUID (cameraId) ou userId
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(param);
+      
+      logger.info(`[RecordingService] 🔍 Tipo de parâmetro detectado: ${isUUID ? 'UUID (cameraId)' : 'userId'}`);
+      
+      if (isUUID) {
+        // É um cameraId - buscar gravações ativas desta câmera específica
+        logger.info(`[RecordingService] 🔍 Buscando gravações para câmera específica: ${param}`);
+        query = query.eq('camera_id', param);
+      } else {
+        // É um userId - buscar gravações ativas das câmeras do usuário
+        logger.info(`[RecordingService] 🔍 Buscando câmeras do usuário: ${param}`);
+        const { Camera } = await import('../models/Camera.js');
+        const userCameras = await Camera.findByUserId(param);
+        
+        logger.info(`[RecordingService] 🔍 Câmeras encontradas para o usuário:`, {
+          userId: param,
+          cameraCount: userCameras ? userCameras.length : 0,
+          cameras: userCameras ? userCameras.map(c => ({ id: c.id, name: c.name })) : []
+        });
+        
+        if (!userCameras || userCameras.length === 0) {
+          logger.info(`[RecordingService] 🔍 Nenhuma câmera encontrada para o usuário ${param}`);
+          return { data: [] };
+        }
+        
+        const cameraIds = userCameras.map(camera => camera.id);
+        logger.info(`[RecordingService] 🔍 IDs das câmeras para busca:`, cameraIds);
+        query = query.in('camera_id', cameraIds);
+      }
+
+      logger.info(`[RecordingService] 🔍 Executando query para buscar gravações com status 'recording'`);
+      const { data: recordings, error } = await query;
+
+      if (error) {
+        logger.error(`[RecordingService] ❌ Erro na query de gravações ativas:`, error);
+        throw error;
+      }
+
+      logger.info(`[RecordingService] 🔍 Resultado da busca:`, {
+        totalRecordings: recordings ? recordings.length : 0,
+        recordings: recordings ? recordings.map(r => ({
+          id: r.id,
+          camera_id: r.camera_id,
+          status: r.status,
+          created_at: r.created_at,
+          camera_name: r.cameras?.name
+        })) : []
+      });
+      
+      logger.info(`[RecordingService] ✅ Encontradas ${recordings ? recordings.length : 0} gravações ativas`);
+      
+      return { data: recordings || [] };
+      
+    } catch (error) {
+      logger.error('[RecordingService] Erro ao buscar gravações ativas:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Processar arquivo de gravação finalizada
+   * Adiciona o arquivo à fila de upload para Wasabi S3
+   * @param {string} filePath - Caminho do arquivo de gravação
+   * @param {string} cameraId - ID da câmera
+   * @param {string} recordingId - ID da gravação
+   * @param {Object} metadata - Metadados adicionais
+   */
+  async processRecordingFile(filePath, cameraId, recordingId, metadata = {}) {
+    try {
+      logger.info(`[RecordingService] Processando arquivo de gravação: ${recordingId}`, {
+        filePath,
+        cameraId
+      });
+      
+      // Verificar se arquivo existe
+      try {
+        await fs.access(filePath);
+      } catch (error) {
+        throw new Error(`Arquivo não encontrado: ${filePath}`);
+      }
+      
+      // Obter informações do arquivo
+      const fileStats = await fs.stat(filePath);
+      const fileSize = fileStats.size;
+      
+      // Atualizar gravação com informações do arquivo
+      await this.updateRecordingFileInfo(recordingId, {
+        file_path: filePath,
+        file_size: fileSize,
+        status: 'completed',
+        end_time: new Date().toISOString()
+      });
+      
+      // Adicionar à fila de upload
+      const uploadJob = await this.uploadQueueService.addToQueue({
+        recordingId,
+        filePath,
+        cameraId,
+        metadata: {
+          ...metadata,
+          fileSize,
+          processedAt: new Date().toISOString()
+        },
+        priority: 'normal'
+      });
+      
+      logger.info(`[RecordingService] Arquivo adicionado à fila de upload: ${recordingId}`, {
+        jobId: uploadJob.id,
+        fileSize
+      });
+      
+      return {
+        success: true,
+        recordingId,
+        uploadJobId: uploadJob.id,
+        fileSize
+      };
+      
+    } catch (error) {
+      logger.error(`[RecordingService] Erro ao processar arquivo: ${recordingId}`, error);
+      
+      // Atualizar status de erro
+      await this.updateRecordingStatus(recordingId, 'processing_failed');
+      
+      throw error;
+    }
+  }
+  
+  /**
+   * Atualizar informações do arquivo de gravação
+   * @param {string} recordingId - ID da gravação
+   * @param {Object} fileInfo - Informações do arquivo
+   */
+  async updateRecordingFileInfo(recordingId, fileInfo) {
+    try {
+      const { error } = await this.supabase
+        .from('recordings')
+        .update({
+          ...fileInfo,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', recordingId);
+      
+      if (error) {
+        throw error;
+      }
+      
+      logger.info(`[RecordingService] Informações do arquivo atualizadas: ${recordingId}`);
+      
+    } catch (error) {
+      logger.error(`[RecordingService] Erro ao atualizar informações do arquivo: ${recordingId}`, error);
+      throw error;
+    }
+  }
+  
+  /**
+   * Processar upload manual de gravação
+   * @param {string} recordingId - ID da gravação
+   * @param {string} priority - Prioridade do upload (high, normal, low)
+   */
+  async triggerManualUpload(recordingId, priority = 'high') {
+    try {
+      logger.info(`[RecordingService] Iniciando upload manual: ${recordingId}`);
+      
+      // Buscar dados da gravação
+      const recording = await this.getRecordingById(recordingId);
+      
+      if (!recording) {
+        throw new Error(`Gravação não encontrada: ${recordingId}`);
+      }
+      
+      if (!recording.file_path) {
+        throw new Error(`Caminho do arquivo não definido para gravação: ${recordingId}`);
+      }
+      
+      // Verificar se já está na fila
+      const queueStats = await this.uploadQueueService.getQueueStats();
+      if (queueStats) {
+        const existingJobs = await this.uploadQueueService.uploadQueue.getJobs(['waiting', 'active', 'delayed']);
+        const duplicateJob = existingJobs.find(job => job.data.recordingId === recordingId);
+        
+        if (duplicateJob) {
+          logger.warn(`[RecordingService] Upload já está na fila: ${recordingId}`);
+          return {
+            success: true,
+            message: 'Upload já está na fila',
+            jobId: duplicateJob.id
+          };
+        }
+      }
+      
+      // Adicionar à fila com prioridade alta
+      const uploadJob = await this.uploadQueueService.addToQueue({
+        recordingId,
+        filePath: recording.file_path,
+        cameraId: recording.camera_id,
+        metadata: {
+          manualUpload: true,
+          triggeredAt: new Date().toISOString()
+        },
+        priority
+      });
+      
+      logger.info(`[RecordingService] Upload manual iniciado: ${recordingId}`, {
+        jobId: uploadJob.id,
+        priority
+      });
+      
+      return {
+        success: true,
+        message: 'Upload iniciado com sucesso',
+        jobId: uploadJob.id
+      };
+      
+    } catch (error) {
+      logger.error(`[RecordingService] Erro no upload manual: ${recordingId}`, error);
+      throw error;
+    }
+  }
+  
+  /**
+   * Obter status de upload de uma gravação
+   * @param {string} recordingId - ID da gravação
+   */
+  async getUploadStatus(recordingId) {
+    try {
+      // Buscar dados da gravação
+      const recording = await this.getRecordingById(recordingId);
+      
+      if (!recording) {
+        throw new Error(`Gravação não encontrada: ${recordingId}`);
+      }
+      
+      // Verificar se há job ativo na fila
+      let jobStatus = null;
+      if (this.uploadQueueService.isInitialized) {
+        const jobs = await this.uploadQueueService.uploadQueue.getJobs(['waiting', 'active', 'completed', 'failed', 'delayed']);
+        const job = jobs.find(j => j.data.recordingId === recordingId);
+        
+        if (job) {
+          jobStatus = {
+            id: job.id,
+            status: await job.getState(),
+            progress: job.progress(),
+            attempts: job.attemptsMade,
+            createdAt: new Date(job.timestamp).toISOString(),
+            processedOn: job.processedOn ? new Date(job.processedOn).toISOString() : null,
+            finishedOn: job.finishedOn ? new Date(job.finishedOn).toISOString() : null,
+            failedReason: job.failedReason
+          };
+        }
+      }
+      
+      return {
+        recordingId,
+        status: recording.status,
+        s3Url: recording.s3_url,
+        s3Key: recording.s3_key,
+        fileSize: recording.file_size,
+        uploadJob: jobStatus,
+        uploadStartedAt: recording.upload_started_at,
+        uploadCompletedAt: recording.upload_completed_at,
+        uploadError: recording.upload_error
+      };
+      
+    } catch (error) {
+      logger.error(`[RecordingService] Erro ao obter status de upload: ${recordingId}`, error);
+      throw error;
+    }
+  }
+  
+  /**
+   * Obter estatísticas da fila de upload
+   */
+  async getUploadQueueStats() {
+    try {
+      if (!this.uploadQueueService.isInitialized) {
+        return {
+          available: false,
+          message: 'Serviço de upload não inicializado'
+        };
+      }
+      
+      const stats = await this.uploadQueueService.getQueueStats();
+      
+      return {
+        available: true,
+        ...stats,
+        timestamp: new Date().toISOString()
+      };
+      
+    } catch (error) {
+      logger.error('[RecordingService] Erro ao obter estatísticas da fila:', error);
+      return {
+        available: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Iniciar gravação contínua para uma câmera
+   * @param {string} cameraId - ID da câmera
+   */
+  async startContinuousRecording(cameraId) {
+    try {
+      logger.info(`[RecordingService] Iniciando gravação contínua para câmera ${cameraId}`);
+      
+      // Verificar se a câmera existe e tem gravação contínua habilitada
+      const { data: camera, error: cameraError } = await this.supabase
+        .from('cameras')
+        .select('*')
+        .eq('id', cameraId)
+        .single();
+      
+      if (cameraError || !camera) {
+        throw new Error(`Câmera ${cameraId} não encontrada`);
+      }
+      
+      if (!camera.continuous_recording) {
+        throw new Error(`Gravação contínua não está habilitada para a câmera ${cameraId}`);
+      }
+      
+      // Iniciar gravação usando o método existente
+      const result = await this.startRecording(cameraId);
+      
+      // Atualizar status no Redis
+        await this.updateRecordingStatusInRedis(cameraId, 'recording', {
+        recordingId: result.recordingId,
+        startTime: new Date().toISOString()
+      });
+      
+      logger.info(`[RecordingService] Gravação contínua iniciada: ${cameraId}`);
+      
+      return result;
+      
+    } catch (error) {
+      logger.error(`[RecordingService] Erro ao iniciar gravação contínua: ${cameraId}`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Parar gravação contínua para uma câmera
+   * @param {string} cameraId - ID da câmera
+   */
+  async stopContinuousRecording(cameraId) {
+    try {
+      logger.info(`[RecordingService] Parando gravação contínua para câmera ${cameraId}`);
+      
+      // Obter status atual do Redis
+      const status = await this.getCameraRecordingStatus(cameraId);
+      
+      // Parar gravação usando o método existente
+      const result = await this.stopRecording(cameraId, status?.recordingId);
+      
+      // Atualizar status no Redis
+      await this.updateRecordingStatusInRedis(cameraId, 'stopped');
+      
+      logger.info(`[RecordingService] Gravação contínua parada: ${cameraId}`);
+      
+      return result;
+      
+    } catch (error) {
+      logger.error(`[RecordingService] Erro ao parar gravação contínua: ${cameraId}`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Verificar se uma câmera está gravando continuamente
+   * @param {string} cameraId - ID da câmera
+   */
+  async isContinuousRecording(cameraId) {
+    try {
+      const status = await continuousRecordingService.getCameraRecordingStatus(cameraId);
+      return status?.isRecording || false;
+    } catch (error) {
+      logger.error(`[RecordingService] Erro ao verificar status de gravação contínua: ${cameraId}`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Obter status detalhado da gravação contínua
+   * @param {string} cameraId - ID da câmera
+   */
+  async getContinuousRecordingStatus(cameraId) {
+    try {
+      const status = await continuousRecordingService.getCameraRecordingStatus(cameraId);
+      
+      if (!status) {
+        return {
+          cameraId,
+          isRecording: false,
+          recordingId: null,
+          startedAt: null,
+          duration: 0
+        };
+      }
+      
+      let duration = 0;
+      if (status.isRecording && status.startedAt) {
+        duration = Date.now() - new Date(status.startedAt).getTime();
+      }
+      
+      return {
+        cameraId,
+        isRecording: status.isRecording,
+        recordingId: status.recordingId,
+        startedAt: status.startedAt,
+        stoppedAt: status.stoppedAt,
+        duration
+      };
+      
+    } catch (error) {
+      logger.error(`[RecordingService] Erro ao obter status de gravação contínua: ${cameraId}`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Ativar gravação contínua para uma câmera
+   * @param {string} cameraId - ID da câmera
+   */
+  async enableContinuousRecording(cameraId) {
+    try {
+      logger.info(`[RecordingService] Ativando gravação contínua para câmera ${cameraId}`);
+      
+      // Atualizar no banco de dados
+      const { error } = await this.supabase
+        .from('cameras')
+        .update({ 
+          continuous_recording: true,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', cameraId);
+      
+      if (error) {
+        throw error;
+      }
+      
+      // Habilitar gravação contínua
+        await this.enableContinuousRecording(cameraId);
+      
+      logger.info(`[RecordingService] Gravação contínua ativada: ${cameraId}`);
+      
+      return {
+        success: true,
+        message: 'Gravação contínua ativada com sucesso'
+      };
+      
+    } catch (error) {
+      logger.error(`[RecordingService] Erro ao ativar gravação contínua: ${cameraId}`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Desativar gravação contínua para uma câmera
+   * @param {string} cameraId - ID da câmera
+   */
+  async disableContinuousRecording(cameraId) {
+    try {
+      logger.info(`[RecordingService] Desativando gravação contínua para câmera ${cameraId}`);
+      
+      // Parar gravação se estiver ativa
+      const isRecording = await this.isContinuousRecording(cameraId);
+      if (isRecording) {
+        await this.stopContinuousRecording(cameraId);
+      }
+      
+      // Atualizar no banco de dados
+      const { error } = await this.supabase
+        .from('cameras')
+        .update({ 
+          continuous_recording: false,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', cameraId);
+      
+      if (error) {
+        throw error;
+      }
+      
+      // Desabilitar gravação contínua
+        await this.disableContinuousRecording(cameraId);
+      
+      logger.info(`[RecordingService] Gravação contínua desativada: ${cameraId}`);
+      
+      return {
+        success: true,
+        message: 'Gravação contínua desativada com sucesso'
+      };
+      
+    } catch (error) {
+      logger.error(`[RecordingService] Erro ao desativar gravação contínua: ${cameraId}`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Processar gravação finalizada (chamado pelos hooks do ZLMediaKit)
+   * @param {Object} recordingData - Dados da gravação finalizada
+   * @param {string} recordingData.cameraId - ID da câmera
+   * @param {string} recordingData.fileName - Nome do arquivo
+   * @param {string} recordingData.filePath - Caminho do arquivo
+   * @param {number} recordingData.fileSize - Tamanho do arquivo em bytes
+   * @param {number} recordingData.duration - Duração em segundos
+   * @param {string} recordingData.startTime - Hora de início (ISO string)
+   * @param {string} recordingData.streamName - Nome do stream
+   */
+  async processCompletedRecording(recordingData) {
+    try {
+      const { cameraId, fileName, filePath, fileSize, duration, startTime, streamName } = recordingData;
+      
+      logger.info(`[RecordingService] 🎬 Processando gravação finalizada:`, {
+        cameraId,
+        fileName,
+        fileSize,
+        duration
+      });
+      
+      // Buscar gravação ativa para esta câmera
+      const { data: activeRecording, error: recordingError } = await this.supabase
+        .from('recordings')
+        .select('*')
+        .eq('camera_id', cameraId)
+        .eq('status', 'recording')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+      
+      if (recordingError && recordingError.code !== 'PGRST116') {
+        logger.error(`[RecordingService] Erro ao buscar gravação ativa:`, recordingError);
+        throw recordingError;
+      }
+      
+      let recordingId;
+      
+      if (activeRecording) {
+        // Atualizar gravação existente
+        recordingId = activeRecording.id;
+        
+        const { error: updateError } = await this.supabase
+          .from('recordings')
+          .update({
+            file_path: filePath,
+            file_name: fileName,
+            file_size: fileSize,
+            duration: duration,
+            status: 'completed',
+            end_time: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', recordingId);
+        
+        if (updateError) {
+          logger.error(`[RecordingService] Erro ao atualizar gravação:`, updateError);
+          throw updateError;
+        }
+        
+        logger.info(`[RecordingService] ✅ Gravação atualizada: ${recordingId}`);
+        
+      } else {
+        // Criar nova gravação (caso não encontre uma ativa)
+        recordingId = uuidv4();
+        
+        const { error: insertError } = await this.supabase
+          .from('recordings')
+          .insert({
+            id: recordingId,
+            camera_id: cameraId,
+            file_path: filePath,
+            file_name: fileName,
+            file_size: fileSize,
+            duration: duration,
+            status: 'completed',
+            start_time: startTime,
+            end_time: new Date().toISOString(),
+            stream_name: streamName,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          });
+        
+        if (insertError) {
+          logger.error(`[RecordingService] Erro ao criar nova gravação:`, insertError);
+          throw insertError;
+        }
+        
+        logger.info(`[RecordingService] ✅ Nova gravação criada: ${recordingId}`);
+      }
+      
+      // Adicionar à fila de upload para Wasabi S3
+      try {
+        const uploadJob = await this.uploadQueueService.addToQueue({
+          recordingId,
+          filePath,
+          cameraId,
+          metadata: {
+            fileName,
+            fileSize,
+            duration,
+            streamName,
+            processedAt: new Date().toISOString(),
+            source: 'webhook'
+          },
+          priority: 'normal'
+        });
+        
+        logger.info(`[RecordingService] 📤 Gravação adicionada à fila de upload:`, {
+          recordingId,
+          jobId: uploadJob.id,
+          fileSize
+        });
+        
+      } catch (uploadError) {
+        logger.error(`[RecordingService] ❌ Erro ao adicionar à fila de upload:`, uploadError);
+        
+        // Atualizar status para indicar erro no upload
+        await this.supabase
+          .from('recordings')
+          .update({
+            status: 'upload_failed',
+            upload_error: uploadError.message,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', recordingId);
+      }
+      
+      return {
+        success: true,
+        recordingId,
+        message: 'Gravação processada com sucesso'
+      };
+      
+    } catch (error) {
+      logger.error(`[RecordingService] ❌ Erro ao processar gravação finalizada:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Preparar download de uma gravação
+   * @param {string} recordingId - ID da gravação
+   * @param {string} userId - ID do usuário (para verificação de acesso)
+   * Updated to use localPath field
+   */
+  async prepareDownload(recordingId, userId) {
+    try {
+      logger.info(`[RecordingService] Preparando download da gravação: ${recordingId}`);
+      
+      // Buscar dados da gravação
+      const recording = await this.getRecordingById(recordingId, userId);
+      
+      if (!recording) {
+        throw new Error(`Gravação não encontrada: ${recordingId}`);
+      }
+      
+      // Verificar se tem URL do S3 (prioridade)
+      if (recording.s3_url) {
+        return {
+          exists: true,
+          isS3: true,
+          url: recording.s3_url,
+          filename: recording.file_name || `recording_${recordingId}.mp4`,
+          fileSize: recording.file_size || 0
+        };
+      }
+      
+      // Verificar arquivo local
+      const localPath = recording.localPath || recording.file_path;
+      
+      if (localPath) {
+        let fullPath;
+        
+        if (path.isAbsolute(localPath)) {
+          fullPath = localPath;
+        } else {
+          // Se o localPath já começa com 'storage', usar diretamente
+          if (localPath.startsWith('storage')) {
+            fullPath = localPath;
+          } else {
+            fullPath = path.join(this.recordingsPath, localPath);
+          }
+        }
+        
+        const exists = await this.fileExists(fullPath);
+        
+        if (exists) {
+          const stats = await fs.stat(fullPath);
+          
+          return {
+            exists: true,
+            isS3: false,
+            filePath: fullPath,
+            filename: recording.filename || recording.file_name || path.basename(fullPath),
+            fileSize: stats.size
+          };
+        }
+      }
+      
+      // Arquivo não encontrado
+      return {
+        exists: false,
+        message: 'Arquivo de gravação não encontrado no armazenamento local ou S3'
+      };
+      
+    } catch (error) {
+      logger.error(`[RecordingService] Erro ao preparar download: ${recordingId}`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Obter stream de arquivo para download
+   * @param {string} filePath - Caminho do arquivo
+   */
+  async getFileStream(filePath) {
+    try {
+      logger.info(`[RecordingService] Criando stream para arquivo: ${filePath}`);
+      
+      // Verificar se arquivo existe
+      const exists = await this.fileExists(filePath);
+      if (!exists) {
+        throw new Error(`Arquivo não encontrado: ${filePath}`);
+      }
+      
+      // Criar stream de leitura
+      const stream = createReadStream(filePath);
+      
+      // Adicionar tratamento de erro no stream
+      stream.on('error', (error) => {
+        logger.error(`[RecordingService] Erro no stream do arquivo: ${filePath}`, error);
+      });
+      
+      return stream;
+      
+    } catch (error) {
+      logger.error(`[RecordingService] Erro ao criar stream do arquivo: ${filePath}`, error);
+      throw error;
+    }
+  }
+
+  // ===== MÉTODOS DE MONITORAMENTO CONTÍNUO =====
+
+  /**
+   * Inicializar monitoramento de gravação contínua
+   */
+  async initializeContinuousRecording() {
+    try {
+      logger.info('Inicializando monitoramento de gravação contínua...');
+      
+      // Verificar conexão com Redis
+      if (!redisClient.status || redisClient.status !== 'ready') {
+        logger.warn('Redis não está conectado, tentando conectar...');
+        await redisClient.connect();
+      }
+      
+      // Limpar cache órfão antes de verificar as câmeras
+      await this.cleanOrphanedCache();
+      
+      // Verificar câmeras com gravação contínua ativada
+      await this.checkContinuousRecordingCameras();
+      
+      // Iniciar monitoramento
+      this.startMonitoring();
+      
+      logger.info('Monitoramento de gravação contínua inicializado com sucesso');
+    } catch (error) {
+      logger.error('Erro ao inicializar monitoramento de gravação contínua:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Iniciar monitoramento de gravação contínua
+   */
+  startMonitoring() {
+    if (this.isRunning) {
+      logger.warn('Monitoramento já está em execução');
+      return;
+    }
+
+    this.isRunning = true;
+    logger.info('Iniciando monitoramento de gravação contínua...');
+
+    this.monitoringInterval = setInterval(async () => {
+      try {
+        await this.checkContinuousRecordingCameras();
+      } catch (error) {
+        logger.error('Erro durante verificação de gravação contínua:', error);
+      }
+    }, this.checkInterval);
+  }
+
+  /**
+   * Parar monitoramento de gravação contínua
+   */
+  stopMonitoring() {
+    if (!this.isRunning) {
+      return;
+    }
+
+    this.isRunning = false;
+    
+    if (this.monitoringInterval) {
+      clearInterval(this.monitoringInterval);
+      this.monitoringInterval = null;
+    }
+
+    logger.info('Monitoramento de gravação contínua parado');
+  }
+
+  /**
+   * Verificar câmeras com gravação contínua ativada
+   */
+  async checkContinuousRecordingCameras() {
+    try {
+      logger.info(`[RecordingService] 🔍 Verificando câmeras com gravação contínua...`);
+      
+      // Buscar câmeras com gravação contínua ativada
+      const cameras = await Camera.findWithContinuousRecording();
+      
+      logger.info(`[RecordingService] 📊 Status do monitoramento:`, {
+        camerasWithContinuousRecording: cameras.length,
+        currentActiveRecordings: this.activeRecordings.size,
+        activeCameraIds: Array.from(this.activeRecordings.keys()),
+        foundCameras: cameras.map(c => ({
+          id: c.id,
+          name: c.name,
+          status: c.status,
+          continuous_recording: c.continuous_recording,
+          recording_enabled: c.recording_enabled
+        }))
+      });
+
+      for (const camera of cameras) {
+        logger.info(`[RecordingService] 🎯 Processando câmera:`, {
+          id: camera.id,
+          name: camera.name,
+          status: camera.status
+        });
+        await this.manageCameraRecording(camera);
+      }
+
+      // Verificar se há gravações ativas de câmeras que não deveriam estar gravando
+      logger.info(`[RecordingService] 🧹 Verificando gravações inativas...`);
+      await this.checkInactiveRecordings();
+      
+      logger.info(`[RecordingService] ✅ Verificação de câmeras concluída`);
+    } catch (error) {
+      logger.error('[RecordingService] ❌ Erro ao verificar câmeras com gravação contínua:', error);
+    }
+  }
+
+  /**
+   * Gerenciar gravação de uma câmera específica
+   */
+  async manageCameraRecording(camera) {
+    try {
+      const cameraId = camera.id;
+      const isCurrentlyRecording = this.activeRecordings.has(cameraId);
+      
+      logger.info(`[RecordingService] 🎯 Gerenciando gravação da câmera:`, {
+        id: cameraId,
+        name: camera.name,
+        status: camera.status,
+        isCurrentlyRecording,
+        continuous_recording: camera.continuous_recording,
+        recording_enabled: camera.recording_enabled
+      });
+      
+      // Verificar se a câmera está online
+      if (camera.status !== 'online') {
+        logger.warn(`[RecordingService] ⚠️ Câmera ${camera.name} está offline (status: ${camera.status})`);
+        if (isCurrentlyRecording) {
+          logger.info(`[RecordingService] 🛑 Parando gravação da câmera ${camera.name} - câmera offline`);
+          await this.stopCameraRecording(cameraId);
+        }
+        return;
+      }
+
+      // Se não está gravando, iniciar gravação
+      if (!isCurrentlyRecording) {
+        logger.info(`[RecordingService] 🚀 Câmera ${camera.name} não está gravando - iniciando gravação contínua`);
+        await this.startCameraRecording(camera);
+      } else {
+        logger.info(`[RecordingService] ✅ Câmera ${camera.name} já está gravando - verificando saúde da gravação`);
+        // Verificar se a gravação ainda está ativa
+        await this.verifyActiveRecording(camera);
+      }
+    } catch (error) {
+      logger.error(`[RecordingService] ❌ Erro ao gerenciar gravação da câmera ${camera.name}:`, error);
+    }
+  }
+
+  /**
+   * Iniciar gravação contínua para uma câmera
+   */
+  async startCameraRecording(camera) {
+    const maxRetries = 3;
+    let retryCount = 0;
+    
+    while (retryCount < maxRetries) {
+      try {
+        logger.info(`[RecordingService] 🎬 Iniciando gravação contínua para câmera (tentativa ${retryCount + 1}/${maxRetries}):`, {
+          id: camera.id,
+          name: camera.name,
+          continuous_recording: camera.continuous_recording,
+          recording_enabled: camera.recording_enabled
+        });
+        
+        // Verificar se a câmera ainda existe no banco de dados
+        const existingCamera = await Camera.findById(camera.id);
+        if (!existingCamera) {
+          logger.warn(`[RecordingService] ⚠️ Câmera ${camera.id} não existe mais no banco de dados - removendo do cache`);
+          this.activeRecordings.delete(camera.id);
+          return;
+        }
+        
+        // Verificar se a câmera ainda tem gravação contínua ativada
+        if (!existingCamera.continuous_recording || !existingCamera.active) {
+          logger.warn(`[RecordingService] ⚠️ Câmera ${camera.name} não tem mais gravação contínua ativada`);
+          return;
+        }
+
+        // Importar StreamingService se necessário
+        if (!this.streamingService) {
+          const { default: StreamingService } = await import('./StreamingService.js');
+          this.streamingService = StreamingService;
+        }
+
+        // Verificar se a câmera está fazendo streaming antes de tentar gravar
+        logger.info(`[RecordingService] 🔍 Verificando se câmera ${camera.name} está fazendo streaming...`);
+        
+        const isStreaming = await this.streamingService.isStreaming(camera.id);
+        
+        if (!isStreaming) {
+          logger.info(`[RecordingService] 📡 Câmera ${camera.name} não está fazendo streaming - iniciando streaming primeiro...`);
+          
+          try {
+            const streamResult = await this.streamingService.startStream(camera.id);
+            logger.info(`[RecordingService] ✅ Streaming iniciado com sucesso para câmera ${camera.name}`);
+            
+            // Aguardar um pouco para o streaming estabilizar
+            await new Promise(resolve => setTimeout(resolve, 3000));
+          } catch (streamError) {
+            // Se o erro for "Stream já está ativo", isso é aceitável
+            if (streamError.message && streamError.message.includes('Stream já está ativo')) {
+              logger.info(`[RecordingService] ℹ️ Stream já está ativo para câmera ${camera.name} - prosseguindo com gravação`);
+            } else {
+              logger.error(`[RecordingService] ❌ Erro ao iniciar streaming para câmera ${camera.name} (tentativa ${retryCount + 1}):`, streamError);
+              retryCount++;
+              if (retryCount < maxRetries) {
+                logger.info(`[RecordingService] 🔄 Aguardando ${5000 * retryCount}ms antes da próxima tentativa...`);
+                await new Promise(resolve => setTimeout(resolve, 5000 * retryCount));
+                continue;
+              }
+              throw streamError;
+            }
+          }
+        } else {
+          logger.info(`[RecordingService] ✅ Câmera ${camera.name} já está fazendo streaming`);
+        }
+
+        // Verificação final: confirmar que o stream existe antes de tentar gravar
+        logger.info(`[RecordingService] 🔍 Verificação final de stream antes de iniciar gravação...`);
+        const finalStreamCheck = await this.streamingService.checkStreamExists(camera.id);
+        
+        if (!finalStreamCheck) {
+          logger.error(`[RecordingService] ❌ Stream não encontrado no ZLMediaKit para câmera ${camera.name} (tentativa ${retryCount + 1})`);
+          retryCount++;
+          if (retryCount < maxRetries) {
+            logger.info(`[RecordingService] 🔄 Aguardando ${5000 * retryCount}ms antes da próxima tentativa...`);
+            await new Promise(resolve => setTimeout(resolve, 5000 * retryCount));
+            continue;
+          }
+          throw new Error('Stream não encontrado após múltiplas tentativas');
+        }
+        
+        logger.info(`[RecordingService] ✅ Stream confirmado - prosseguindo com gravação`);
+        logger.info(`[RecordingService] 📞 Chamando startRecording para câmera ${camera.id}`);
+        const result = await this.startRecording(camera.id);
+        
+        logger.info(`[RecordingService] 📋 Resultado do startRecording:`, {
+          success: result.success,
+          recordingId: result.recordingId,
+          cameraId: camera.id
+        });
+        
+        if (result.success) {
+          // Armazenar informações da gravação ativa
+          const recordingInfo = {
+            recordingId: result.recordingId,
+            startTime: new Date(),
+            camera: camera,
+            lastCheck: new Date(),
+            retryCount: retryCount
+          };
+          
+          this.activeRecordings.set(camera.id, recordingInfo);
+          
+          logger.info(`[RecordingService] 💾 Gravação adicionada ao Map local:`, {
+            cameraId: camera.id,
+            recordingId: result.recordingId,
+            totalActiveRecordings: this.activeRecordings.size,
+            retriesUsed: retryCount
+          });
+
+          // Atualizar status no Redis
+          await this.updateRecordingStatusInRedis(camera.id, 'recording', {
+            recordingId: result.recordingId,
+            startTime: new Date().toISOString(),
+            retriesUsed: retryCount
+          });
+
+          // Enviar alerta de sucesso de gravação
+          alertService.triggerRecordingSuccess({
+            cameraId: camera.id,
+            cameraName: camera.name,
+            recordingId: result.recordingId
+          });
+          
+          logger.info(`[RecordingService] ✅ Gravação contínua iniciada com sucesso para câmera ${camera.name} após ${retryCount + 1} tentativa(s)`);
+          return; // Sucesso, sair do loop
+        } else {
+          logger.warn(`[RecordingService] ⚠️ Falha ao iniciar gravação contínua para câmera ${camera.name} (tentativa ${retryCount + 1}):`, result);
+          retryCount++;
+          if (retryCount < maxRetries) {
+            logger.info(`[RecordingService] 🔄 Aguardando ${5000 * retryCount}ms antes da próxima tentativa...`);
+            await new Promise(resolve => setTimeout(resolve, 5000 * retryCount));
+            continue;
+          }
+          throw new Error(`Falha ao iniciar gravação após ${maxRetries} tentativas: ${result.message || 'Erro desconhecido'}`);
+        }
+      } catch (error) {
+        logger.error(`[RecordingService] ❌ Erro ao iniciar gravação contínua para câmera ${camera.name} (tentativa ${retryCount + 1}):`, error);
+        retryCount++;
+        if (retryCount < maxRetries) {
+          logger.info(`[RecordingService] 🔄 Aguardando ${5000 * retryCount}ms antes da próxima tentativa...`);
+          await new Promise(resolve => setTimeout(resolve, 5000 * retryCount));
+          continue;
+        }
+        // Enviar alerta de falha de gravação
+        alertService.triggerRecordingFailed({
+          cameraId: camera.id,
+          cameraName: camera.name,
+          error: error.message,
+          retries: maxRetries
+        });
+        
+        logger.error(`[RecordingService] ❌ Falha definitiva ao iniciar gravação para câmera ${camera.name} após ${maxRetries} tentativas:`, error);
+        throw error;
+      }
+    }
+  }
+
+  /**
+   * Parar gravação contínua para uma câmera
+   */
+  async stopCameraRecording(cameraId) {
+    try {
+      logger.info(`[RecordingService] 🛑 Parando gravação contínua para câmera ${cameraId}`);
+      
+      const recordingInfo = this.activeRecordings.get(cameraId);
+      
+      logger.info(`[RecordingService] 🔍 Informações da gravação ativa:`, {
+        hasRecordingInfo: !!recordingInfo,
+        recordingId: recordingInfo?.recordingId,
+        cameraName: recordingInfo?.camera?.name,
+        totalActiveRecordings: this.activeRecordings.size
+      });
+      
+      if (recordingInfo) {
+        // Parar gravação usando o método existente
+        await this.stopRecording(cameraId, recordingInfo.recordingId);
+        
+        // Remover do Map local
+        this.activeRecordings.delete(cameraId);
+        
+        logger.info(`[RecordingService] ✅ Gravação removida do Map local:`, {
+          cameraId,
+          recordingId: recordingInfo.recordingId,
+          totalActiveRecordings: this.activeRecordings.size
+        });
+      }
+      
+      // Atualizar status no Redis
+      await this.updateRecordingStatusInRedis(cameraId, 'stopped', {
+        stoppedAt: new Date().toISOString()
+      });
+      
+      logger.info(`[RecordingService] ✅ Gravação contínua parada para câmera ${cameraId}`);
+      
+    } catch (error) {
+      logger.error(`[RecordingService] ❌ Erro ao parar gravação contínua para câmera ${cameraId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Verificar se uma gravação ativa ainda está funcionando
+   */
+  async verifyActiveRecording(camera) {
+    try {
+      const recordingInfo = this.activeRecordings.get(camera.id);
+      
+      if (!recordingInfo) {
+        logger.warn(`[RecordingService] ⚠️ Gravação não encontrada no Map para câmera ${camera.name}`);
+        return;
+      }
+      
+      // Verificar se a gravação ainda existe no banco
+      const { data: recording, error } = await this.supabase
+        .from('recordings')
+        .select('*')
+        .eq('id', recordingInfo.recordingId)
+        .eq('status', 'recording')
+        .single();
+      
+      if (error || !recording) {
+        logger.warn(`[RecordingService] ⚠️ Gravação ${recordingInfo.recordingId} não encontrada no banco ou não está ativa - removendo do Map`);
+        this.activeRecordings.delete(camera.id);
+        return;
+      }
+      
+      // Atualizar timestamp da última verificação
+      recordingInfo.lastCheck = new Date();
+      this.activeRecordings.set(camera.id, recordingInfo);
+      
+      logger.info(`[RecordingService] ✅ Gravação verificada para câmera ${camera.name}`);
+      
+    } catch (error) {
+      logger.error(`[RecordingService] ❌ Erro ao verificar gravação ativa para câmera ${camera.name}:`, error);
+    }
+  }
+
+  /**
+   * Verificar gravações inativas (que deveriam ter parado)
+   */
+  async checkInactiveRecordings() {
+    try {
+      const activeCameraIds = Array.from(this.activeRecordings.keys());
+      
+      for (const cameraId of activeCameraIds) {
+        const camera = await Camera.findById(cameraId);
+        
+        if (!camera || !camera.continuous_recording || !camera.active || camera.status !== 'online') {
+          logger.info(`[RecordingService] 🧹 Parando gravação inativa para câmera ${cameraId}`);
+          await this.stopCameraRecording(cameraId);
+        }
+      }
+    } catch (error) {
+      logger.error('[RecordingService] ❌ Erro ao verificar gravações inativas:', error);
+    }
+  }
+
+  /**
+   * Limpar cache órfão do Redis
+   */
+  async cleanOrphanedCache() {
+    try {
+      logger.info('[RecordingService] 🧹 Limpando cache órfão do Redis...');
+      
+      const keys = await redisClient.keys('recording:*');
+      
+      for (const key of keys) {
+        const cameraId = key.replace('recording:', '');
+        const camera = await Camera.findById(cameraId);
+        
+        if (!camera || !camera.continuous_recording) {
+          await redisClient.del(key);
+          logger.info(`[RecordingService] 🗑️ Cache órfão removido: ${key}`);
+        }
+      }
+      
+      logger.info('[RecordingService] ✅ Limpeza de cache órfão concluída');
+    } catch (error) {
+      logger.error('[RecordingService] ❌ Erro ao limpar cache órfão:', error);
+    }
+  }
+
+  /**
+   * Atualizar status de gravação no Redis
+   */
+  async updateRecordingStatusInRedis(cameraId, status, data = {}) {
+    try {
+      const key = `recording:${cameraId}`;
+      const recordingData = {
+        status,
+        cameraId,
+        updatedAt: new Date().toISOString(),
+        ...data
+      };
+      
+      await redisClient.setex(key, 3600, JSON.stringify(recordingData)); // TTL de 1 hora
+      
+      logger.info(`[RecordingService] 📝 Status atualizado no Redis:`, {
+        key,
+        status,
+        cameraId
+      });
+    } catch (error) {
+      logger.error(`[RecordingService] ❌ Erro ao atualizar status no Redis:`, error);
+    }
+  }
+
+  /**
+   * Obter status de gravação do Redis
+   */
+  async getRecordingStatusFromRedis(cameraId) {
+    try {
+      const key = `recording:${cameraId}`;
+      const data = await redisClient.get(key);
+      
+      if (!data) {
+        return null;
+      }
+      
+      return JSON.parse(data);
+    } catch (error) {
+      logger.error(`[RecordingService] ❌ Erro ao obter status do Redis:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Método estático para obter status de gravação (compatibilidade)
+   */
+  static async getRecordingStatus(cameraId) {
+    const instance = new RecordingService();
+    return await instance.getCameraRecordingStatus(cameraId);
+  }
+
+  /**
+   * Obter status de gravação de uma câmera
+   */
+  async getCameraRecordingStatus(cameraId) {
+    try {
+      const recordingInfo = this.activeRecordings.get(cameraId);
+      const redisStatus = await this.getRecordingStatusFromRedis(cameraId);
+      
+      if (!recordingInfo && !redisStatus) {
+        return {
+          cameraId,
+          isRecording: false,
+          recordingId: null,
+          startedAt: null,
+          duration: 0
+        };
+      }
+      
+      const isRecording = !!recordingInfo;
+      const startedAt = recordingInfo?.startTime || redisStatus?.startTime;
+      let duration = 0;
+      
+      if (isRecording && startedAt) {
+        duration = Date.now() - new Date(startedAt).getTime();
+      }
+      
+      return {
+        cameraId,
+        isRecording,
+        recordingId: recordingInfo?.recordingId || redisStatus?.recordingId,
+        startedAt,
+        stoppedAt: redisStatus?.stoppedAt,
+        duration
+      };
+    } catch (error) {
+      logger.error(`[RecordingService] ❌ Erro ao obter status de gravação:`, error);
+      throw error;
+    }
+  }
+}
+
+export default new RecordingService();

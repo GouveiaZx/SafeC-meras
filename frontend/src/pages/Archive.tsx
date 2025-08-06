@@ -387,10 +387,7 @@ const Archive: React.FC = () => {
             <span>Data:</span>
             <span>{new Date(recording.created_at).toLocaleString()}</span>
           </div>
-          <div className="flex items-center justify-between">
-            <span>Tamanho:</span>
-            <span>{recording.file_size_formatted}</span>
-          </div>
+
           <div className="flex items-center justify-between">
             <span>Qualidade:</span>
             <span className="capitalize">{recording.quality}</span>

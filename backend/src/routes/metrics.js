@@ -19,7 +19,7 @@ import { requireRole } from '../middleware/roleCheck.js';
 
 const router = express.Router();
 
-// Middleware de autenticação para todas as rotas
+// Middleware de autenticação
 router.use(authenticateToken);
 
 /**

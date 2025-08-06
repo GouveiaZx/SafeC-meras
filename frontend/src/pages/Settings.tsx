@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Save, RefreshCw, Database, Shield, Bell, Video, Network, HardDrive, Mail, Globe, AlertTriangle, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api, endpoints } from '@/lib/api';
+import AlertsConfig from '@/components/dashboard/AlertsConfig';
 
 interface CleanupResponse {
   deleted_files?: number;
@@ -99,6 +100,7 @@ const Settings: React.FC = () => {
     { id: 'recording', name: 'Gravação', icon: Video },
     { id: 'streaming', name: 'Streaming', icon: Network },
     { id: 'notifications', name: 'Notificações', icon: Bell },
+    { id: 'alerts', name: 'Alertas', icon: AlertTriangle },
     { id: 'backup', name: 'Backup', icon: Database },
     { id: 'storage', name: 'Armazenamento', icon: HardDrive },
     { id: 'logs', name: 'Logs', icon: AlertTriangle }
@@ -451,21 +453,7 @@ const Settings: React.FC = () => {
                 <h2 className="text-xl font-semibold mb-4">Configurações de Gravação</h2>
                 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Qualidade Padrão
-                    </label>
-                    <select
-                      value={settings.default_recording_quality}
-                      onChange={(e) => updateSetting('default_recording_quality', e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    >
-                      <option value="low">Baixa (480p)</option>
-                      <option value="medium">Média (720p)</option>
-                      <option value="high">Alta (1080p)</option>
-                      <option value="ultra">Ultra (4K)</option>
-                    </select>
-                  </div>
+                  {/* Removido: Seletor de qualidade - usa qualidade padrão do sistema */}
                   
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -694,6 +682,11 @@ const Settings: React.FC = () => {
                   </div>
                 )}
               </div>
+            )}
+            
+            {/* Configurações de Alertas */}
+            {activeTab === 'alerts' && (
+              <AlertsConfig />
             )}
             
             {/* Configurações de Backup */}

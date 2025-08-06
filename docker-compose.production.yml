@@ -1,0 +1,92 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: newcam_postgres
+    environment:
+      POSTGRES_DB: newcam
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: newcam_prod_2024
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - newcam_network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: newcam_frontend
+    restart: unless-stopped
+    environment:
+      - VITE_API_URL=http://66.94.104.241:3002
+      - VITE_ZLM_URL=http://66.94.104.241:8000
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - newcam_network
+
+  zlmediakit:
+    image: panjjo/zlmediakit:latest
+    container_name: newcam_zlmediakit
+    environment:
+      - ZLM_SECRET=035c73f7-bb6b-4889-a715-d9eb2d1925cc
+    ports:
+      - "8000:80"
+      - "443:443"
+      - "554:554"
+      - "1935:1935"
+      - "9000:9000"
+      - "10000:10000"
+      - "10000:10000/udp"
+    volumes:
+      - ./docker/zlmediakit/config.ini:/opt/media/conf/config.ini
+      - ./storage/www:/opt/media/bin/www
+    networks:
+      - newcam_network
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    container_name: newcam_backend
+    ports:
+      - "3002:3002"
+    environment:
+      - NODE_ENV=production
+    env_file:
+      - .env.production
+    depends_on:
+      - postgres
+      - zlmediakit
+    networks:
+      - newcam_network
+    restart: unless-stopped
+
+  worker:
+    build: ./worker
+    container_name: newcam_worker
+    ports:
+      - "3003:3003"
+    environment:
+      - NODE_ENV=production
+      - PORT=3003
+    env_file:
+      - .env.production
+    depends_on:
+      - backend
+    networks:
+      - newcam_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+
+networks:
+  newcam_network:
+    driver: bridge

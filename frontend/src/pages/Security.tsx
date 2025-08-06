@@ -202,14 +202,6 @@ const Security: React.FC = () => {
   // Exportar eventos
   const handleExportEvents = useCallback(async () => {
     try {
-      const params = {
-        search: searchTerm,
-        severity: selectedSeverity,
-        type: selectedType,
-        start_date: dateRange.start,
-        end_date: dateRange.end
-      };
-      
       const response = await api.download(endpoints.security.exportEvents());
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
@@ -225,7 +217,7 @@ const Security: React.FC = () => {
       console.error('Erro ao exportar eventos:', error);
       toast.error('Erro ao exportar eventos');
     }
-  }, [searchTerm, selectedSeverity, selectedType, dateRange]);
+  }, []);
   
   // Atualizar configuração
   const updateSetting = useCallback((path: string, value: unknown) => {

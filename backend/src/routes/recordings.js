@@ -1,9 +1,8 @@
 import express from 'express';
 import { authenticateToken, requirePermission } from '../middleware/auth.js';
 import { validateRequest } from '../middleware/validation.js';
+import { asyncHandler } from '../middleware/errorHandler.js';
 import Joi from 'joi';
-import logger from '../utils/logger.js';
-import { Camera } from '../models/Camera.js';
 import RecordingService from '../services/RecordingService.js';
 
 const router = express.Router();
@@ -13,22 +12,16 @@ const searchRecordingsSchema = Joi.object({
   camera_id: Joi.string().uuid().optional(),
   start_date: Joi.date().iso().optional(),
   end_date: Joi.date().iso().optional(),
-  duration_min: Joi.number().min(0).optional(),
-  duration_max: Joi.number().min(0).optional(),
-  file_size_min: Joi.number().min(0).optional(),
-  file_size_max: Joi.number().min(0).optional(),
-  quality: Joi.string().valid('low', 'medium', 'high', 'ultra').optional(),
-  event_type: Joi.string().valid('motion', 'scheduled', 'manual', 'alert').optional(),
+  status: Joi.string().valid('recording', 'completed', 'failed', 'deleted').optional(),
   page: Joi.number().min(1).default(1),
   limit: Joi.number().min(1).max(100).default(20),
-  sort_by: Joi.string().valid('created_at', 'duration', 'file_size', 'camera_name').default('created_at'),
+  sort_by: Joi.string().valid('created_at', 'duration', 'file_size').default('created_at'),
   sort_order: Joi.string().valid('asc', 'desc').default('desc')
 });
 
 const exportRecordingsSchema = Joi.object({
   recording_ids: Joi.array().items(Joi.string().uuid()).min(1).required(),
-  format: Joi.string().valid('zip', 'tar').default('zip'),
-  include_metadata: Joi.boolean().default(true)
+  format: Joi.string().valid('zip', 'tar').default('zip')
 });
 
 const deleteRecordingsSchema = Joi.object({
@@ -36,67 +29,55 @@ const deleteRecordingsSchema = Joi.object({
   confirm: Joi.boolean().valid(true).required()
 });
 
+const recordingOptionsSchema = Joi.object({
+  type: Joi.string().valid('continuous', 'segmented', 'motion').default('continuous'),
+  quality: Joi.string().valid('low', 'medium', 'high').default('high'),
+  max_duration: Joi.number().min(60).max(7200).optional(),
+  metadata: Joi.object().optional()
+});
+
+// Middleware para autenticação de serviço interno
+const authenticateService = (req, res, next) => {
+  const serviceToken = req.headers['x-service-token'];
+  const expectedToken = process.env.INTERNAL_SERVICE_TOKEN || 'newcam-internal-service-2025';
+  
+  if (serviceToken === expectedToken) {
+    req.user = {
+      id: 'internal-service',
+      role: 'admin',
+      permissions: ['recordings:*']
+    };
+    return next();
+  }
+  
+  return res.status(401).json({
+    error: 'Token de serviço inválido',
+    message: 'Token de serviço interno requerido'
+  });
+};
+
 /**
  * @route GET /api/recordings
- * @desc Listar gravações com filtros
+ * @desc Listar todas as gravações com filtros
  * @access Private
  */
 router.get('/', 
   authenticateToken,
   requirePermission('recordings:read'),
   validateRequest('searchRecordings'),
-  async (req, res) => {
-    try {
-      const userId = req.user.id;
-      const filters = req.query;
-      
-      logger.info(`Usuário ${userId} buscando gravações com filtros:`, filters);
-      
-      // Verificar se o usuário tem acesso às câmeras especificadas
-      if (filters.camera_id) {
-        const camera = await Camera.findById(filters.camera_id);
-        if (!camera) {
-          return res.status(404).json({
-            success: false,
-            message: 'Câmera não encontrada'
-          });
-        }
-        
-        // Verificar permissão de acesso à câmera
-        const userCameras = await Camera.findByUserId(userId);
-        const hasAccess = userCameras.some(cam => cam.id === filters.camera_id);
-        
-        if (!hasAccess) {
-          return res.status(403).json({
-            success: false,
-            message: 'Acesso negado à câmera especificada'
-          });
-        }
-      }
-      
-      const result = await RecordingService.searchRecordings(userId, filters);
-      
-      res.json({
-        success: true,
-        data: result.recordings,
-        pagination: {
-          page: result.page,
-          limit: result.limit,
-          total: result.total,
-          pages: result.pages
-        },
-        filters: result.appliedFilters
-      });
-      
-    } catch (error) {
-      logger.error('Erro ao buscar gravações:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Erro interno do servidor',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
-      });
-    }
-  }
+  asyncHandler(async (req, res) => {
+    const filters = req.query;
+    const result = await RecordingService.searchRecordings(filters, {
+      page: filters.page,
+      limit: filters.limit
+    });
+
+    res.json({
+      success: true,
+      data: result.data,
+      pagination: result.pagination
+    });
+  })
 );
 
 /**
@@ -107,142 +88,226 @@ router.get('/',
 router.get('/:id',
   authenticateToken,
   requirePermission('recordings:read'),
-  async (req, res) => {
-    try {
-      const userId = req.user.id;
-      const recordingId = req.params.id;
-      
-      const recording = await RecordingService.getRecordingById(recordingId, userId);
-      
-      if (!recording) {
-        return res.status(404).json({
-          success: false,
-          message: 'Gravação não encontrada'
-        });
-      }
-      
-      res.json({
-        success: true,
-        data: recording
-      });
-      
-    } catch (error) {
-      logger.error('Erro ao obter gravação:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Erro interno do servidor',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
-      });
-    }
-  }
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const recording = await RecordingService.getRecordingById(id);
+    
+    res.json({
+      success: true,
+      data: recording
+    });
+  })
 );
 
 /**
- * @route GET /api/recordings/:id/download
- * @desc Download de uma gravação
+ * @route POST /api/recordings/start
+ * @desc Iniciar uma nova gravação
  * @access Private
  */
-router.get('/:id/download',
+router.post('/start',
   authenticateToken,
-  requirePermission('recordings:download'),
-  async (req, res) => {
+  requirePermission('recordings:create'),
+  validateRequest('recordingOptions'),
+  asyncHandler(async (req, res) => {
+    const { camera_id } = req.body;
+    const options = req.body;
+    
+    const result = await RecordingService.startRecording(camera_id, options);
+    
+    res.json({
+      success: true,
+      data: result
+    });
+  })
+);
+
+/**
+ * @route POST /api/recordings/stop
+ * @desc Parar uma gravação ativa
+ * @access Private
+ */
+router.post('/stop',
+  authenticateToken,
+  requirePermission('recordings:update'),
+  asyncHandler(async (req, res) => {
+    const { camera_id, recording_id } = req.body;
+    
+    const result = await RecordingService.stopRecording(camera_id, recording_id);
+    
+    res.json({
+      success: true,
+      data: result
+    });
+  })
+);
+
+/**
+ * @route GET /api/recordings/active
+ * @desc Listar gravações ativas
+ * @access Private
+ */
+router.get('/active',
+  authenticateToken,
+  requirePermission('recordings:read'),
+  asyncHandler(async (req, res) => {
+    const { camera_id } = req.query;
+    const recordings = await RecordingService.getActiveRecordings(camera_id);
+    
+    res.json({
+      success: true,
+      data: recordings
+    });
+  })
+);
+
+/**
+ * @route GET /api/recordings/stats
+ * @desc Obter estatísticas de gravações
+ * @access Private
+ */
+router.get('/stats',
+  authenticateToken,
+  requirePermission('recordings:read'),
+  asyncHandler(async (req, res) => {
+    const { start_date, end_date, camera_id } = req.query;
+    const filters = { start_date, end_date, camera_id };
+    
+    const stats = await RecordingService.getRecordingStats(filters);
+    
+    res.json({
+      success: true,
+      data: stats
+    });
+  })
+);
+
+/**
+ * @route GET /api/recordings/trends
+ * @desc Obter tendências de gravações
+ * @access Private
+ */
+router.get('/trends',
+  authenticateToken,
+  requirePermission('recordings:read'),
+  asyncHandler(async (req, res) => {
+    const { start_date, end_date, camera_id } = req.query;
+    const filters = { start_date, end_date, camera_id };
+    
+    const trends = await RecordingService.getTrends(filters);
+    
+    res.json({
+      success: true,
+      data: trends
+    });
+  })
+);
+
+/**
+ * @route GET /api/recordings/:id/video
+ * @desc Reproduzir vídeo de gravação
+ * @access Private
+ */
+router.get('/:id/video',
+  authenticateToken,
+  requirePermission('recordings:read'),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    
     try {
-      const userId = req.user.id;
-      const recordingId = req.params.id;
+      const fileInfo = await RecordingService.prepareDownload(id);
       
-      const recording = await RecordingService.getRecordingById(recordingId, userId);
-      
-      if (!recording) {
-        return res.status(404).json({
-          success: false,
-          message: 'Gravação não encontrada'
-        });
-      }
-      
-      const downloadInfo = await RecordingService.prepareDownload(recordingId, userId);
-      
-      if (!downloadInfo.exists) {
-        return res.status(404).json({
-          success: false,
-          message: 'Arquivo de gravação não encontrado no armazenamento'
-        });
-      }
-      
-      // Configurar headers para download
+      // Configurar headers para streaming de vídeo
       res.setHeader('Content-Type', 'video/mp4');
-      res.setHeader('Content-Disposition', `attachment; filename="${downloadInfo.filename}"`);
-      res.setHeader('Content-Length', downloadInfo.fileSize);
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Content-Length', fileInfo.fileSize);
+      res.setHeader('Cache-Control', 'no-cache');
       
-      // Stream do arquivo
-      const fileStream = await RecordingService.getFileStream(downloadInfo.filePath);
-      fileStream.pipe(res);
-      
-      // Log do download
-      logger.info(`Download iniciado - Usuário: ${userId}, Gravação: ${recordingId}`);
-      
+      // Suporte para range requests (seeking no vídeo)
+      const range = req.headers.range;
+      if (range) {
+        const parts = range.replace(/bytes=/, "").split("-");
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : fileInfo.fileSize - 1;
+        const chunksize = (end - start) + 1;
+        
+        res.status(206);
+        res.setHeader('Content-Range', `bytes ${start}-${end}/${fileInfo.fileSize}`);
+        res.setHeader('Content-Length', chunksize);
+        
+        const stream = require('fs').createReadStream(fileInfo.filePath, { start, end });
+        stream.pipe(res);
+      } else {
+        const stream = await RecordingService.getFileStream(id);
+        stream.pipe(res);
+      }
     } catch (error) {
-      logger.error('Erro no download da gravação:', error);
-      res.status(500).json({
+      res.status(404).json({
         success: false,
-        message: 'Erro interno do servidor',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        message: error.message || 'Gravação não encontrada'
       });
     }
-  }
+  })
+);
+
+/**
+ * @route GET /api/recordings/:id/stream
+ * @desc Obter informações de streaming da gravação
+ * @access Private
+ */
+router.get('/:id/stream',
+  authenticateToken,
+  requirePermission('recordings:read'),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    
+    try {
+      const fileInfo = await RecordingService.prepareDownload(id);
+      const baseUrl = `${req.protocol}://${req.get('host')}`;
+      
+      res.json({
+        success: true,
+        data: {
+          recording_id: id,
+          video_url: `${baseUrl}/api/recordings/${id}/video`,
+          download_url: `${baseUrl}/api/recordings/${id}/download`,
+          file_name: fileInfo.fileName,
+          file_size: fileInfo.fileSize,
+          mime_type: fileInfo.mimeType,
+          streaming_info: {
+            supports_range: true,
+            format: 'mp4',
+            container: 'mp4'
+          }
+        }
+      });
+    } catch (error) {
+      res.status(404).json({
+        success: false,
+        message: error.message || 'Gravação não encontrada'
+      });
+    }
+  })
 );
 
 /**
  * @route POST /api/recordings/export
- * @desc Exportar múltiplas gravações
+ * @desc Exportar gravações selecionadas
  * @access Private
  */
 router.post('/export',
   authenticateToken,
   requirePermission('recordings:export'),
   validateRequest('exportRecordings'),
-  async (req, res) => {
-    try {
-      const userId = req.user.id;
-      const { recording_ids, format, include_metadata } = req.body;
-      
-      logger.info(`Usuário ${userId} exportando ${recording_ids.length} gravações`);
-      
-      // Verificar acesso a todas as gravações
-      const accessCheck = await RecordingService.checkBulkAccess(recording_ids, userId);
-      
-      if (!accessCheck.allAccessible) {
-        return res.status(403).json({
-          success: false,
-          message: 'Acesso negado a algumas gravações',
-          inaccessible_recordings: accessCheck.inaccessibleIds
-        });
-      }
-      
-      // Iniciar processo de exportação
-      const exportJob = await RecordingService.createExportJob({
-        userId,
-        recordingIds: recording_ids,
-        format,
-        includeMetadata: include_metadata
-      });
-      
-      res.json({
-        success: true,
-        message: 'Exportação iniciada',
-        export_id: exportJob.id,
-        estimated_time: exportJob.estimatedTime,
-        status_url: `/api/recordings/export/${exportJob.id}/status`
-      });
-      
-    } catch (error) {
-      logger.error('Erro na exportação de gravações:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Erro interno do servidor',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
-      });
-    }
-  }
+  asyncHandler(async (req, res) => {
+    const { recording_ids, format } = req.body;
+    
+    const result = await RecordingService.exportRecordings(recording_ids, { format });
+    
+    res.json({
+      success: true,
+      data: result
+    });
+  })
 );
 
 /**
@@ -253,34 +318,54 @@ router.post('/export',
 router.get('/export/:exportId/status',
   authenticateToken,
   requirePermission('recordings:export'),
-  async (req, res) => {
-    try {
-      const userId = req.user.id;
-      const exportId = req.params.exportId;
-      
-      const exportStatus = await RecordingService.getExportStatus(exportId, userId);
-      
-      if (!exportStatus) {
-        return res.status(404).json({
-          success: false,
-          message: 'Exportação não encontrada'
-        });
-      }
-      
-      res.json({
-        success: true,
-        data: exportStatus
-      });
-      
-    } catch (error) {
-      logger.error('Erro ao verificar status de exportação:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Erro interno do servidor',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
-      });
-    }
-  }
+  asyncHandler(async (req, res) => {
+    const { exportId } = req.params;
+    
+    const status = await RecordingService.getExportStatus(exportId);
+    
+    res.json({
+      success: true,
+      data: status
+    });
+  })
+);
+
+/**
+ * @route POST /api/recordings/export/:exportId/cancel
+ * @desc Cancelar exportação
+ * @access Private
+ */
+router.post('/export/:exportId/cancel',
+  authenticateToken,
+  requirePermission('recordings:export'),
+  asyncHandler(async (req, res) => {
+    const { exportId } = req.params;
+    
+    const result = await RecordingService.cancelExport(exportId);
+    
+    res.json(result);
+  })
+);
+
+/**
+ * @route GET /api/recordings/:id/download
+ * @desc Baixar arquivo de gravação
+ * @access Private
+ */
+router.get('/:id/download',
+  authenticateToken,
+  requirePermission('recordings:download'),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    
+    const fileInfo = await RecordingService.prepareDownload(id);
+    
+    res.setHeader('Content-Disposition', `attachment; filename="${fileInfo.fileName}"`);
+    res.setHeader('Content-Type', fileInfo.mimeType);
+    
+    const stream = await RecordingService.getFileStream(id);
+    stream.pipe(res);
+  })
 );
 
 /**
@@ -292,356 +377,141 @@ router.delete('/',
   authenticateToken,
   requirePermission('recordings:delete'),
   validateRequest('deleteRecordings'),
-  async (req, res) => {
-    try {
-      const userId = req.user.id;
-      const { recording_ids, confirm } = req.body;
-      
-      logger.info(`Usuário ${userId} deletando ${recording_ids.length} gravações`);
-      
-      // Verificar acesso a todas as gravações
-      const accessCheck = await RecordingService.checkBulkAccess(recording_ids, userId);
-      
-      if (!accessCheck.allAccessible) {
-        return res.status(403).json({
-          success: false,
-          message: 'Acesso negado a algumas gravações',
-          inaccessible_recordings: accessCheck.inaccessibleIds
-        });
+  asyncHandler(async (req, res) => {
+    const { recording_ids } = req.body;
+    
+    const results = [];
+    
+    for (const recording_id of recording_ids) {
+      try {
+        await RecordingService.updateRecordingStatus(recording_id, 'deleted');
+        results.push({ recording_id, success: true });
+      } catch (error) {
+        results.push({ recording_id, success: false, error: error.message });
       }
-      
-      // Executar deleção
-      const deleteResult = await RecordingService.deleteRecordings(recording_ids, userId);
-      
-      res.json({
-        success: true,
-        message: `${deleteResult.deletedCount} gravações deletadas com sucesso`,
-        deleted_count: deleteResult.deletedCount,
-        failed_count: deleteResult.failedCount,
-        freed_space: deleteResult.freedSpace
-      });
-      
-    } catch (error) {
-      logger.error('Erro ao deletar gravações:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Erro interno do servidor',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
-      });
     }
-  }
+    
+    res.json({
+      success: true,
+      data: results
+    });
+  })
 );
 
 /**
- * @route POST /api/recordings
- * @desc Iniciar gravação para uma câmera
+ * @route DELETE /api/recordings/:id
+ * @desc Deletar uma gravação específica
  * @access Private
  */
-router.post('/',
+router.delete('/:id',
   authenticateToken,
-  requirePermission('recordings:create'),
-  async (req, res) => {
-    try {
-      const { cameraId } = req.body;
-      const userId = req.user.id;
-      
-      if (!cameraId) {
-        return res.status(400).json({
-          success: false,
-          message: 'ID da câmera é obrigatório'
-        });
-      }
-
-      // Verificar se a câmera existe e o usuário tem acesso
-      const camera = await Camera.findById(cameraId);
-      if (!camera) {
-        return res.status(404).json({
-          success: false,
-          message: 'Câmera não encontrada'
-        });
-      }
-
-      // Verificar permissão de acesso à câmera
-      const userCameras = await Camera.findByUserId(userId);
-      const hasAccess = userCameras.some(cam => cam.id === cameraId);
-      
-      if (!hasAccess) {
-        return res.status(403).json({
-          success: false,
-          message: 'Acesso negado à câmera especificada'
-        });
-      }
-
-      logger.info(`Usuário ${userId} iniciando gravação para câmera ${cameraId}`);
-
-      // Iniciar gravação usando o RecordingService
-      const recording = await RecordingService.startRecording(cameraId);
-
-      res.status(201).json({
-        success: true,
-        message: 'Gravação iniciada com sucesso',
-        data: recording
-      });
-
-    } catch (error) {
-      logger.error('Erro ao iniciar gravação:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Erro ao iniciar gravação',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
-      });
-    }
-  }
+  requirePermission('recordings:delete'),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    
+    await RecordingService.updateRecordingStatus(id, 'deleted');
+    
+    res.json({
+      success: true,
+      message: 'Gravação deletada com sucesso'
+    });
+  })
 );
 
 /**
- * @route GET /api/recordings/stats
- * @desc Obter estatísticas de gravações
+ * @route POST /api/recordings/cleanup
+ * @desc Limpar arquivos antigos
+ * @access Private (Admin)
+ */
+router.post('/cleanup',
+  authenticateToken,
+  requirePermission('recordings:manage'),
+  asyncHandler(async (req, res) => {
+    const { days = 30, max_size } = req.body;
+    
+    const result = await RecordingService.cleanupOldFiles({ days, max_size });
+    
+    res.json({
+      success: true,
+      data: result
+    });
+  })
+);
+
+/**
+ * @route GET /api/recordings/health
+ * @desc Verificar saúde do serviço de gravações
  * @access Private
  */
-router.get('/stats',
+router.get('/health',
   authenticateToken,
   requirePermission('recordings:read'),
-  async (req, res) => {
-    try {
-      const userId = req.user.id;
-      const { period = '7d' } = req.query;
-      
-      const stats = await RecordingService.getRecordingStats(userId, period);
-      
-      res.json({
-        success: true,
-        data: stats
-      });
-      
-    } catch (error) {
-      logger.error('Erro ao obter estatísticas de gravações:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Erro interno do servidor',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
-      });
-    }
-  }
+  asyncHandler(async (req, res) => {
+    const health = await RecordingService.healthCheck();
+    
+    res.json({
+      success: true,
+      data: health
+    });
+  })
+);
+
+// Rotas de serviço interno (comunicação entre serviços)
+
+/**
+ * @route POST /api/recordings/internal/start
+ * @desc Iniciar gravação via serviço interno
+ * @access Internal Service Only
+ */
+router.post('/internal/start',
+  authenticateService,
+  asyncHandler(async (req, res) => {
+    const { camera_id, options } = req.body;
+    
+    const result = await RecordingService.startRecording(camera_id, options);
+    
+    res.json({
+      success: true,
+      data: result
+    });
+  })
 );
 
 /**
- * @route GET /api/recordings/trends
- * @desc Obter tendências de upload de gravações
- * @access Private
+ * @route POST /api/recordings/internal/stop
+ * @desc Parar gravação via serviço interno
+ * @access Internal Service Only
  */
-router.get('/trends',
-  authenticateToken,
-  requirePermission('recordings:read'),
-  async (req, res) => {
-    try {
-      const userId = req.user.id;
-      const { period = '24h' } = req.query;
-      
-      const trends = await RecordingService.getTrends(userId, period);
-      
-      res.json({
-        success: true,
-        data: trends
-      });
-      
-    } catch (error) {
-      logger.error('Erro ao obter tendências de gravações:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Erro interno do servidor',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
-      });
-    }
-  }
+router.post('/internal/stop',
+  authenticateService,
+  asyncHandler(async (req, res) => {
+    const { camera_id, recording_id } = req.body;
+    
+    const result = await RecordingService.stopRecording(camera_id, recording_id);
+    
+    res.json({
+      success: true,
+      data: result
+    });
+  })
 );
 
 /**
- * @route POST /api/recordings/:id/stop
- * @desc Parar gravação para uma câmera
- * @access Private
+ * @route GET /api/recordings/internal/active
+ * @desc Listar gravações ativas via serviço interno
+ * @access Internal Service Only
  */
-router.post('/:id/stop',
-  authenticateToken,
-  requirePermission('recordings:stop'),
-  async (req, res) => {
-    try {
-      const recordingId = req.params.id;
-      const userId = req.user.id;
-
-      // Buscar gravação para obter o camera_id
-      const recording = await RecordingService.getRecordingById(recordingId, userId);
-      if (!recording) {
-        return res.status(404).json({
-          success: false,
-          message: 'Gravação não encontrada'
-        });
-      }
-
-      logger.info(`Usuário ${userId} parando gravação ${recordingId} da câmera ${recording.camera_id}`);
-
-      // Parar gravação usando o RecordingService
-      const result = await RecordingService.stopRecording(recording.camera_id, recordingId);
-
-      res.json({
-        success: true,
-        message: 'Gravação parada com sucesso',
-        data: result
-      });
-
-    } catch (error) {
-      logger.error('Erro ao parar gravação:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Erro ao parar gravação',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
-      });
-    }
-  }
-);
-
-/**
- * @route GET /api/recordings/active
- * @desc Listar gravações ativas
- * @access Private
- */
-router.get('/active',
-  authenticateToken,
-  requirePermission('recordings:read'),
-  async (req, res) => {
-    try {
-      const userId = req.user.id;
-      
-      logger.info(`Usuário ${userId} buscando gravações ativas`);
-
-      const { data: activeRecordings } = await RecordingService.getActiveRecordings(userId);
-
-      res.json({
-        success: true,
-        data: activeRecordings,
-        count: activeRecordings.length
-      });
-
-    } catch (error) {
-      logger.error('Erro ao buscar gravações ativas:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Erro ao buscar gravações ativas',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
-      });
-    }
-  }
-);
-
-/**
- * @route POST /api/recordings/start
- * @desc Iniciar gravação de uma câmera
- * @access Private
- */
-router.post('/start',
-  authenticateToken,
-  requirePermission('recordings:create'),
-  async (req, res) => {
-    try {
-      const { cameraId } = req.body;
-
-      if (!cameraId) {
-        return res.status(400).json({
-          success: false,
-          message: 'ID da câmera é obrigatório'
-        });
-      }
-
-      logger.info(`[API] Requisição para iniciar gravação da câmera ${cameraId}`);
-
-      const result = await RecordingService.startRecording(cameraId);
-
-      res.json({
-        success: true,
-        message: 'Gravação iniciada com sucesso',
-        data: result
-      });
-
-    } catch (error) {
-      logger.error('[API] Erro ao iniciar gravação:', error);
-      res.status(500).json({
-        success: false,
-        message: error.message || 'Erro ao iniciar gravação'
-      });
-    }
-  }
-);
-
-/**
- * @route POST /api/recordings/stop
- * @desc Parar gravação de uma câmera
- * @access Private
- */
-router.post('/stop',
-  authenticateToken,
-  requirePermission('recordings:update'),
-  async (req, res) => {
-    try {
-      const { cameraId, recordingId } = req.body;
-
-      if (!cameraId) {
-        return res.status(400).json({
-          success: false,
-          message: 'ID da câmera é obrigatório'
-        });
-      }
-
-      logger.info(`[API] Requisição para parar gravação da câmera ${cameraId}`);
-
-      const result = await RecordingService.stopRecording(cameraId, recordingId);
-
-      res.json({
-        success: true,
-        message: 'Gravação parada com sucesso',
-        data: result
-      });
-
-    } catch (error) {
-      logger.error('[API] Erro ao parar gravação:', error);
-      res.status(500).json({
-        success: false,
-        message: error.message || 'Erro ao parar gravação'
-      });
-    }
-  }
-);
-
-/**
- * @route GET /api/recordings/camera/:cameraId/active
- * @desc Verificar se há gravação ativa para uma câmera
- * @access Private
- */
-router.get('/camera/:cameraId/active',
-  authenticateToken,
-  requirePermission('recordings:read'),
-  async (req, res) => {
-    try {
-      const { cameraId } = req.params;
-      const userId = req.user.id;
-
-      const activeRecording = await RecordingService.getActiveRecording(cameraId, userId);
-
-      res.json({
-        success: true,
-        data: {
-          hasActiveRecording: !!activeRecording,
-          recording: activeRecording
-        }
-      });
-
-    } catch (error) {
-      logger.error('[API] Erro ao verificar gravação ativa:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Erro ao verificar gravação ativa'
-      });
-    }
-  }
+router.get('/internal/active',
+  authenticateService,
+  asyncHandler(async (req, res) => {
+    const { camera_id } = req.query;
+    const recordings = await RecordingService.getActiveRecordings(camera_id);
+    
+    res.json({
+      success: true,
+      data: recordings
+    });
+  })
 );
 
 export default router;

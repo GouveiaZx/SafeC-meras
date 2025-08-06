@@ -1,24 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
-import VideoPlayer from '@/components/VideoPlayer';
+import UnifiedVideoPlayer from '@/components/UnifiedVideoPlayer';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft, RefreshCw, AlertCircle, Settings } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Skeleton } from '@/components/ui/skeleton';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover';
+
 
 interface StreamInfo {
   id: string;
@@ -39,17 +28,15 @@ interface StreamInfo {
 const StreamViewPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { token, user } = useAuth();
+  const { token } = useAuth();
   
   const [streamInfo, setStreamInfo] = useState<StreamInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [selectedQuality, setSelectedQuality] = useState<string>('720p');
-  const [selectedFps, setSelectedFps] = useState<number>(30);
-  const [updatingSettings, setUpdatingSettings] = useState(false);
 
-  const fetchStreamInfo = async () => {
+
+  const fetchStreamInfo = useCallback(async () => {
     if (!id || !token) return;
     
     try {
@@ -74,61 +61,20 @@ const StreamViewPage: React.FC = () => {
       setLoading(false);
       setRefreshing(false);
     }
-  };
+  }, [id, token]);
 
   const handleRefresh = () => {
     setRefreshing(true);
     fetchStreamInfo();
   };
 
-  const updateStreamSettings = async (quality: string, fps: number) => {
-    if (!id || !token) return;
-    
-    try {
-      setUpdatingSettings(true);
-      const response = await fetch(`/api/streams/${id}/settings`, {
-        method: 'PUT',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ quality, fps }),
-      });
 
-      if (!response.ok) {
-        throw new Error('Erro ao atualizar configurações');
-      }
-
-      // Atualizar as informações do stream
-      await fetchStreamInfo();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Erro ao atualizar configurações');
-    } finally {
-      setUpdatingSettings(false);
-    }
-  };
-
-  const handleQualityChange = (quality: string) => {
-    setSelectedQuality(quality);
-    updateStreamSettings(quality, selectedFps);
-  };
-
-  const handleFpsChange = (fps: string) => {
-    const fpsNumber = parseInt(fps);
-    setSelectedFps(fpsNumber);
-    updateStreamSettings(selectedQuality, fpsNumber);
-  };
 
   useEffect(() => {
     fetchStreamInfo();
-  }, [id, token]);
+  }, [id, token, fetchStreamInfo]);
 
-  useEffect(() => {
-    if (streamInfo) {
-      setSelectedQuality(streamInfo.quality);
-      setSelectedFps(streamInfo.fps);
-    }
-  }, [streamInfo]);
+
 
   if (loading) {
     return (
@@ -249,56 +195,7 @@ const StreamViewPage: React.FC = () => {
                   {streamInfo.status === 'active' ? 'ONLINE' : 'OFFLINE'}
                 </div>
                 
-                {/* Controles de Qualidade */}
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button variant="outline" size="sm" disabled={streamInfo.status !== 'active'}>
-                      <Settings className="h-4 w-4 mr-2" />
-                      Qualidade
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-80">
-                    <div className="space-y-4">
-                      <h4 className="font-medium">Configurações de Qualidade</h4>
-                      
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium">Resolução</label>
-                        <Select value={selectedQuality} onValueChange={handleQualityChange} disabled={updatingSettings}>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Selecione a resolução" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="1080p">Alta (1080p)</SelectItem>
-                            <SelectItem value="720p">Média (720p)</SelectItem>
-                            <SelectItem value="480p">Baixa (480p)</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium">FPS (Quadros por segundo)</label>
-                        <Select value={selectedFps.toString()} onValueChange={handleFpsChange} disabled={updatingSettings}>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Selecione o FPS" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="60">60 FPS</SelectItem>
-                            <SelectItem value="30">30 FPS</SelectItem>
-                            <SelectItem value="25">25 FPS</SelectItem>
-                            <SelectItem value="15">15 FPS</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      
-                      {updatingSettings && (
-                        <div className="text-sm text-gray-500 flex items-center">
-                          <RefreshCw className="h-3 w-3 mr-1 animate-spin" />
-                          Aplicando configurações...
-                        </div>
-                      )}
-                    </div>
-                  </PopoverContent>
-                </Popover>
+
                 
                 <Button
                   variant="ghost"
@@ -315,13 +212,15 @@ const StreamViewPage: React.FC = () => {
             <div className="space-y-4">
               {streamInfo.status === 'active' && hlsUrl ? (
                 <div className="relative">
-                  <VideoPlayer
+                  <UnifiedVideoPlayer
                     src={hlsUrl}
                     token={token}
                     autoPlay={true}
                     muted={true}
                     controls={true}
                     className="w-full aspect-video rounded-lg"
+                    mode="advanced"
+                    showHealthCheck={true}
                     onError={(error) => {
                       console.error('Erro no player:', error);
                       setError('Erro ao carregar o stream');

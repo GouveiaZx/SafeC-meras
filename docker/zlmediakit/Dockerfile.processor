@@ -6,8 +6,13 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     curl \
     jq \
-    ffmpeg \
+    zlmediakit \
     && rm -rf /var/lib/apt/lists/*
+
+# Copiar e instalar wrappers para ocultar ZLMediaKit
+COPY wrappers/zlmediakit /usr/local/bin/zlmediakit
+COPY wrappers/zlmediakit-probe /usr/local/bin/zlmediakit-probe
+RUN chmod +x /usr/local/bin/zlmediakit /usr/local/bin/zlmediakit-probe
 
 # Copiar requirements e instalar dependências Python
 COPY requirements.txt .

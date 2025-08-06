@@ -1,0 +1,18 @@
+﻿=== RELATORIO DE DIAGNOSTICO NEWCAM ===
+Data: 08/05/2025 02:42:08
+
+STATUS GERAL:
+- Servicos ativos: 5/5
+- ZLMediaKit funcionando: Sim
+- Arquivos de gravacao: 1
+- APIs funcionando: 0/4
+
+PROBLEMAS IDENTIFICADOS:
+
+
+RECOMENDACOES:
+- Verificar servicos Docker
+- Configurar autenticacao
+- Corrigir configuracoes frontend
+- Verificar componente VideoPlayer
+- Corrigir navegacao

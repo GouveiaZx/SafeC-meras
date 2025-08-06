@@ -1,7 +1,7 @@
 /**
  * Serviço de Streaming Real para NewCAM
  * Integração com SRS/ZLMediaKit para streaming de câmeras IP
- * Substitui FFmpeg por soluções mais eficientes
+ * Utiliza ZLMediaKit para soluções de streaming eficientes
  */
 
 import axios from 'axios';
@@ -10,6 +10,7 @@ import net from 'net';
 import { URL } from 'url';
 import { createModuleLogger } from '../config/logger.js';
 import { AppError, ValidationError } from '../middleware/errorHandler.js';
+import { Camera } from '../models/Camera.js';
 // PRODUÇÃO: Imports de mock removidos
 // import SimpleStreamingService from './SimpleStreamingService.js';
 // import MockStreamingService from './MockStreamingService.js';
@@ -19,8 +20,8 @@ const logger = createModuleLogger('StreamingService');
 class StreamingService {
   constructor() {
     this.srsApiUrl = process.env.SRS_API_URL || 'http://localhost:1985/api/v1';
-    this.zlmApiUrl = process.env.ZLM_API_URL || 'http://localhost:9902/index/api';
-    this.zlmSecret = process.env.ZLM_SECRET || '9QqL3M2K7vHQexkbfp6RvbCUB3GkV4MK';
+    this.zlmApiUrl = (process.env.ZLM_BASE_URL || process.env.ZLMEDIAKIT_API_URL || 'http://localhost:8000') + '/index/api';
+    this.zlmSecret = process.env.ZLM_SECRET || process.env.ZLMEDIAKIT_SECRET || '035c73f7-bb6b-4889-a715-d9eb2d1925cc';
     this.activeStreams = new Map();
     this.streamViewers = new Map();
     this.preferredServer = process.env.STREAMING_SERVER || 'srs'; // 'srs', 'zlm' ou 'simulation' - updated
@@ -91,14 +92,19 @@ class StreamingService {
 
     // Testar ZLMediaKit
     try {
-      const zlmResponse = await axios.post(`${this.zlmApiUrl}/getServerConfig`, {
-        secret: this.zlmSecret
-      }, {
-        timeout: 5000
+      const zlmResponse = await axios.post(`${this.zlmApiUrl}/getServerConfig`, 
+        new URLSearchParams({ secret: this.zlmSecret }), {
+        timeout: 5000,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
       });
-      if (zlmResponse.status === 200) {
+      if (zlmResponse.status === 200 && zlmResponse.data.code === 0) {
         tests.push({ server: 'zlm', status: 'online', response: zlmResponse.data });
         logger.info('ZLMediaKit server está online');
+      } else {
+        tests.push({ server: 'zlm', status: 'offline', error: 'Resposta inválida do servidor' });
+        logger.warn('ZLMediaKit resposta inválida:', zlmResponse.data);
       }
     } catch (error) {
       tests.push({ server: 'zlm', status: 'offline', error: error.message });
@@ -124,10 +130,11 @@ class StreamingService {
   }
 
   /**
-   * Iniciar stream de uma câmera
+   * Iniciar stream de uma câmera (método interno)
    */
-  async startStream(camera, options = {}) {
+  async startStreamWithCamera(camera, options = {}) {
     try {
+      console.log('🚀 [STREAM DEBUG] === INICIANDO startStreamWithCamera ===');
       const {
         quality = 'medium',
         format = 'hls',
@@ -138,20 +145,89 @@ class StreamingService {
 
       const streamId = camera.id;
       
-      // Verificar se stream já está ativo
-      if (this.activeStreams.has(streamId)) {
+      console.log('🚀 [STREAM DEBUG] Parâmetros recebidos:', {
+        cameraId: camera.id,
+        cameraName: camera.name,
+        cameraStatus: camera.status,
+        streamType: camera.stream_type,
+        rtspUrl: camera.rtsp_url ? 'configurado' : 'não configurado',
+        rtmpUrl: camera.rtmp_url ? 'configurado' : 'não configurado',
+        streamId,
+        quality,
+        format,
+        audio,
+        userId,
+        preferredServer: this.preferredServer
+      });
+      
+      // Verificação robusta de stream ativo
+      console.log('🔍 [STREAM DEBUG] Verificando streams ativos...');
+      const hasInternalStream = this.activeStreams.has(streamId);
+      const hasZLMStream = await this.checkStreamExists(streamId);
+      
+      console.log('🔍 [STREAM DEBUG] Status dos streams:', {
+        hasInternalStream,
+        hasZLMStream,
+        activeStreamsCount: this.activeStreams.size,
+        activeStreamsList: Array.from(this.activeStreams.keys())
+      });
+      
+      logger.debug(`Verificação de stream ativo para ${streamId}:`, {
+        hasInternalStream,
+        hasZLMStream,
+        activeStreamsCount: this.activeStreams.size
+      });
+      
+      if (hasInternalStream && hasZLMStream) {
+        console.log('❌ [STREAM DEBUG] Stream já ativo - lançando ValidationError');
         throw new ValidationError('Stream já está ativo para esta câmera');
       }
+      
+      // Se há inconsistência, limpar o estado
+      if (hasInternalStream && !hasZLMStream) {
+        console.log('⚠️ [STREAM DEBUG] Inconsistência: stream interno sem ZLM - limpando estado interno');
+        logger.warn(`Inconsistência detectada: stream ${streamId} existe internamente mas não no ZLM. Limpando estado interno.`);
+        this.activeStreams.delete(streamId);
+        this.streamViewers.delete(streamId);
+      }
+      
+      if (!hasInternalStream && hasZLMStream) {
+        console.log('⚠️ [STREAM DEBUG] Inconsistência: stream ZLM sem interno - limpando ZLM');
+        logger.warn(`Inconsistência detectada: stream ${streamId} existe no ZLM mas não internamente. Limpando ZLM.`);
+        await this.ensureStreamCleanAndCreate(camera, streamId);
+      }
 
+      console.log('🎯 [STREAM DEBUG] Iniciando criação do stream...');
+      
+      // Validação de conectividade antes de iniciar stream
+      try {
+        console.log('🔍 [STREAM DEBUG] Testando conectividade da câmera...');
+        const connectivityResult = await this.testCameraConnection(camera);
+        
+        if (!connectivityResult.success) {
+          console.log('❌ [STREAM DEBUG] Falha na conectividade:', connectivityResult.error);
+          throw new AppError(`Câmera não acessível: ${connectivityResult.error}`, 503);
+        }
+        
+        console.log('✅ [STREAM DEBUG] Conectividade validada - prosseguindo...');
+      } catch (connectivityError) {
+        console.log('❌ [STREAM DEBUG] Erro na validação de conectividade:', connectivityError.message);
+        throw new AppError(`Falha na validação de conectividade: ${connectivityError.message}`, 503);
+      }
+      
       logger.info(`Iniciando stream ${streamId} para câmera ${camera.name}`);
 
       // Usar servidor configurado
+      console.log(`🔧 [STREAM DEBUG] Usando servidor: ${this.preferredServer}`);
       let streamConfig;
       if (this.preferredServer === 'zlm') {
+        console.log('🔧 [STREAM DEBUG] Chamando startZLMStream...');
         streamConfig = await this.startZLMStream(camera, { quality, format, audio, streamId, userToken });
       } else if (this.preferredServer === 'srs') {
+        console.log('🔧 [STREAM DEBUG] Chamando startSRSStream...');
         streamConfig = await this.startSRSStream(camera, { quality, format, audio, streamId, userToken });
       } else {
+        console.log(`❌ [STREAM DEBUG] Servidor não suportado: ${this.preferredServer}`);
         throw new Error(`Servidor de streaming '${this.preferredServer}' não é suportado.`);
       }
 
@@ -160,7 +236,6 @@ class StreamingService {
       streamConfig.camera_id = camera.id;
       streamConfig.camera_name = camera.name;
       streamConfig.status = 'active';
-      streamConfig.created_by = userId;
       streamConfig.viewers = 0;
       streamConfig.server = this.preferredServer;
 
@@ -181,7 +256,19 @@ class StreamingService {
       logger.info(`Stream ${streamId} iniciado com sucesso`);
       return streamConfig;
     } catch (error) {
-      logger.error(`Erro ao iniciar stream para câmera ${camera.id}:`, error);
+      logger.error(`[StreamingService] Erro detalhado ao iniciar stream para câmera ${camera.id}:`, {
+        error: error.message,
+        stack: error.stack,
+        cameraId: camera.id,
+        cameraName: camera.name,
+        cameraStatus: camera.status,
+        rtspUrl: camera.rtsp_url ? 'configurado' : 'não configurado',
+        streamType: camera.stream_type || 'rtsp',
+        options,
+        preferredServer: this.preferredServer,
+        activeStreamsCount: this.activeStreams.size,
+        timestamp: new Date().toISOString()
+      });
       throw error;
     }
   }
@@ -194,6 +281,18 @@ class StreamingService {
   async startZLMStream(camera, options) {
     const { quality, format, audio, streamId, userToken } = options;
     
+    console.log('🔧 [ZLM DEBUG] === INICIANDO startZLMStream ===');
+    console.log('🔧 [ZLM DEBUG] Parâmetros:', {
+      cameraId: camera.id,
+      cameraName: camera.name,
+      quality,
+      format,
+      audio,
+      streamId,
+      zlmApiUrl: this.zlmApiUrl,
+      zlmSecret: this.zlmSecret ? 'configurado' : 'não configurado'
+    });
+    
     logger.info(`Iniciando stream ZLM para câmera ${camera.id} (${camera.name})`);
     logger.debug(`Parâmetros do stream: quality=${quality}, format=${format}, audio=${audio}, streamId=${streamId}`);
     logger.debug(`URL RTSP da câmera: ${camera.rtsp_url}`);
@@ -203,34 +302,46 @@ class StreamingService {
       // Determinar a URL correta baseada no tipo de stream
       // Usar 'rtsp' como padrão para câmeras existentes que não têm stream_type definido
       const streamType = camera.stream_type || 'rtsp';
+      console.log(`🔧 [ZLM DEBUG] Tipo de stream determinado: ${streamType}`);
       let streamUrl;
       
       if (streamType === 'rtmp') {
         if (!camera.rtmp_url) {
+          console.log('❌ [ZLM DEBUG] URL RTMP não configurada');
           throw new AppError('URL RTMP da câmera não está configurada', 400);
         }
         streamUrl = camera.rtmp_url;
+        console.log('🔧 [ZLM DEBUG] Usando URL RTMP:', streamUrl);
       } else if (streamType === 'rtsp') {
         if (!camera.rtsp_url) {
+          console.log('❌ [ZLM DEBUG] URL RTSP não configurada');
           throw new AppError('URL RTSP da câmera não está configurada', 400);
         }
         streamUrl = camera.rtsp_url;
+        console.log('🔧 [ZLM DEBUG] Usando URL RTSP:', streamUrl);
       } else {
+        console.log(`❌ [ZLM DEBUG] Tipo de stream não suportado: ${streamType}`);
         throw new AppError(`Tipo de stream '${streamType}' não suportado`, 400);
       }
       
       // Implementar estratégia robusta de limpeza e criação
+      console.log('🧹 [ZLM DEBUG] Iniciando limpeza e criação do stream...');
       logger.debug(`Iniciando limpeza e criação do stream ${streamId}`);
       await this.ensureStreamCleanAndCreate(camera, streamId);
+      console.log('✅ [ZLM DEBUG] Limpeza e criação concluída');
       
       let attempts = 0;
       const maxAttempts = 3;
       let response;
       
+      console.log(`🔄 [ZLM DEBUG] Iniciando loop de tentativas (máximo: ${maxAttempts})`);
+      
       while (attempts < maxAttempts) {
         try {
+          console.log(`🔄 [ZLM DEBUG] Tentativa ${attempts + 1}/${maxAttempts}`);
+          
           // Configurar proxy RTSP
-          response = await axios.post(`${this.zlmApiUrl}/addStreamProxy`, {
+          const params = new URLSearchParams({
             secret: this.zlmSecret,
             vhost: '__defaultVhost__',
             app: 'live',
@@ -241,18 +352,46 @@ class StreamingService {
             enable_hls: 1,
             enable_mp4: 0
           });
+          
+          console.log('🔄 [ZLM DEBUG] Parâmetros do addStreamProxy:', {
+            vhost: '__defaultVhost__',
+            app: 'live',
+            stream: streamId,
+            url: streamUrl,
+            enable_rtsp: 1,
+            enable_rtmp: 1,
+            enable_hls: 1,
+            enable_mp4: 0,
+            apiUrl: `${this.zlmApiUrl}/addStreamProxy`
+          });
+          
+          response = await axios.post(`${this.zlmApiUrl}/addStreamProxy`, params, {
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded'
+            }
+          });
+          
+          console.log('🔄 [ZLM DEBUG] Resposta do ZLMediaKit:', {
+            status: response.status,
+            code: response.data.code,
+            msg: response.data.msg,
+            data: response.data.data
+          });
 
           if (response.data.code !== 0) {
             if (response.data.msg && response.data.msg.includes('already exists')) {
+              console.log(`⚠️ [ZLM DEBUG] Stream já existe, tentativa ${attempts + 1}/${maxAttempts}`);
               logger.warn(`Stream ${streamId} ainda existe após limpeza, tentativa ${attempts + 1}/${maxAttempts}`);
               
               if (attempts === maxAttempts - 1) {
+                console.log('🧹 [ZLM DEBUG] Última tentativa - executando limpeza extrema');
                 // Última tentativa: limpeza extrema
                 await this.extremeCleanupZLMStream(streamId);
                 await new Promise(resolve => setTimeout(resolve, 5000));
                 
+                console.log('🔄 [ZLM DEBUG] Tentativa final após limpeza extrema');
                 // Tentar uma última vez
-                response = await axios.post(`${this.zlmApiUrl}/addStreamProxy`, {
+                const fallbackParams = new URLSearchParams({
                   secret: this.zlmSecret,
                   vhost: '__defaultVhost__',
                   app: 'live',
@@ -263,11 +402,23 @@ class StreamingService {
                   enable_hls: 1,
                   enable_mp4: 0
                 });
+                response = await axios.post(`${this.zlmApiUrl}/addStreamProxy`, fallbackParams, {
+                  headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                  }
+                });
+                
+                console.log('🔄 [ZLM DEBUG] Resposta da tentativa final:', {
+                  code: response.data.code,
+                  msg: response.data.msg
+                });
                 
                 if (response.data.code !== 0) {
+                  console.log('❌ [ZLM DEBUG] Falha definitiva ao criar stream');
                   throw new AppError(`Falha definitiva ao criar stream: ${response.data.msg}`);
                 }
               } else {
+                console.log(`🧹 [ZLM DEBUG] Executando limpeza progressiva (nível ${attempts})`);
                 // Limpeza progressiva baseada na tentativa
                 await this.progressiveCleanupZLMStream(streamId, attempts);
                 await new Promise(resolve => setTimeout(resolve, (attempts + 1) * 2000));
@@ -275,22 +426,28 @@ class StreamingService {
                 continue;
               }
             } else {
+              console.log(`❌ [ZLM DEBUG] Erro do ZLMediaKit: ${response.data.msg}`);
               throw new AppError(`Erro do ZLMediaKit: ${response.data.msg}`);
             }
           }
           
           // Se chegou aqui, o stream foi criado com sucesso
+          console.log('✅ [ZLM DEBUG] Stream criado com sucesso!');
           break;
         } catch (error) {
+          console.log(`❌ [ZLM DEBUG] Erro na tentativa ${attempts + 1}: ${error.message}`);
           if (attempts === maxAttempts - 1) {
+            console.log('❌ [ZLM DEBUG] Todas as tentativas falharam, lançando erro');
             throw error;
           }
           attempts++;
           logger.warn(`Tentativa ${attempts} falhou: ${error.message}, tentando novamente...`);
+          console.log(`⏳ [ZLM DEBUG] Aguardando ${1000 * attempts}ms antes da próxima tentativa`);
           await new Promise(resolve => setTimeout(resolve, 1000 * attempts));
         }
       }
 
+      console.log('🔗 [ZLM DEBUG] Gerando URLs de streaming...');
       // Gerar URLs de streaming através do backend (proxy)
       const backendUrl = process.env.BACKEND_URL || 'http://localhost:3002';
       // Remover token da URL - usar apenas autenticação via header Authorization
@@ -311,8 +468,10 @@ class StreamingService {
         flv: `${zlmBaseUrl}/live/${streamId}.live.flv`,
         thumbnail: `${zlmBaseUrl}/live/${streamId}.live.jpg`
       };
-
-      return {
+      
+      console.log('🔗 [ZLM DEBUG] URLs geradas:', { urls, directUrls });
+      
+      const streamConfig = {
         format,
         quality,
         audio,
@@ -323,15 +482,34 @@ class StreamingService {
         fps: camera.fps || 30,
         proxy_key: response.data.data.key
       };
+      
+      console.log('✅ [ZLM DEBUG] startZLMStream concluído com sucesso:', {
+        streamId,
+        proxy_key: response.data.data.key,
+        quality,
+        format
+      });
+      
+      return streamConfig;
     } catch (error) {
+      console.log('❌ [ZLM DEBUG] Erro no startZLMStream:', {
+        message: error.message,
+        stack: error.stack,
+        name: error.name,
+        statusCode: error.statusCode,
+        code: error.code
+      });
+      
       logger.error('Erro ao configurar stream no ZLMediaKit:', error);
       
       // Se já é um AppError, preservar o status code original
       if (error instanceof AppError) {
+        console.log('❌ [ZLM DEBUG] Re-lançando AppError existente');
         throw error;
       }
       
       // Para outros tipos de erro, criar um novo AppError com status 500
+      console.log('❌ [ZLM DEBUG] Criando novo AppError');
       throw new AppError(`Falha ao iniciar stream: ${error.message}`);
     }
   }
@@ -424,7 +602,6 @@ class StreamingService {
       // Atualizar status da câmera para offline após parar o stream
       try {
         // Buscar a câmera pelo ID do stream (que é o mesmo ID da câmera)
-        const Camera = (await import('../models/Camera.js')).default;
         const camera = await Camera.findById(stream.camera_id);
         if (camera) {
           await camera.updateStatus('offline');
@@ -451,12 +628,15 @@ class StreamingService {
    */
   async stopZLMStream(stream) {
     try {
-      if (stream.proxy_key) {
-        await axios.post(`${this.zlmApiUrl}/delStreamProxy`, {
-          secret: this.zlmSecret,
-          key: stream.proxy_key
-        });
-      }
+      const params = new URLSearchParams({
+        secret: this.zlmSecret,
+        key: stream.proxy_key
+      });
+      await axios.post(`${this.zlmApiUrl}/delStreamProxy`, params, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
+      });
     } catch (error) {
       logger.error('Erro ao parar stream no ZLMediaKit:', error);
     }
@@ -467,36 +647,39 @@ class StreamingService {
    */
   async stopExistingZLMStream(streamId) {
     try {
-      // Listar todos os proxies ativos
-      const response = await axios.post(`${this.zlmApiUrl}/getProxyList`, {
-        secret: this.zlmSecret
+      // Tentar fechar stream usando close_stream
+      const params = new URLSearchParams({
+        secret: this.zlmSecret,
+        schema: 'rtsp',
+        vhost: '__defaultVhost__',
+        app: 'live',
+        stream: streamId,
+        force: 1
       });
+      await axios.post(`${this.zlmApiUrl}/close_stream`, params, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        timeout: 5000
+      });
+      logger.debug(`Stream ${streamId} fechado via close_stream`);
       
-      if (response.data.code === 0 && response.data.data) {
-        // Procurar por todos os proxies que correspondem ao streamId
-        const existingProxies = response.data.data.filter(proxy => 
-          proxy.stream === streamId && proxy.app === 'live'
-        );
-        
-        // Remover todos os proxies encontrados
-        for (const proxy of existingProxies) {
-          try {
-            await axios.post(`${this.zlmApiUrl}/delStreamProxy`, {
-              secret: this.zlmSecret,
-              key: proxy.key
-            });
-            logger.info(`Proxy ${proxy.key} do stream ${streamId} removido com sucesso`);
-          } catch (error) {
-            logger.warn(`Erro ao remover proxy ${proxy.key}:`, error.message);
-          }
-        }
-        
-        if (existingProxies.length > 0) {
-          logger.info(`${existingProxies.length} proxy(s) do stream ${streamId} removido(s)`);
-        }
-      }
+      // Tentar também fechar streams relacionados
+      const streamsParams = new URLSearchParams({
+        secret: this.zlmSecret,
+        vhost: '__defaultVhost__',
+        app: 'live',
+        stream: streamId
+      });
+      await axios.post(`${this.zlmApiUrl}/close_streams`, streamsParams, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        timeout: 5000
+      });
+      logger.debug(`Streams relacionados a ${streamId} fechados via close_streams`);
     } catch (error) {
-      logger.debug(`Erro ao verificar/remover stream existente ${streamId}:`, error.message);
+      logger.debug(`Erro ao parar stream existente ${streamId}:`, error.message);
       // Não fazer throw aqui para não interromper o fluxo
     }
   }
@@ -506,19 +689,44 @@ class StreamingService {
    */
   async cleanupExistingZLMStream(streamId) {
     try {
-      // Primeiro, tentar remover via proxy list
-      await this.stopExistingZLMStream(streamId);
+      // Tentar fechar stream específico
+      await this.forceRemoveZLMStream(streamId);
       
       // Aguardar processamento
       await new Promise(resolve => setTimeout(resolve, 500));
       
-      // Verificar se ainda existe e forçar remoção
+      // Verificar se ainda existe e tentar outras abordagens
       const stillExists = await this.checkStreamExists(streamId);
       if (stillExists) {
-        await this.forceRemoveZLMStream(streamId);
+        await this.closeStreamBySchema(streamId);
       }
     } catch (error) {
       logger.debug(`Erro na limpeza básica do stream ${streamId}:`, error.message);
+    }
+  }
+
+  /**
+   * Fechar stream por schema específico
+   */
+  async closeStreamBySchema(streamId) {
+    try {
+      const params = new URLSearchParams({
+        secret: this.zlmSecret,
+        schema: 'rtsp',
+        vhost: '__defaultVhost__',
+        app: 'live',
+        stream: streamId,
+        force: 1
+      });
+      await axios.post(`${this.zlmApiUrl}/close_stream`, params, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        timeout: 5000
+      });
+      logger.debug(`Stream ${streamId} fechado por schema`);
+    } catch (error) {
+      logger.debug(`Erro ao fechar stream ${streamId} por schema:`, error.message);
     }
   }
 
@@ -527,38 +735,95 @@ class StreamingService {
    */
   async checkStreamExists(streamId) {
     try {
-      // Verificar via proxy list
-      const proxyResponse = await axios.post(`${this.zlmApiUrl}/getProxyList`, {
+      console.log('🔍 [CHECK DEBUG] === VERIFICANDO EXISTÊNCIA DO STREAM ===');
+      console.log('🔍 [CHECK DEBUG] StreamId:', streamId);
+      console.log('🔍 [CHECK DEBUG] ZLM API URL:', this.zlmApiUrl);
+      
+      // Verificar via media list (streams ativos) - método principal
+      const mediaParams = new URLSearchParams({
+        secret: this.zlmSecret,
+        vhost: '__defaultVhost__',
+        app: 'live',
+        stream: streamId
+      });
+      
+      console.log('🔍 [CHECK DEBUG] Parâmetros da primeira consulta:', {
+        vhost: '__defaultVhost__',
+        app: 'live',
+        stream: streamId
+      });
+      
+      const mediaResponse = await axios.post(`${this.zlmApiUrl}/getMediaList`, mediaParams, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        timeout: 5000
+      });
+      
+      console.log('🔍 [CHECK DEBUG] Resposta da primeira consulta:', {
+        status: mediaResponse.status,
+        code: mediaResponse.data?.code,
+        dataLength: mediaResponse.data?.data?.length || 0,
+        data: mediaResponse.data?.data
+      });
+    
+      if (mediaResponse.data.code === 0 && mediaResponse.data.data && mediaResponse.data.data.length > 0) {
+        console.log('✅ [CHECK DEBUG] Stream encontrado na consulta específica!');
+        logger.debug(`Stream ${streamId} encontrado na media list`);
+        return true;
+      }
+      
+      console.log('🔍 [CHECK DEBUG] Stream não encontrado na consulta específica, tentando consulta geral...');
+      
+      // Verificar também sem filtros específicos para ter certeza
+      const allMediaParams = new URLSearchParams({
         secret: this.zlmSecret
       });
       
-      if (proxyResponse.data.code === 0 && proxyResponse.data.data) {
-        const hasProxy = proxyResponse.data.data.some(proxy => 
-          proxy.stream === streamId && proxy.app === 'live'
-        );
-        if (hasProxy) {
-          return true;
-        }
-      }
+      const allMediaResponse = await axios.post(`${this.zlmApiUrl}/getMediaList`, allMediaParams, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        timeout: 5000
+      });
       
-      // Verificar via media list (streams ativos)
-      try {
-        const mediaResponse = await axios.post(`${this.zlmApiUrl}/getMediaList`, {
-          secret: this.zlmSecret,
-          vhost: '__defaultVhost__',
-          app: 'live',
-          stream: streamId
-        });
+      console.log('🔍 [CHECK DEBUG] Resposta da consulta geral:', {
+        status: allMediaResponse.status,
+        code: allMediaResponse.data?.code,
+        totalStreams: allMediaResponse.data?.data?.length || 0
+      });
+      
+      if (allMediaResponse.data.code === 0 && allMediaResponse.data.data) {
+        console.log('🔍 [CHECK DEBUG] Procurando stream na lista geral...');
+        console.log('🔍 [CHECK DEBUG] Streams encontrados:', allMediaResponse.data.data.map(media => ({
+          app: media.app,
+          stream: media.stream,
+          vhost: media.vhost,
+          schema: media.schema
+        })));
         
-        if (mediaResponse.data.code === 0 && mediaResponse.data.data && mediaResponse.data.data.length > 0) {
+        const hasStream = allMediaResponse.data.data.some(media => 
+          media.stream === streamId && media.app === 'live'
+        );
+        
+        console.log('🔍 [CHECK DEBUG] Resultado da busca na lista geral:', { hasStream });
+        
+        if (hasStream) {
+          console.log('✅ [CHECK DEBUG] Stream encontrado na lista geral!');
+          logger.debug(`Stream ${streamId} encontrado na lista geral de media`);
           return true;
         }
-      } catch (error) {
-        logger.debug(`Erro ao verificar media list: ${error.message}`);
       }
       
+      console.log('❌ [CHECK DEBUG] Stream não encontrado em nenhuma consulta');
+      logger.debug(`Stream ${streamId} não encontrado no ZLMediaKit`);
       return false;
     } catch (error) {
+      console.log('❌ [CHECK DEBUG] Erro ao verificar existência:', {
+        message: error.message,
+        code: error.code,
+        response: error.response?.status
+      });
       logger.debug(`Erro ao verificar existência do stream ${streamId}:`, error.message);
       return false;
     }
@@ -569,48 +834,87 @@ class StreamingService {
    */
   async ensureStreamCleanAndCreate(camera, streamId) {
     try {
+      console.log('🧹 [CLEANUP DEBUG] === INICIANDO ensureStreamCleanAndCreate ===');
+      console.log('🧹 [CLEANUP DEBUG] Parâmetros:', {
+        cameraId: camera.id,
+        cameraName: camera.name,
+        streamId,
+        zlmApiUrl: this.zlmApiUrl
+      });
+      
       logger.info(`Preparando ambiente para stream ${streamId}`);
       
       // Verificar conectividade com ZLMediaKit
+      console.log('🔍 [CLEANUP DEBUG] Verificando conectividade com ZLMediaKit...');
       try {
         const healthCheck = await axios.get(`${this.zlmApiUrl}/getServerConfig?secret=${this.zlmSecret}`, {
           timeout: 5000
         });
+        console.log('✅ [CLEANUP DEBUG] ZLMediaKit conectado:', {
+          status: healthCheck.status,
+          code: healthCheck.data?.code
+        });
         logger.debug(`ZLMediaKit conectado: ${healthCheck.status}`);
       } catch (healthError) {
+        console.log('❌ [CLEANUP DEBUG] Erro de conectividade:', {
+          message: healthError.message,
+          code: healthError.code,
+          response: healthError.response?.status
+        });
         logger.error(`Erro de conectividade com ZLMediaKit: ${healthError.message}`);
         throw new AppError('ZLMediaKit não está acessível', 503);
       }
       
       // Verificar se existe e remover
+      console.log('🔍 [CLEANUP DEBUG] Verificando se stream já existe...');
       logger.debug(`Verificando se stream ${streamId} já existe`);
       const exists = await this.checkStreamExists(streamId);
+      console.log('🔍 [CLEANUP DEBUG] Resultado da verificação:', { exists });
+      
       if (exists) {
+        console.log('🧹 [CLEANUP DEBUG] Stream existe - iniciando limpeza progressiva...');
         logger.info(`Stream ${streamId} existe, iniciando limpeza completa`);
         await this.progressiveCleanupZLMStream(streamId, 0);
+        console.log('⏳ [CLEANUP DEBUG] Aguardando 2s após limpeza progressiva...');
         await new Promise(resolve => setTimeout(resolve, 2000));
       } else {
+        console.log('✅ [CLEANUP DEBUG] Stream não existe - prosseguindo...');
         logger.debug(`Stream ${streamId} não existe, prosseguindo com criação`);
       }
       
       // Verificação final
+      console.log('🔍 [CLEANUP DEBUG] Verificação final da existência...');
       logger.debug(`Verificação final da existência do stream ${streamId}`);
       const stillExists = await this.checkStreamExists(streamId);
+      console.log('🔍 [CLEANUP DEBUG] Resultado da verificação final:', { stillExists });
+      
       if (stillExists) {
+        console.log('⚠️ [CLEANUP DEBUG] Stream ainda existe - iniciando limpeza extrema...');
         logger.warn(`Stream ${streamId} ainda existe após limpeza inicial`);
         await this.extremeCleanupZLMStream(streamId);
+        console.log('⏳ [CLEANUP DEBUG] Aguardando 3s após limpeza extrema...');
         await new Promise(resolve => setTimeout(resolve, 3000));
         
         // Verificação final após limpeza extrema
+        console.log('🔍 [CLEANUP DEBUG] Verificação final após limpeza extrema...');
         const finalCheck = await this.checkStreamExists(streamId);
+        console.log('🔍 [CLEANUP DEBUG] Resultado da verificação final extrema:', { finalCheck });
+        
         if (finalCheck) {
+          console.log('❌ [CLEANUP DEBUG] Stream persistente - lançando erro 409');
           logger.error(`Stream ${streamId} persistente após todas as tentativas de limpeza`);
           throw new AppError('Não foi possível limpar stream existente', 409);
         }
       }
       
+      console.log('✅ [CLEANUP DEBUG] Ambiente preparado com sucesso!');
       logger.debug(`Ambiente preparado com sucesso para stream ${streamId}`);
     } catch (error) {
+      console.log('❌ [CLEANUP DEBUG] Erro na preparação:', {
+        message: error.message,
+        statusCode: error.statusCode,
+        code: error.code
+      });
       logger.error(`Erro na preparação do stream ${streamId}:`, error);
       throw error;
     }
@@ -631,25 +935,37 @@ class StreamingService {
       
       // Nível 1: Limpeza com close_stream (schema rtsp)
       if (attempt >= 1) {
-        await axios.post(`${this.zlmApiUrl}/close_stream`, {
+        const params = new URLSearchParams({
           secret: this.zlmSecret,
           schema: 'rtsp',
           vhost: '__defaultVhost__',
           app: 'live',
           stream: streamId,
           force: 1
-        }).catch(() => {});
+        });
+        await axios.post(`${this.zlmApiUrl}/close_stream`, params, {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+          },
+          timeout: 5000
+        });
         await new Promise(resolve => setTimeout(resolve, 1500));
       }
       
       // Nível 2: Limpeza com close_streams
       if (attempt >= 2) {
-        await axios.post(`${this.zlmApiUrl}/close_streams`, {
+        const params = new URLSearchParams({
           secret: this.zlmSecret,
           vhost: '__defaultVhost__',
           app: 'live',
           stream: streamId
-        }).catch(() => {});
+        });
+        await axios.post(`${this.zlmApiUrl}/close_streams`, params, {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+          },
+          timeout: 5000
+        });
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
     } catch (error) {
@@ -670,37 +986,65 @@ class StreamingService {
         () => this.stopExistingZLMStream(streamId),
         
         // Fechar stream específico com força (schema rtsp)
-        () => axios.post(`${this.zlmApiUrl}/close_stream`, {
-          secret: this.zlmSecret,
-          schema: 'rtsp',
-          vhost: '__defaultVhost__',
-          app: 'live',
-          stream: streamId,
-          force: 1
-        }),
+        () => {
+          const params = new URLSearchParams({
+            secret: this.zlmSecret,
+            schema: 'rtsp',
+            vhost: '__defaultVhost__',
+            app: 'live',
+            stream: streamId,
+            force: 1
+          });
+          return axios.post(`${this.zlmApiUrl}/close_stream`, params, {
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded'
+            }
+          });
+        },
         
         // Fechar todos os streams RTSP
-        () => axios.post(`${this.zlmApiUrl}/close_streams`, {
-          secret: this.zlmSecret,
-          schema: 'rtsp',
-          vhost: '__defaultVhost__',
-          app: 'live',
-          stream: streamId
-        }),
+        () => {
+          const params = new URLSearchParams({
+            secret: this.zlmSecret,
+            schema: 'rtsp',
+            vhost: '__defaultVhost__',
+            app: 'live',
+            stream: streamId
+          });
+          return axios.post(`${this.zlmApiUrl}/close_streams`, params, {
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded'
+            }
+          });
+        },
         
         // Fechar todos os streams (qualquer schema)
-        () => axios.post(`${this.zlmApiUrl}/close_streams`, {
-          secret: this.zlmSecret,
-          vhost: '__defaultVhost__',
-          app: 'live',
-          stream: streamId
-        }),
+        () => {
+          const params = new URLSearchParams({
+            secret: this.zlmSecret,
+            vhost: '__defaultVhost__',
+            app: 'live',
+            stream: streamId
+          });
+          return axios.post(`${this.zlmApiUrl}/close_streams`, params, {
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded'
+            }
+          });
+        },
         
         // Tentar fechar por vhost padrão
-        () => axios.post(`${this.zlmApiUrl}/close_streams`, {
-          secret: this.zlmSecret,
-          vhost: '__defaultVhost__'
-        })
+        () => {
+          const params = new URLSearchParams({
+            secret: this.zlmSecret,
+            vhost: '__defaultVhost__'
+          });
+          return axios.post(`${this.zlmApiUrl}/close_streams`, params, {
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded'
+            }
+          });
+        }
       ];
       
       for (const method of cleanupMethods) {
@@ -745,6 +1089,167 @@ class StreamingService {
   }
 
   // MÉTODO REMOVIDO: startSimulationStream - Simulações desabilitadas
+
+  /**
+   * Verificar se uma câmera está fazendo streaming
+   */
+  async isStreaming(cameraId) {
+    try {
+      logger.debug(`isStreaming - Verificando stream para câmera: ${cameraId}`);
+      
+      const stream = this.activeStreams.get(cameraId);
+      const isActive = stream && stream.status === 'active';
+      
+      logger.debug(`isStreaming - Resultado:`, {
+        cameraId,
+        hasStream: !!stream,
+        status: stream?.status,
+        isActive
+      });
+      
+      return isActive;
+    } catch (error) {
+      logger.error(`Erro ao verificar streaming da câmera ${cameraId}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Iniciar stream apenas com cameraId
+   */
+  async startStream(cameraId, options = {}) {
+    console.log('🚀 [STREAMING SERVICE DEBUG] === INÍCIO DO startStream ===');
+    console.log('🚀 [STREAMING SERVICE DEBUG] Parâmetros recebidos:', {
+      cameraId,
+      options,
+      isInitialized: this.isInitialized,
+      preferredServer: this.preferredServer,
+      activeStreamsCount: this.activeStreams.size
+    });
+    
+    try {
+      console.log('🔍 [STREAMING SERVICE DEBUG] === ETAPA 1: IMPORTAÇÃO E BUSCA DA CÂMERA ===');
+      
+      // Buscar dados da câmera
+      let Camera;
+      try {
+        const cameraModule = await import('../models/Camera.js');
+        Camera = cameraModule.Camera;
+        console.log('✅ [STREAMING SERVICE DEBUG] Modelo Camera importado com sucesso');
+      } catch (importError) {
+        console.log('❌ [STREAMING SERVICE DEBUG] Erro ao importar modelo Camera:', {
+          error: importError.message,
+          stack: importError.stack
+        });
+        throw new Error(`Erro ao importar modelo Camera: ${importError.message}`);
+      }
+      
+      let camera;
+      try {
+        camera = await Camera.findById(cameraId);
+        console.log('🔍 [STREAMING SERVICE DEBUG] Resultado da busca da câmera:', {
+          found: !!camera,
+          cameraId
+        });
+      } catch (findError) {
+        console.log('❌ [STREAMING SERVICE DEBUG] Erro ao buscar câmera:', {
+          error: findError.message,
+          stack: findError.stack,
+          cameraId
+        });
+        throw new Error(`Erro ao buscar câmera: ${findError.message}`);
+      }
+      
+      if (!camera) {
+        console.log('❌ [STREAMING SERVICE DEBUG] Câmera não encontrada');
+        return {
+          success: false,
+          error: `Câmera ${cameraId} não encontrada`,
+          message: 'Câmera não encontrada'
+        };
+      }
+      
+      console.log('✅ [STREAMING SERVICE DEBUG] Câmera encontrada:', {
+        id: camera.id,
+        name: camera.name,
+        status: camera.status,
+        stream_type: camera.stream_type
+      });
+      
+      console.log('🔍 [STREAMING SERVICE DEBUG] === ETAPA 2: CHAMADA DO startStreamWithCamera ===');
+      
+      let streamConfig;
+      try {
+        streamConfig = await this.startStreamWithCamera(camera, options);
+        console.log('✅ [STREAMING SERVICE DEBUG] startStreamWithCamera executado com sucesso:', {
+          hasStreamConfig: !!streamConfig,
+          streamId: streamConfig?.id,
+          status: streamConfig?.status
+        });
+      } catch (streamError) {
+        console.log('❌ [STREAMING SERVICE DEBUG] Erro em startStreamWithCamera:', {
+          error: streamError.message,
+          stack: streamError.stack,
+          name: streamError.name,
+          cameraId: camera.id,
+          cameraName: camera.name
+        });
+        throw streamError; // Re-throw para ser capturado no catch principal
+      }
+      
+      console.log('🔍 [STREAMING SERVICE DEBUG] === ETAPA 3: RETORNO DE SUCESSO ===');
+      
+      const result = {
+        success: true,
+        data: streamConfig,
+        message: 'Stream iniciado com sucesso'
+      };
+      
+      console.log('✅ [STREAMING SERVICE DEBUG] Retornando resultado de sucesso:', {
+        success: result.success,
+        hasData: !!result.data,
+        message: result.message
+      });
+      
+      return result;
+      
+    } catch (error) {
+      console.log('❌ [STREAMING SERVICE DEBUG] === ERRO CAPTURADO ===');
+      console.log('❌ [STREAMING SERVICE DEBUG] Detalhes do erro:', {
+        error: error.message,
+        stack: error.stack,
+        name: error.name,
+        cameraId,
+        options,
+        isInitialized: this.isInitialized,
+        preferredServer: this.preferredServer,
+        activeStreamsCount: this.activeStreams.size,
+        timestamp: new Date().toISOString()
+      });
+      
+      logger.error(`[StreamingService] Erro crítico ao iniciar stream para câmera ${cameraId}:`, {
+        error: error.message,
+        stack: error.stack,
+        cameraId,
+        options,
+        zlmApiUrl: this.zlmApiUrl,
+        srsApiUrl: this.srsApiUrl,
+        preferredServer: this.preferredServer,
+        activeStreamsCount: this.activeStreams.size,
+        timestamp: new Date().toISOString()
+      });
+      
+      const errorResult = {
+        success: false,
+        error: error.message,
+        message: 'Falha ao iniciar stream'
+      };
+      
+      console.log('❌ [STREAMING SERVICE DEBUG] Retornando resultado de erro:', errorResult);
+      
+      return errorResult;
+    }
+  }
 
   /**
    * Obter informações de um stream

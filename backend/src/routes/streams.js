@@ -25,7 +25,7 @@ import {
   AppError 
 } from '../middleware/errorHandler.js';
 import { createModuleLogger } from '../config/logger.js';
-import streamingService from '../services/StreamingService.js';
+import unifiedStreamingService from '../services/UnifiedStreamingService.js';
 
 // Função utilitária local
 function isValidUUID(uuid) {
@@ -38,11 +38,15 @@ const logger = createModuleLogger('StreamRoutes');
 
 // Middleware para verificar token de serviço interno
 const authenticateService = (req, res, next) => {
+  console.log(`🔑 [SERVICE AUTH DEBUG] === MIDDLEWARE EXECUTADO ===`);
+  console.log(`🔑 [SERVICE AUTH DEBUG] Headers completos:`, req.headers);
+  
   const serviceToken = req.headers['x-service-token'];
   const expectedToken = process.env.INTERNAL_SERVICE_TOKEN || 'newcam-internal-service-2025';
   
-  console.log(`🔑 [SERVICE AUTH DEBUG] Token recebido:`, serviceToken ? '[PRESENTE]' : 'AUSENTE');
+  console.log(`🔑 [SERVICE AUTH DEBUG] Token recebido:`, serviceToken ? `[${serviceToken}]` : 'AUSENTE');
   console.log(`🔑 [SERVICE AUTH DEBUG] Token esperado:`, expectedToken);
+  console.log(`🔑 [SERVICE AUTH DEBUG] Comparação:`, serviceToken === expectedToken);
   
   if (serviceToken === expectedToken) {
     console.log(`✅ [SERVICE AUTH DEBUG] Token de serviço válido - criando usuário interno`);
@@ -54,10 +58,11 @@ const authenticateService = (req, res, next) => {
       permissions: ['*'], // Todas as permissões
       camera_access: ['*'] // Acesso a todas as câmeras
     };
+    console.log(`✅ [SERVICE AUTH DEBUG] Usuário interno criado:`, req.user);
     return next();
   }
   
-  console.log(`❌ [SERVICE AUTH DEBUG] Token de serviço inválido ou ausente`);
+  console.log(`❌ [SERVICE AUTH DEBUG] Token de serviço inválido ou ausente - continuando com auth normal`);
   // Se não for token de serviço, continuar com autenticação normal
   next();
 };
@@ -373,13 +378,13 @@ router.get('/:stream_id/hls/*', (req, res, next) => {
     return res.status(400).send('Tipo de arquivo inválido.');
   }
 
-  // Verificar se o stream existe no serviço interno
-  let activeStream = streamingService.getStream(stream_id);
+  // Verificar se o stream existe no serviço unificado
+  let activeStream = unifiedStreamingService.getStream(stream_id);
   
-  // Se não encontrado no Map interno, verificar se existe no ZLMediaKit
+  // Se não encontrado no serviço, verificar se existe nos servidores
   if (!activeStream) {
     try {
-      const zlmExists = await streamingService.checkStreamExists(stream_id);
+      const zlmExists = await unifiedStreamingService.checkStreamExists(stream_id);
       if (zlmExists) {
         // Stream existe no ZLM mas não no Map interno - criar entrada temporária
         activeStream = {
@@ -511,21 +516,9 @@ router.get('/:stream_id/hls/*', (req, res, next) => {
   }
 }));
 
-// Aplicar autenticação a todas as outras rotas (pular se já autenticado pelo serviço)
-router.use((req, res, next) => {
-  console.log(`🔐 [STREAMS TOKEN AUTH DEBUG] Verificando se precisa de autenticação JWT...`);
-  console.log(`🔐 [STREAMS TOKEN AUTH DEBUG] req.user:`, req.user ? { id: req.user.id, role: req.user.role } : 'AUSENTE');
-  
-  // Se já foi autenticado pelo serviço interno, pular autenticação JWT
-  if (req.user && req.user.id === 'internal-service') {
-    console.log(`✅ [STREAMS TOKEN AUTH DEBUG] Usuário já autenticado como serviço interno - pulando JWT`);
-    return next();
-  }
-  
-  console.log(`🔄 [STREAMS TOKEN AUTH DEBUG] Aplicando autenticação JWT normal...`);
-  // Caso contrário, usar autenticação JWT normal
-  authenticateToken(req, res, next);
-});
+// MIDDLEWARE GLOBAL DE AUTENTICAÇÃO REMOVIDO
+// Cada rota agora aplica sua própria autenticação conforme necessário
+// Isso evita conflitos com rotas que precisam de autenticação específica (como x-service-token)
 
 /**
  * @route GET /api/streams
@@ -535,10 +528,16 @@ router.use((req, res, next) => {
 router.get('/',
   authenticateService,
   (req, res, next) => {
+    console.log('🔐 [STREAMS TOKEN AUTH DEBUG] Verificando se precisa de autenticação JWT...');
+    console.log('🔐 [STREAMS TOKEN AUTH DEBUG] req.user:', req.user ? 'PRESENTE' : 'AUSENTE');
+    
     // Se já foi autenticado pelo serviço interno, pular autenticação JWT
     if (req.user && req.user.id === 'internal-service') {
+      console.log('✅ [STREAMS TOKEN AUTH DEBUG] Usuário interno detectado - pulando autenticação JWT');
       return next();
     }
+    
+    console.log('🔄 [STREAMS TOKEN AUTH DEBUG] Aplicando autenticação JWT normal...');
     // Caso contrário, usar autenticação JWT normal
     authenticateToken(req, res, next);
   },
@@ -552,7 +551,7 @@ router.get('/',
     } = req.query;
 
     // Obter streams ativos do serviço
-    let streams = streamingService.getActiveStreams();
+    let streams = unifiedStreamingService.getActiveStreams();
 
     // Filtrar por status se especificado
     if (status) {
@@ -605,17 +604,23 @@ router.get('/',
 router.get('/stats',
   authenticateService,
   (req, res, next) => {
+    console.log('🔐 [STREAM START AUTH DEBUG] Verificando se precisa de autenticação JWT...');
+    console.log('🔐 [STREAM START AUTH DEBUG] req.user:', req.user ? 'PRESENTE' : 'AUSENTE');
+    
     // Se já foi autenticado pelo serviço interno, pular autenticação JWT
     if (req.user && req.user.id === 'internal-service') {
+      console.log('✅ [STREAM START AUTH DEBUG] Usuário interno detectado - pulando autenticação JWT');
       return next();
     }
+    
+    console.log('🔄 [STREAM START AUTH DEBUG] Aplicando autenticação JWT normal...');
     // Caso contrário, usar autenticação JWT normal
     authenticateToken(req, res, next);
   },
   requireRole(['admin', 'operator']),
   asyncHandler(async (req, res) => {
-    // Obter estatísticas do serviço de streaming
-    const stats = await streamingService.getStreamingStats();
+    // Obter estatísticas do serviço de streaming unificado
+    const stats = await unifiedStreamingService.getStreamingStats();
 
     logger.info(`Estatísticas de streams solicitadas por: ${req.user.email}`);
 
@@ -639,6 +644,7 @@ router.post('/:cameraId/start',
     console.log('🔍 [STREAM START DEBUG] Method:', req.method);
     console.log('🔍 [STREAM START DEBUG] Headers:', {
       authorization: req.headers.authorization ? 'Bearer [PRESENTE]' : 'AUSENTE',
+      'x-service-token': req.headers['x-service-token'] ? '[PRESENTE]' : 'AUSENTE',
       'content-type': req.headers['content-type'],
       'user-agent': req.headers['user-agent']
     });
@@ -646,8 +652,10 @@ router.post('/:cameraId/start',
     console.log('🔍 [STREAM START DEBUG] Body RAW:', req.body);
     console.log('🔍 [STREAM START DEBUG] Query:', req.query);
     console.log('🔍 [STREAM START DEBUG] User antes dos middlewares:', req.user || 'UNDEFINED');
+    console.log('🔍 [STREAM START DEBUG] Próximo middleware: authenticateService');
     next();
   },
+  // MIDDLEWARE DE AUTENTICAÇÃO DE SERVIÇO
   authenticateService,
   (req, res, next) => {
     // Se já foi autenticado pelo serviço interno, pular autenticação JWT
@@ -711,6 +719,8 @@ router.post('/:cameraId/start',
   },
   asyncHandler(async (req, res) => {
     console.log('🔍 [STREAM START DEBUG] === DENTRO DO HANDLER PRINCIPAL ===');
+    console.log('🔍 [STREAM START DEBUG] unifiedStreamingService disponível:', typeof unifiedStreamingService);
+    console.log('🔍 [STREAM START DEBUG] unifiedStreamingService.startStream disponível:', typeof unifiedStreamingService.startStream);
     console.log('🔍 [STREAM START DEBUG] Dados finais recebidos:', {
       params: req.params,
       body: req.body,
@@ -735,7 +745,7 @@ router.post('/:cameraId/start',
       console.log('🔍 [STREAM START DEBUG] Buscando câmera com ID:', cameraId);
       let camera;
       try {
-        camera = await Camera.findById(cameraId);
+        camera = await Camera.findByPk(cameraId);
         console.log('🔍 [STREAM START DEBUG] Resultado da busca da câmera:', camera ? 'ENCONTRADA' : 'NÃO ENCONTRADA');
       } catch (cameraError) {
         console.log('❌ [STREAM START DEBUG] Erro ao buscar câmera:', {
@@ -764,13 +774,13 @@ router.post('/:cameraId/start',
       console.log('🔍 [STREAM START DEBUG] === ETAPA 2: PREPARAÇÃO DO STREAMING SERVICE ===');
       
       // Verificar se o streaming service está inicializado
-      if (!streamingService.isInitialized) {
-        console.log('⚠️ [STREAM START DEBUG] StreamingService não inicializado, inicializando...');
+      if (!unifiedStreamingService.isInitialized) {
+        console.log('⚠️ [STREAM START DEBUG] UnifiedStreamingService não inicializado, inicializando...');
         try {
-          await streamingService.init();
-          console.log('✅ [STREAM START DEBUG] StreamingService inicializado com sucesso');
+          await unifiedStreamingService.init();
+          console.log('✅ [STREAM START DEBUG] UnifiedStreamingService inicializado com sucesso');
         } catch (initError) {
-          console.log('❌ [STREAM START DEBUG] Erro ao inicializar StreamingService:', {
+          console.log('❌ [STREAM START DEBUG] Erro ao inicializar UnifiedStreamingService:', {
             error: initError.message,
             stack: initError.stack
           });
@@ -798,7 +808,7 @@ router.post('/:cameraId/start',
       // Iniciar stream usando o serviço de streaming
       let streamResult;
       try {
-        streamResult = await streamingService.startStream(cameraId, {
+        streamResult = await unifiedStreamingService.startStream(cameraId, {
           quality,
           format,
           audio,
@@ -922,7 +932,7 @@ router.post('/:stream_id/stop',
     const { stream_id } = req.params;
 
     // Verificar se stream existe
-    const stream = streamingService.getStream(stream_id);
+    const stream = unifiedStreamingService.getStream(stream_id);
     if (!stream) {
       throw new NotFoundError('Stream não encontrado');
     }
@@ -934,7 +944,7 @@ router.post('/:stream_id/stop',
     }
 
     // Parar stream usando o serviço
-    const stoppedStream = await streamingService.stopStream(stream_id, req.user.id);
+    const stoppedStream = await unifiedStreamingService.stopStream(stream_id, req.user.id);
 
     logger.info(`Stream ${stream_id} parado por: ${req.user.email}`);
 
@@ -971,7 +981,7 @@ router.get('/:stream_id',
   asyncHandler(async (req, res) => {
     const { stream_id } = req.params;
 
-    const stream = streamingService.getStream(stream_id);
+    const stream = unifiedStreamingService.getStream(stream_id);
     if (!stream) {
       throw new NotFoundError('Stream não encontrado');
     }
@@ -1158,7 +1168,7 @@ router.post('/:stream_id/join',
     const { stream_id } = req.params;
     const userId = req.user.id;
 
-    const stream = streamingService.getStream(stream_id);
+    const stream = unifiedStreamingService.getStream(stream_id);
     if (!stream) {
       throw new NotFoundError('Stream não encontrado');
     }
@@ -1174,7 +1184,7 @@ router.post('/:stream_id/join',
     }
 
     // Adicionar usuário aos viewers
-    const viewerCount = streamingService.addViewer(stream_id, userId);
+    const viewerCount = unifiedStreamingService.addViewer(stream_id, userId);
 
     logger.info(`Usuário ${req.user.email} entrou no stream ${stream_id}`);
 
@@ -1218,7 +1228,7 @@ router.post('/:stream_id/leave',
     const userId = req.user.id;
 
     // Remover usuário dos viewers
-    streamingService.removeViewer(stream_id, userId);
+    unifiedStreamingService.removeViewer(stream_id, userId);
 
     logger.info(`Usuário ${req.user.email} saiu do stream ${stream_id}`);
 
@@ -1261,7 +1271,7 @@ router.put('/:stream_id/quality',
     const { stream_id } = req.params;
     const { quality } = req.validatedData;
 
-    const stream = streamingService.getStream(stream_id);
+    const stream = unifiedStreamingService.getStream(stream_id);
     if (!stream) {
       throw new NotFoundError('Stream não encontrado');
     }
@@ -1279,8 +1289,8 @@ router.put('/:stream_id/quality',
     // Atualizar qualidade (implementação simplificada)
     const oldQuality = stream.quality;
     stream.quality = quality;
-    stream.bitrate = streamingService.getQualityBitrate(quality);
-    stream.resolution = streamingService.getQualityResolution(quality, stream.resolution);
+    stream.bitrate = unifiedStreamingService.getQualityBitrate(quality);
+    stream.resolution = unifiedStreamingService.getQualityResolution(quality, stream.resolution);
     stream.quality_changed_at = new Date().toISOString();
     stream.quality_changed_by = req.user.id;
 
@@ -1334,7 +1344,7 @@ router.put('/:stream_id/settings',
     const { stream_id } = req.params;
     const { quality, fps } = req.validatedData;
 
-    const stream = streamingService.getStream(stream_id);
+    const stream = unifiedStreamingService.getStream(stream_id);
     if (!stream) {
       throw new NotFoundError('Stream não encontrado');
     }
@@ -1357,8 +1367,8 @@ router.put('/:stream_id/settings',
 
     if (quality) {
       stream.quality = quality;
-      stream.resolution = streamingService.getQualityResolution(quality, stream.resolution);
-      stream.bitrate = streamingService.getQualityBitrate(quality);
+      stream.resolution = unifiedStreamingService.getQualityResolution(quality, stream.resolution);
+      stream.bitrate = unifiedStreamingService.getQualityBitrate(quality);
     }
 
     if (fps) {
@@ -1414,12 +1424,12 @@ router.get('/:stream_id/viewers',
   asyncHandler(async (req, res) => {
     const { stream_id } = req.params;
 
-    const stream = streamingService.getStream(stream_id);
+    const stream = unifiedStreamingService.getStream(stream_id);
     if (!stream) {
       throw new NotFoundError('Stream não encontrado');
     }
 
-    const viewers = streamingService.getViewers(stream_id);
+    const viewers = unifiedStreamingService.getViewers(stream_id);
     
     // Buscar informações dos usuários viewers
     const viewerList = [];
@@ -1435,7 +1445,7 @@ router.get('/:stream_id/viewers',
       
       if (!usersError && users) {
         viewerList.push(...users.map(user => ({
-          user_id: user.id,
+          id: user.id,
           name: user.name,
           email: user.email,
           role: user.role,
@@ -1444,7 +1454,7 @@ router.get('/:stream_id/viewers',
       } else {
         // Fallback para IDs apenas se houver erro
         viewerList.push(...viewerIds.map(userId => ({
-          user_id: userId,
+          id: userId,
           joined_at: new Date().toISOString()
         })));
       }
@@ -1500,7 +1510,7 @@ router.get('/:stream_id/health', authenticateToken, asyncHandler(async (req, res
   const { stream_id } = req.params;
   
   // Buscar câmera
-  const camera = await Camera.findByPk(stream_id);
+  const camera = await Camera.findById(stream_id);
   if (!camera) {
     return res.status(404).json({ 
       error: 'Câmera não encontrada',

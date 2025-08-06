@@ -115,7 +115,7 @@ export class FileService {
   async generateThumbnail(videoPath, fileId) {
     try {
       // Simulação de geração de thumbnail
-      // Em produção, usar ffmpeg ou biblioteca similar
+      // Em produção, usar zlmediakit ou biblioteca similar
       const thumbnailPath = path.join(this.thumbnailsDir, `${fileId}.jpg`);
       
       // Criar thumbnail padrão (placeholder)

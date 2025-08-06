@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Menu, Search, LogOut, User, Settings } from 'lucide-react';
+import { Menu, Search, LogOut, User } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 
@@ -105,17 +105,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
                   >
                     <User className="h-4 w-4 mr-3" />
                     Meu Perfil
-                  </button>
-                  
-                  <button
-                    onClick={() => {
-                      setShowUserMenu(false);
-                      navigate('/settings');
-                    }}
-                    className="flex items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                  >
-                    <Settings className="h-4 w-4 mr-3" />
-                    Configurações
                   </button>
                   
                   <hr className="my-1" />

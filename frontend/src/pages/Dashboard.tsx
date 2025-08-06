@@ -16,7 +16,7 @@ import AlertCard from '@/components/dashboard/AlertCard';
 import LineChart from '@/components/charts/LineChart';
 import BarChart from '@/components/charts/BarChart';
 import PieChart from '@/components/charts/PieChart';
-import { api, endpoints } from '@/lib/api';
+import { api } from '@/lib/api';
 
 interface SystemMetrics {
   cpu: number;
@@ -109,20 +109,20 @@ const Dashboard: React.FC = () => {
       const data = response;
       
       if (data.success && data.data) {
-        setMetrics(data.data.metrics);
+        setMetrics((data.data as any).metrics);
         
         // Atualizar dados dos gráficos se disponíveis
-        if (data.data.charts) {
-          if (data.data.charts.cpu_history) {
-            setCpuHistoryData(data.data.charts.cpu_history);
+        if ((data.data as any).charts) {
+          if ((data.data as any).charts.cpu_history) {
+            setCpuHistoryData((data.data as any).charts.cpu_history);
           }
           
-          if (data.data.charts.storage_distribution) {
-            setStorageDistribution(data.data.charts.storage_distribution);
+          if ((data.data as any).charts.storage_distribution) {
+            setStorageDistribution((data.data as any).charts.storage_distribution);
           }
           
-          if (data.data.charts.camera_stats) {
-            setCameraStats(data.data.charts.camera_stats);
+          if ((data.data as any).charts.camera_stats) {
+            setCameraStats((data.data as any).charts.camera_stats);
           }
         }
         
@@ -186,7 +186,7 @@ const Dashboard: React.FC = () => {
       const response = await api.get<{ success: boolean, data: any }>('/dashboard/alerts');
       const data = response;
       if (data.success && data.data) {
-        setAlerts(data.data.alerts || []);
+        setAlerts((data.data as any).alerts || []);
       } else {
         setAlerts([]);
       }

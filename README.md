@@ -10,7 +10,7 @@ Sistema completo de monitoramento de câmeras IP com streaming em tempo real, in
 - **Status**: ✅ Online e Funcional
 
 ### 🔧 Desenvolvimento Local
-- **Frontend**: http://localhost:5174
+- **Frontend**: http://localhost:5173
 - **Backend API**: http://localhost:3002
 - **Health Check**: http://localhost:3002/health
 
@@ -43,7 +43,7 @@ NewCAM/
 
 | Serviço | Porta | URL | Descrição |
 |---------|-------|-----|----------|
-| **Frontend** | `5174` | http://localhost:5174 | Interface React + Vite |
+| **Frontend** | `5173` | http://localhost:5173 | Interface React + Vite |
 | **Backend** | `3002` | http://localhost:3002 | API REST + WebSocket |
 | **Worker** | `3001` | localhost:3001 | Monitoramento de câmeras |
 | **ZLMediaKit** | `8000` | localhost:8000 | Servidor de streaming |
@@ -389,7 +389,7 @@ docker ps
 docker-compose ps
 
 # Verificar portas
-netstat -ano | findstr -E "(3002|3001|8000|8080|5174)"
+netstat -ano | findstr -E "(3002|3001|8000|8080|5173)"
 
 # Logs recentes
 docker-compose logs --tail=50

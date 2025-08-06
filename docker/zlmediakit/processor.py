@@ -123,9 +123,9 @@ def generate_thumbnail(video_path):
         thumbnail_name = f"{os.path.splitext(filename)[0]}.jpg"
         thumbnail_path = os.path.join(thumbnail_dir, thumbnail_name)
         
-        # Usar ffmpeg para gerar thumbnail
+        # Usar zlmediakit para gerar thumbnail
         cmd = [
-            'ffmpeg',
+            'zlmediakit',
             '-i', video_path,
             '-ss', '00:00:01',  # Capturar no segundo 1
             '-vframes', '1',
@@ -147,10 +147,10 @@ def generate_thumbnail(video_path):
     return None
 
 def get_video_info(video_path):
-    """Obtém informações do vídeo usando ffprobe"""
+    """Obtém informações do vídeo usando zlmediakit-probe"""
     try:
         cmd = [
-            'ffprobe',
+            'zlmediakit-probe',
             '-v', 'quiet',
             '-print_format', 'json',
             '-show_format',
