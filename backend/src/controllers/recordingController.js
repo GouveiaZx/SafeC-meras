@@ -76,7 +76,8 @@ class RecordingController {
   async getRecordingById(req, res, next) {
     try {
       const { id } = req.params;
-      const recording = await this.recordingService.getRecordingById(id);
+      const userId = req.user?.id;
+      const recording = await this.recordingService.getRecordingById(id, userId);
 
       if (!recording) {
         return next(new ApiError(404, 'Gravação não encontrada'));
@@ -186,8 +187,9 @@ class RecordingController {
     try {
       const { id } = req.params;
       const { deleteFromS3 = true } = req.query;
+      const userId = req.user?.id;
 
-      const result = await this.recordingService.deleteRecording(id, deleteFromS3 === 'true');
+      const result = await this.recordingService.deleteRecording(id, userId);
 
       if (!result) {
         return next(new ApiError(404, 'Gravação não encontrada'));

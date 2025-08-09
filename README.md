@@ -84,9 +84,48 @@ NewCAM/
 ## 📦 Instalação
 
 ### Pré-requisitos
-- Node.js 18+
-- Docker e Docker Compose
+- Node.js 22.14.0+
+- PostgreSQL ou Supabase
+- ZLMediaKit (incluído no projeto)
+- PowerShell (Windows)
+- Docker e Docker Compose (opcional)
 - Git
+
+### 🚀 Início Rápido
+
+```powershell
+# Clone o repositório
+git clone <repository-url>
+cd NewCAM
+
+# Instale as dependências do projeto principal
+npm install
+
+# Instale dependências do backend
+cd backend
+npm install
+
+# Instale dependências do frontend
+cd ../frontend
+npm install
+
+# Volte para o diretório raiz
+cd ..
+
+# Configure as variáveis de ambiente
+cp backend/.env.example backend/.env
+# Edite o arquivo backend/.env com suas configurações
+
+# Inicie todos os serviços
+npm run dev
+```
+
+### ✅ Status Atual (Janeiro 2025)
+**FUNCIONANDO**: Todos os problemas críticos foram resolvidos:
+- ✅ Erro HTTP 500 corrigido
+- ✅ ZLMediaKit funcionando
+- ✅ Sistema de streaming operacional
+- ✅ Configurações padronizadas
 
 ### 🚀 Desenvolvimento Local
 

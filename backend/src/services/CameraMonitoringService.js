@@ -189,10 +189,21 @@ class CameraMonitoringService extends EventEmitter {
       // Aguardar um pouco antes de tentar reconectar
       await new Promise(resolve => setTimeout(resolve, this.reconnectionDelayMs));
 
-      // Tentar iniciar novo stream
-      const streamResult = await this.streamingService.startStream(cameraId, 'system');
+      // Buscar dados atualizados da câmera do banco de dados
+      const updatedCamera = await Camera.findById(cameraId);
+      if (!updatedCamera) {
+        throw new Error(`Câmera ${cameraId} não encontrada no banco de dados`);
+      }
+
+      // Tentar iniciar novo stream com objeto camera completo
+      const streamResult = await this.streamingService.startStream(updatedCamera, {
+        quality: 'medium',
+        format: 'hls',
+        audio: true,
+        userId: 'system'
+      });
       
-      if (streamResult && streamResult.success) {
+      if (streamResult && streamResult.id) {
         logger.info(`Câmera ${camera.name} reconectada com sucesso`);
         await camera.updateStatus('online');
         this.reconnectionAttempts.delete(cameraId);

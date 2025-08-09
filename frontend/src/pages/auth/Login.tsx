@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { Eye, EyeOff, Lock, Mail, AlertCircle } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
+import Logo from '@/components/ui/Logo';
 
 const Login: React.FC = () => {
   const [email, setEmail] = useState('');
@@ -35,8 +36,8 @@ const Login: React.FC = () => {
         <div className="bg-white rounded-2xl shadow-2xl p-8">
           {/* Header */}
           <div className="text-center mb-8">
-            <div className="mx-auto h-16 w-16 bg-primary-600 rounded-full flex items-center justify-center mb-4">
-              <Lock className="h-8 w-8 text-white" />
+            <div className="flex justify-center mb-4">
+              <Logo size="lg" variant="dark" showText={false} />
             </div>
             <h2 className="text-3xl font-bold text-gray-900">Safe Câmeras</h2>
             <p className="text-gray-600 mt-2">Sistema de Vigilância por Câmeras IP</p>
@@ -122,15 +123,7 @@ const Login: React.FC = () => {
             </button>
           </form>
 
-          {/* Footer */}
-          <div className="mt-6 text-center">
-            <p className="text-sm text-gray-600">
-              Não tem uma conta?{' '}
-              <Link to="/auth/register" className="font-medium text-primary-600 hover:text-primary-500">
-                Registre-se
-              </Link>
-            </p>
-          </div>
+
         </div>
 
         {/* Copyright */}

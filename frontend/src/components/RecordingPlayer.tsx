@@ -1,0 +1,283 @@
+import React, { useState, useEffect } from 'react';
+import { Play, Download, ExternalLink, AlertCircle, Clock, HardDrive, Monitor } from 'lucide-react';
+import AuthenticatedVideoPlayer from './AuthenticatedVideoPlayer';
+import Modal from './ui/modal';
+import { Button } from './ui/button';
+import { Badge } from './ui/badge';
+import { api } from '@/lib/api';
+import { toast } from 'sonner';
+
+interface Recording {
+  id: string;
+  cameraId: string;
+  cameraName: string;
+  filename: string;
+  startTime: string;
+  endTime: string;
+  duration: number;
+  size: number;
+  status: 'recording' | 'completed' | 'uploading' | 'uploaded' | 'failed';
+  localPath?: string;
+  s3Url?: string;
+  metadata: {
+    resolution: string;
+    fps: number;
+    codec: string;
+    bitrate: number;
+  };
+}
+
+interface RecordingPlayerProps {
+  recording: Recording;
+  isOpen: boolean;
+  onClose: () => void;
+}
+
+const RecordingPlayer: React.FC<RecordingPlayerProps> = ({
+  recording,
+  isOpen,
+  onClose
+}) => {
+  const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen && recording) {
+      console.log('🎬 RecordingPlayer aberto para gravação:', {
+        recordingId: recording.id,
+        filename: recording.filename,
+        cameraName: recording.cameraName
+      });
+      loadPlaybackUrl();
+    }
+  }, [isOpen, recording]);
+
+  const loadPlaybackUrl = async () => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      // Usar URLs relativas para aproveitar o proxy do Vite
+      const streamEndpoint = `/api/recordings/${recording.id}/stream`;
+      const downloadEndpoint = `/api/recordings/${recording.id}/download`;
+      
+      setPlaybackUrl(streamEndpoint);
+      setDownloadUrl(downloadEndpoint);
+      
+      console.log('🎥 URL de streaming configurada (via proxy):', streamEndpoint);
+      console.log('📥 URL de download configurada (via proxy):', downloadEndpoint);
+      
+    } catch (err) {
+      console.error('Erro ao carregar URL de reprodução:', err);
+      setError(err instanceof Error ? err.message : 'Erro ao carregar gravação');
+      toast.error('Erro ao carregar gravação');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDownload = () => {
+    if (downloadUrl) {
+      window.open(downloadUrl, '_blank');
+    }
+  };
+
+  const handleOpenInNewTab = () => {
+    if (playbackUrl) {
+      window.open(playbackUrl, '_blank');
+    }
+  };
+
+  const formatBytes = (bytes: number): string => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
+  const formatDuration = (seconds: number): string => {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const getStatusBadge = (status: string) => {
+    const statusConfig = {
+      recording: { color: 'bg-red-100 text-red-800', label: 'Gravando' },
+      completed: { color: 'bg-primary-100 text-primary-800', label: 'Concluída' },
+      uploading: { color: 'bg-yellow-100 text-yellow-800', label: 'Enviando' },
+      uploaded: { color: 'bg-green-100 text-green-800', label: 'Enviada' },
+      failed: { color: 'bg-red-100 text-red-800', label: 'Falhou' }
+    };
+
+    const config = statusConfig[status as keyof typeof statusConfig] || statusConfig.completed;
+
+    return (
+      <Badge className={config.color}>
+        {config.label}
+      </Badge>
+    );
+  };
+
+  return (
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      size="xl"
+      className="bg-white"
+    >
+      <div className="bg-white text-gray-900">
+        {/* Header */}
+        <div className="p-6 border-b border-gray-200 bg-gradient-to-r from-primary-50 to-primary-100">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-xl font-semibold text-gray-900 mb-2">{recording.filename}</h2>
+              <div className="flex items-center space-x-4 text-sm text-gray-600">
+                <span>{recording.cameraName}</span>
+                <span>•</span>
+                <span>{new Date(recording.startTime).toLocaleString('pt-BR')}</span>
+                <span>•</span>
+                {getStatusBadge(recording.status)}
+              </div>
+            </div>
+            <div className="flex items-center space-x-2">
+              {downloadUrl && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleDownload}
+                  className="text-gray-700 border-gray-300 hover:bg-gray-50"
+                >
+                  <Download className="w-4 h-4 mr-2" />
+                  Download
+                </Button>
+              )}
+              {playbackUrl && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleOpenInNewTab}
+                  className="text-gray-700 border-gray-300 hover:bg-gray-50"
+                >
+                  <ExternalLink className="w-4 h-4 mr-2" />
+                  Nova Aba
+                </Button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Video Player */}
+        <div className="relative">
+          {loading && (
+            <div className="aspect-video bg-gray-100 flex items-center justify-center">
+              <div className="text-center">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600 mx-auto mb-4"></div>
+                <p className="text-gray-600">Carregando gravação...</p>
+              </div>
+            </div>
+          )}
+          
+          {error && (
+            <div className="aspect-video bg-red-50 flex items-center justify-center">
+              <div className="text-center text-red-600">
+                <AlertCircle className="h-12 w-12 mx-auto mb-4" />
+                <p className="text-lg font-semibold mb-2">Erro ao carregar gravação</p>
+                <p className="text-sm text-gray-600">{error}</p>
+                <Button
+                  onClick={loadPlaybackUrl}
+                  className="mt-4 bg-red-600 hover:bg-red-700"
+                >
+                  Tentar Novamente
+                </Button>
+              </div>
+            </div>
+          )}
+          
+          {!loading && !error && playbackUrl && (
+            <div className="aspect-video">
+              <AuthenticatedVideoPlayer
+                src={playbackUrl}
+                className="w-full h-full"
+                onError={(error) => {
+                  console.error('Erro no player:', error);
+                  setError(error);
+                }}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* Recording Details */}
+        <div className="p-6 border-t border-gray-200 bg-gray-50">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+            <div className="flex items-center space-x-3">
+              <Clock className="w-5 h-5 text-primary-600" />
+              <div>
+                <p className="text-sm text-gray-500">Duração</p>
+                <p className="font-medium text-gray-900">{formatDuration(recording.duration)}</p>
+              </div>
+            </div>
+            
+            <div className="flex items-center space-x-3">
+              <HardDrive className="w-5 h-5 text-primary-600" />
+              <div>
+                <p className="text-sm text-gray-500">Tamanho</p>
+                <p className="font-medium text-gray-900">{formatBytes(recording.size)}</p>
+              </div>
+            </div>
+            
+            <div className="flex items-center space-x-3">
+              <Monitor className="w-5 h-5 text-primary-600" />
+              <div>
+                <p className="text-sm text-gray-500">Resolução</p>
+                <p className="font-medium text-gray-900">{recording.metadata?.resolution || 'N/A'}</p>
+              </div>
+            </div>
+            
+            <div className="flex items-center space-x-3">
+              <Play className="w-5 h-5 text-primary-600" />
+              <div>
+                <p className="text-sm text-gray-500">FPS</p>
+                <p className="font-medium text-gray-900">{recording.metadata?.fps || 'N/A'}</p>
+              </div>
+            </div>
+          </div>
+          
+          {/* Storage Status */}
+          <div className="mt-6 p-4 bg-white border border-gray-200 rounded-lg shadow-sm">
+            <h4 className="text-sm font-medium text-gray-700 mb-3">Status de Armazenamento</h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <p className="text-sm text-gray-500">Local</p>
+                <p className="text-sm font-medium">
+                  {recording.localPath ? (
+                    <span className="text-green-400">✓ Disponível</span>
+                  ) : (
+                    <span className="text-red-400">✗ Não disponível</span>
+                  )}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">Wasabi S3</p>
+                <p className="text-sm font-medium">
+                  {recording.s3Url ? (
+                    <span className="text-green-400">✓ Enviado</span>
+                  ) : (
+                    <span className="text-yellow-400">⏳ Pendente</span>
+                  )}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+};
+
+export default RecordingPlayer;

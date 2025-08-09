@@ -141,9 +141,10 @@ const AuthHealthMonitor: React.FC = () => {
     return null;
   }
 
-  const { metrics, rates, status, activeAlerts } = healthData;
+  const { metrics, status } = healthData;
   const activeAlertsList = alerts.filter(alert => !alert.resolved);
   const resolvedAlertsList = alerts.filter(alert => alert.resolved);
+  const activeAlerts = activeAlertsList.length;
 
   return (
     <div className="space-y-6">
@@ -161,9 +162,9 @@ const AuthHealthMonitor: React.FC = () => {
               </div>
             </div>
             <div className="flex items-center space-x-2">
-              {getStatusIcon(status)}
-              <span className={`font-semibold ${getStatusColor(status)}`}>
-                {status.toUpperCase()}
+              {getStatusIcon(status.isHealthy ? 'healthy' : 'unhealthy')}
+              <span className={`font-semibold ${getStatusColor(status.isHealthy ? 'healthy' : 'unhealthy')}`}>
+                {status.isHealthy ? 'SAUDÁVEL' : 'PROBLEMÁTICO'}
               </span>
               <Button
                 variant="outline"
@@ -184,13 +185,13 @@ const AuthHealthMonitor: React.FC = () => {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div className="text-center">
               <div className="text-2xl font-bold text-green-600">
-                {rates.successRate}%
+                {authHealthService.formatRate(authHealthService.calculateSuccessRate(metrics.loginSuccesses, metrics.loginAttempts))}
               </div>
               <div className="text-sm text-gray-600">Taxa de Sucesso</div>
             </div>
             <div className="text-center">
               <div className="text-2xl font-bold text-red-600">
-                {rates.errorRate}%
+                {authHealthService.formatRate(authHealthService.calculateFailureRate(metrics.loginFailures, metrics.loginAttempts))}
               </div>
               <div className="text-sm text-gray-600">Taxa de Erro</div>
             </div>
@@ -385,7 +386,7 @@ const AuthHealthMonitor: React.FC = () => {
                   <div>
                     <p className="text-sm text-gray-600">Último Reset</p>
                     <p className="text-sm font-medium">
-                      {authHealthService.formatTimestamp(metrics.lastReset)}
+                      {authHealthService.formatTimestamp(metrics.lastResetTime)}
                     </p>
                   </div>
                 </div>
@@ -453,7 +454,7 @@ const AuthHealthMonitor: React.FC = () => {
                 <div className="flex justify-between">
                   <span>Último Reset:</span>
                   <span className="font-semibold text-sm">
-                    {new Date(metrics.lastReset).toLocaleString()}
+                    {new Date(metrics.lastResetTime).toLocaleString()}
                   </span>
                 </div>
               </CardContent>

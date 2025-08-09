@@ -1,41 +1,29 @@
-// Carregar variáveis de ambiente PRIMEIRO
-import dotenv from 'dotenv';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import fs from 'fs';
-
-// Definir __filename e __dirname
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-// Carregar .env do diretório raiz (onde estão as credenciais reais)
-const rootEnvPath = join(__dirname, '..', '.env');
-console.log('Carregando .env de:', rootEnvPath); // Rate limiting configurado - restart
-
-const result = dotenv.config({ path: rootEnvPath });
-
-if (result.error) {
-  console.error('Erro ao carregar .env:', result.error);
-} else {
-  console.log('✅ .env carregado com sucesso!');
-  console.log('📊 Variáveis carregadas:', Object.keys(result.parsed || {}).length);
-}
-
 import express from 'express';
-import { createServer } from 'http';
-import { Server } from 'socket.io';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
 import rateLimit from 'express-rate-limit';
-import slowDown from 'express-slow-down';
-import morgan from 'morgan';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
 
-// Configurações
+// Configurar __dirname para ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Carregar variáveis de ambiente
+dotenv.config({ path: join(__dirname, '../.env') });
+
+// Importar middlewares
+import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
+import { requestLogger } from './middleware/requestLogger.js';
+import { authenticateToken } from './middleware/auth.js';
+import { authenticateSupabaseToken } from './middleware/supabaseAuth.js';
 import { corsConfig } from './config/cors.js';
-import { rateLimitConfig, slowDownConfig } from './config/rateLimit.js';
 
-// Rotas
+// Importar rotas
 import authRoutes from './routes/auth.js';
 import userRoutes from './routes/users.js';
 import cameraRoutes from './routes/cameras.js';
@@ -45,103 +33,114 @@ import dashboardRoutes from './routes/dashboard.js';
 import metricsRoutes from './routes/metrics.js';
 import logsRoutes from './routes/logs.js';
 import discoveryRoutes from './routes/discovery.js';
-// PRODUÇÃO: Rotas de simulação removidas
-// import simulationRoutes from './routes/simulation.js';
 import workerRoutes from './routes/worker.js';
 import hookRoutes from './routes/hooks.js';
 import healthRoutes from './routes/health.js';
-
-// Middleware
-import { errorHandler } from './middleware/errorHandler.js';
-import { notFoundHandler } from './middleware/notFoundHandler.js';
-import { requestLogger } from './middleware/requestLogger.js';
-import { initializeSocket } from './controllers/socketController.js';
+import segmentationRoutes, { injectSegmentationService } from './routes/segmentation.js';
 
 // Importar serviços
-import MetricsService from './services/MetricsService.js';
-import RecordingService from './services/RecordingService.js';
 import streamingService from './services/StreamingService.js';
 import cameraMonitoringService from './services/CameraMonitoringService.js';
+import MetricsService from './services/MetricsService.js';
+import SegmentationService from './services/SegmentationService.js';
+import { initializeSocket } from './controllers/socketController.js';
 
+// Configurações
+const PORT = process.env.PORT || 3002;
+const NODE_ENV = process.env.NODE_ENV || 'development';
+
+// Criar aplicação Express
 const app = express();
 const server = createServer(app);
 const io = new Server(server, {
-  cors: corsConfig
+  cors: {
+    origin: process.env.FRONTEND_URL || "http://localhost:5173",
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    credentials: true
+  },
+  transports: ['websocket', 'polling']
 });
 
-// Configurações básicas 
-const PORT = process.env.API_PORT || 3001;
-const NODE_ENV = process.env.NODE_ENV || 'development';
+// Configurar CORS usando a configuração completa
+app.use(cors(corsConfig));
 
-// Middleware de segurança
+// Middlewares de segurança
 app.use(helmet({
+  crossOriginEmbedderPolicy: false,
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
       scriptSrc: ["'self'"],
-      imgSrc: ["'self'", "data:", "https:"],
-      connectSrc: ["'self'", "ws:", "wss:"],
-      fontSrc: ["'self'"],
-      objectSrc: ["'none'"],
-      mediaSrc: ["'self'"],
-      frameSrc: ["'none'"],
+      imgSrc: ["'self'", "data:", "blob:"],
+      mediaSrc: ["'self'", "blob:", "http://localhost:3002", "http://127.0.0.1:3002", "http://localhost:3000", "http://127.0.0.1:3000"],
+      connectSrc: ["'self'", "ws:", "wss:", "http://localhost:3002", "http://127.0.0.1:3002"],
     },
   },
-  crossOriginEmbedderPolicy: false
 }));
 
-// CORS
-app.use(cors(corsConfig));
-
-// Compressão
-app.use(compression());
-
 // Rate limiting
-app.use(rateLimit(rateLimitConfig));
-app.use(slowDown(slowDownConfig));
-
-// Logging
-if (NODE_ENV === 'development') {
-  app.use(morgan('dev'));
-} else {
-  app.use(morgan('combined'));
-}
-
-// Middleware de parsing
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// Middleware customizado
-app.use(requestLogger);
-
-// MIDDLEWARE DE DEBUG GLOBAL - CAPTURA TODAS AS REQUISIÇÕES
-app.use((req, res, next) => {
-  if (req.method === 'POST' && req.path.includes('/streams/')) {
-    console.log('🚨 [GLOBAL DEBUG] === REQUISIÇÃO POST PARA STREAMS DETECTADA ===');
-    console.log('🚨 [GLOBAL DEBUG] Method:', req.method);
-    console.log('🚨 [GLOBAL DEBUG] URL:', req.originalUrl);
-    console.log('🚨 [GLOBAL DEBUG] Path:', req.path);
-    console.log('🚨 [GLOBAL DEBUG] Headers:', {
-      authorization: req.headers.authorization ? 'Bearer [PRESENTE]' : 'AUSENTE',
-      'content-type': req.headers['content-type'],
-      'user-agent': req.headers['user-agent']?.substring(0, 50) + '...'
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: NODE_ENV === 'production' ? 100 : 1000, // Limite de requisições por IP
+  message: {
+    error: 'Muitas requisições deste IP, tente novamente em 15 minutos.'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    console.log('🚫 [RATE LIMIT] Requisição bloqueada:', {
+      ip: req.ip,
+      path: req.path,
+      method: req.method,
+      headers: Object.keys(req.headers)
     });
-    console.log('🚨 [GLOBAL DEBUG] Body:', req.body);
-    console.log('🚨 [GLOBAL DEBUG] Params:', req.params);
-    console.log('🚨 [GLOBAL DEBUG] Query:', req.query);
-    console.log('🚨 [GLOBAL DEBUG] IP:', req.ip);
-    console.log('🚨 [GLOBAL DEBUG] Timestamp:', new Date().toISOString());
+    res.status(429).json({
+      error: 'Muitas requisições deste IP, tente novamente em 15 minutos.'
+    });
   }
-  next();
 });
 
-// NOTA: Middleware de arquivos estáticos movido para depois das rotas da API
-// para evitar conflito com rotas /api/streams
+app.use('/api/', limiter);
 
-// Health check
+// Middlewares gerais
+app.use(compression());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(requestLogger);
+
+// Middleware de autenticação para rotas protegidas
+app.use('/api/users', authenticateToken);
+app.use('/api/cameras', authenticateToken);
+app.use('/api/streams', authenticateToken);
+// Aplicar autenticação apenas para rotas específicas de recordings (excluindo stream)
+app.use('/api/recordings', (req, res, next) => {
+  console.log('🔍 [RECORDINGS MIDDLEWARE] Requisição recebida:', {
+    method: req.method,
+    path: req.path,
+    originalUrl: req.originalUrl,
+    headers: Object.keys(req.headers)
+  });
+  
+  // Pular autenticação global para rotas de stream (elas têm seu próprio middleware)
+  // req.path será algo como '/f2b8ef04-fada-4d7f-8542-77ca2b0bad8a/stream'
+  if (req.path.includes('/stream') || req.path.includes('/download')) {
+    console.log('🔓 [AUTH BYPASS] Pulando autenticação global para rota de stream/download:', req.path);
+    return next();
+  }
+  console.log('🔐 [AUTH APPLY] Aplicando autenticação global para rota:', req.path);
+  return authenticateToken(req, res, next);
+});
+app.use('/api/dashboard', authenticateToken);
+app.use('/api/metrics', authenticateToken);
+app.use('/api/logs', authenticateToken);
+app.use('/api/discovery', authenticateToken);
+app.use('/api/worker', authenticateToken);
+app.use('/api/segmentation', authenticateToken);
+
+// Rota de health check (sem autenticação)
 app.get('/health', (req, res) => {
-  res.status(200).json({
+  res.json({
     status: 'OK',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
@@ -153,9 +152,9 @@ app.get('/health', (req, res) => {
 // Rotas da API
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/recordings', recordingRoutes); // Movido para antes de cameras para evitar conflito de rotas
 app.use('/api/cameras', cameraRoutes);
 app.use('/api/streams', streamRoutes);
-app.use('/api/recordings', recordingRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/metrics', metricsRoutes);
 app.use('/api/logs', logsRoutes);
@@ -163,8 +162,9 @@ app.use('/api/discovery', discoveryRoutes);
 // PRODUÇÃO: Rotas de simulação removidas
 // app.use('/api/simulation', simulationRoutes);
 app.use('/api/worker', workerRoutes);
-app.use('/api/hook', hookRoutes);
+app.use('/api/webhooks', hookRoutes);
 app.use('/api/health', healthRoutes);
+app.use('/api/segmentation', segmentationRoutes);
 
 // Servir arquivos estáticos de stream (APÓS as rotas da API)
 const streamStoragePath = join(__dirname, '../../worker/storage/streams');
@@ -180,6 +180,24 @@ app.use('/streams', express.static(streamStoragePath, {
   }
 }));
 
+// Servir arquivos de gravação com CORS adequado
+const recordingsStoragePath = process.env.RECORDINGS_PATH || join(__dirname, '../recordings');
+app.use('/recordings', cors(corsConfig), express.static(recordingsStoragePath, {
+  setHeaders: (res, path, stat) => {
+    // Headers CORS específicos para vídeos
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Range, Accept-Ranges, Content-Range, Content-Length, Content-Type');
+    res.setHeader('Access-Control-Expose-Headers', 'Accept-Ranges, Content-Range, Content-Length, Content-Type');
+    
+    if (path.endsWith('.mp4')) {
+      res.setHeader('Content-Type', 'video/mp4');
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+    }
+  }
+}));
+
 // Middleware de tratamento de erros
 app.use(notFoundHandler);
 app.use(errorHandler);
@@ -189,6 +207,9 @@ initializeSocket(io);
 
 // Tornar io disponível globalmente para outros módulos
 app.set('io', io);
+
+// Variável global para o serviço de segmentação
+let globalSegmentationService = null;
 
 // Função para inicializar serviços
 async function initializeServices() {
@@ -220,10 +241,104 @@ async function initializeServices() {
     console.error('Erro ao iniciar coleta de métricas:', error);
   }
 
+  // Inicializar serviço de segmentação
+  try {
+    globalSegmentationService = new SegmentationService();
+    globalSegmentationService.start();
+    // Injetar o serviço nas rotas
+    injectSegmentationService(globalSegmentationService);
+    console.log('✅ SegmentationService inicializado e iniciado');
+  } catch (error) {
+    console.error('❌ Erro ao inicializar SegmentationService:', error);
+  }
+
   // Inicializar serviço de gravação
   try {
     // O RecordingService já é inicializado automaticamente no construtor
     console.log(`🎥 Serviço de gravação inicializado`);
+    
+    // Agendar processamento automático da fila de uploads (a cada 5 minutos)
+    const scheduleUploadQueue = () => {
+      setInterval(async () => {
+        try {
+          const RecordingService = (await import('./services/RecordingService.js')).default;
+          const result = await RecordingService.processUploadQueue();
+          
+          if (result.processed > 0) {
+            console.log(`📤 Fila de upload processada: ${result.processed} processados, ${result.success} sucessos, ${result.failed} falhas`);
+          }
+        } catch (error) {
+          console.error('❌ Erro no processamento automático da fila de upload:', error);
+        }
+      }, 5 * 60 * 1000); // A cada 5 minutos
+      
+      console.log('📤 Processamento automático da fila de upload agendado (a cada 5 minutos)');
+    };
+    
+    scheduleUploadQueue();
+    
+    // Agendar atualização automática de estatísticas das gravações (a cada hora)
+    const scheduleStatisticsUpdate = () => {
+      setInterval(async () => {
+        try {
+          const RecordingService = (await import('./services/RecordingService.js')).default;
+          const result = await RecordingService.updateRecordingStatistics();
+          
+          if (result.updated > 0) {
+            console.log(`📊 Estatísticas atualizadas: ${result.updated} gravações processadas`);
+          }
+        } catch (error) {
+          console.error('❌ Erro na atualização automática de estatísticas:', error);
+        }
+      }, 60 * 60 * 1000); // A cada 1 hora
+      
+      console.log('📊 Atualização automática de estatísticas agendada (a cada hora)');
+    };
+    
+    scheduleStatisticsUpdate();
+    
+    // Agendar limpeza automática de gravações antigas (diariamente às 2:00 AM)
+    const scheduleRecordingCleanup = () => {
+      const now = new Date();
+      const nextCleanup = new Date();
+      nextCleanup.setHours(2, 0, 0, 0); // 2:00 AM
+      
+      // Se já passou das 2:00 AM hoje, agendar para amanhã
+      if (now > nextCleanup) {
+        nextCleanup.setDate(nextCleanup.getDate() + 1);
+      }
+      
+      const timeUntilCleanup = nextCleanup.getTime() - now.getTime();
+      
+      setTimeout(async () => {
+        try {
+          console.log('🧹 Executando limpeza automática de gravações antigas...');
+          const RecordingService = (await import('./services/RecordingService.js')).default;
+          const result = await RecordingService.cleanupOldRecordings();
+          console.log(`✅ Limpeza automática concluída: ${result.message}`);
+        } catch (error) {
+          console.error('❌ Erro na limpeza automática de gravações:', error);
+        }
+        
+        // Reagendar para o próximo dia
+        setInterval(async () => {
+          try {
+            console.log('🧹 Executando limpeza automática de gravações antigas...');
+            const RecordingService = (await import('./services/RecordingService.js')).default;
+            const result = await RecordingService.cleanupOldRecordings();
+            console.log(`✅ Limpeza automática concluída: ${result.message}`);
+          } catch (error) {
+            console.error('❌ Erro na limpeza automática de gravações:', error);
+          }
+        }, 24 * 60 * 60 * 1000); // A cada 24 horas
+        
+      }, timeUntilCleanup);
+      
+      console.log(`🕐 Próxima limpeza automática agendada para: ${nextCleanup.toLocaleString('pt-BR')}`);
+    };
+    
+    scheduleRecordingCleanup();
+    
   } catch (error) {
     console.error('Erro ao inicializar serviço de gravação:', error);
   }
@@ -264,7 +379,7 @@ async function startServer() {
 }
 
 // Iniciar o servidor
-startServer();
+startServer(); // SegmentationService implementado com sucesso
 
 // Tratamento de erros não capturados
 process.on('uncaughtException', (error) => {
@@ -281,6 +396,9 @@ process.on('unhandledRejection', (reason, promise) => {
 process.on('SIGTERM', () => {
   console.log('Recebido SIGTERM, encerrando servidor...');
   MetricsService.stopCollection();
+  if (globalSegmentationService) {
+    globalSegmentationService.stop();
+  }
   server.close(() => {
     console.log('Servidor encerrado.');
     process.exit(0);
@@ -290,6 +408,9 @@ process.on('SIGTERM', () => {
 process.on('SIGINT', () => {
   console.log('Recebido SIGINT, encerrando servidor...');
   MetricsService.stopCollection();
+  if (globalSegmentationService) {
+    globalSegmentationService.stop();
+  }
   server.close(() => {
     console.log('Servidor encerrado.');
     process.exit(0);
@@ -297,4 +418,3 @@ process.on('SIGINT', () => {
 });
 
 export { app, server, io };
-// Restart trigger 2

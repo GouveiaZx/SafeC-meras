@@ -1,0 +1,19 @@
+services:
+  zlmediakit:
+    image: zlmediakit/zlmediakit:master
+    container_name: zlmediakit-server
+    ports:
+      - "1935:1935"   # RTMP
+      - "8080:80"     # HTTP
+      - "8443:443"    # HTTPS
+      - "8554:554"    # RTSP
+      - "10000:10000" # WebRTC TCP
+      - "10000:10000/udp" # WebRTC UDP
+      - "8000:8000/udp"   # RTP
+      - "9000:9000/udp"   # Additional UDP
+    volumes:
+      - "./storage/www:/opt/media/bin/www"
+      - "./zlmediakit/ZLMediaKit/conf/config.ini:/opt/media/bin/config.ini"
+    environment:
+      - TZ=America/Sao_Paulo
+    restart: unless-stopped

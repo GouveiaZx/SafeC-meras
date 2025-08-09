@@ -39,7 +39,7 @@ interface StreamInfo {
 const StreamViewPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { token, user } = useAuth();
+  const { token } = useAuth();
   
   const [streamInfo, setStreamInfo] = useState<StreamInfo | null>(null);
   const [loading, setLoading] = useState(true);
@@ -121,7 +121,7 @@ const StreamViewPage: React.FC = () => {
 
   useEffect(() => {
     fetchStreamInfo();
-  }, [id, token]);
+  }, [fetchStreamInfo]);
 
   useEffect(() => {
     if (streamInfo) {

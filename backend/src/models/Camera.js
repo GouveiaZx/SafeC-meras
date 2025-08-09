@@ -52,7 +52,15 @@ class Camera {
     this.username = data.username;
     this.password = data.password;
     this.type = data.type || 'ip';
-    this.stream_type = data.stream_type || 'rtsp';
+    
+    // Detectar stream_type automaticamente baseado nas URLs fornecidas
+    if (data.stream_type) {
+      this.stream_type = data.stream_type;
+    } else if (data.rtmp_url) {
+      this.stream_type = 'rtmp';
+    } else {
+      this.stream_type = 'rtsp'; // padrão
+    }
     this.brand = data.brand;
     this.model = data.model;
     this.zone = data.zone;
@@ -442,6 +450,7 @@ class Camera {
             description: this.description,
             rtsp_url: this.rtsp_url,
             rtmp_url: this.rtmp_url,
+            stream_type: this.stream_type,
             hls_url: this.hls_url,
             status: this.status,
             recording_enabled: this.recording_enabled,
@@ -481,6 +490,7 @@ class Camera {
           name: this.name,
           rtsp_url: this.rtsp_url,
           rtmp_url: this.rtmp_url,
+          stream_type: this.stream_type,
           status: this.status || 'offline',
           location: this.location
         };

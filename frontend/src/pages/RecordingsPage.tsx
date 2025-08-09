@@ -14,16 +14,14 @@ import {
   AlertCircle,
   CheckCircle,
   Upload,
-  Database
+  Database,
+  Play
 } from 'lucide-react';
 import MetricCard from '@/components/dashboard/MetricCard';
 import LineChart from '@/components/charts/LineChart';
+import RecordingPlayer from '@/components/RecordingPlayer';
 
-interface RecordingsResponse {
-  data: {
-    recordings: Recording[];
-  };
-}
+
 
 interface StatsResponse {
   data: RecordingStats;
@@ -38,6 +36,24 @@ interface TrendsResponse {
       size: number;
     }>;
   };
+}
+
+interface RecordingApiResponse {
+  id: string;
+  camera_id: string;
+  cameras?: {name: string};
+  filename: string;
+  start_time: string;
+  end_time: string;
+  duration?: number;
+  file_size?: number;
+  status: string;
+  file_path?: string;
+  s3_url?: string;
+  resolution?: string;
+  fps?: number;
+  codec?: string;
+  bitrate?: number;
 }
 
 interface Recording {
@@ -102,6 +118,8 @@ const RecordingsPage: React.FC = () => {
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [dateRange, setDateRange] = useState({ start: '', end: '' });
+  const [selectedRecording, setSelectedRecording] = useState<Recording | null>(null);
+  const [isPlayerOpen, setIsPlayerOpen] = useState(false);
 
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
@@ -121,7 +139,7 @@ const RecordingsPage: React.FC = () => {
       if (data.data && data.data.hourly) {
         setUploadTrendData(data.data.hourly);
       }
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Erro ao buscar tendências de upload:', err);
       // Manter dados padrão em caso de erro
     }
@@ -136,10 +154,39 @@ const RecordingsPage: React.FC = () => {
       if (dateRange.start) params.append('startDate', dateRange.start);
       if (dateRange.end) params.append('endDate', dateRange.end);
 
-      const data = await api.get<RecordingsResponse>(`${endpoints.recordings.getAll()}?${params}`);
-      setRecordings(data.data.recordings || []);
+      const data = await api.get<{success: boolean; data: RecordingApiResponse[]; pagination: {page: number; limit: number; total: number; pages: number}}>(`${endpoints.recordings.getAll()}?${params}`);
+      console.log('API Response:', data); // Debug log
+      
+      // A API retorna { success: true, data: [...], pagination: {...} }
+      if (data.success && Array.isArray(data.data)) {
+        // Mapear os dados da API para o formato esperado pelo frontend
+        const mappedRecordings = data.data.map((recording: RecordingApiResponse) => ({
+          id: recording.id,
+          cameraId: recording.camera_id,
+          cameraName: recording.cameras?.name || 'Câmera desconhecida',
+          filename: recording.filename,
+          startTime: recording.start_time,
+          endTime: recording.end_time,
+          duration: recording.duration || 0,
+          size: recording.file_size || 0,
+          status: recording.status,
+          localPath: recording.file_path,
+          s3Url: recording.s3_url,
+          segments: [], // Por enquanto vazio, pode ser implementado depois
+          metadata: {
+            resolution: recording.resolution || 'N/A',
+            fps: recording.fps || 0,
+            codec: recording.codec || 'N/A',
+            bitrate: recording.bitrate || 0
+          }
+        }));
+        
+        setRecordings(mappedRecordings);
+      } else {
+        setRecordings([]);
+      }
       setError(null);
-    } catch (err) {
+    } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Erro desconhecido');
     }
   }, [selectedCamera, selectedStatus, searchTerm, dateRange]);
@@ -148,7 +195,7 @@ const RecordingsPage: React.FC = () => {
     try {
       const data = await api.get<StatsResponse>(endpoints.recordings.getStats());
       setStats(data.data);
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Erro ao buscar estatísticas:', err);
     }
   }, []);
@@ -166,7 +213,7 @@ const RecordingsPage: React.FC = () => {
     try {
       await api.post(endpoints.recordings.stop(recordingId));
       await handleRefresh();
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Erro ao parar gravação:', err);
     }
   };
@@ -174,13 +221,21 @@ const RecordingsPage: React.FC = () => {
   const handleRetryUpload = async (recordingId: string, segmentId?: string) => {
     try {
       const endpoint = segmentId 
-        ? `/recordings/${recordingId}/segments/${segmentId}/retry`
-        : `/recordings/${recordingId}/retry`;
+        ? `/api/recordings/${recordingId}/segments/${segmentId}/retry-upload`
+        : `/api/recordings/${recordingId}/retry-upload`;
       
-      await api.post(endpoint);
-      await handleRefresh();
-    } catch (err) {
-      console.error('Erro ao tentar novamente o upload:', err);
+      const response = await api.post(endpoint);
+      
+      if (response.data.success) {
+        // Atualizar lista de gravações
+        handleRefresh();
+      } else {
+        console.error('Erro ao tentar novamente o upload:', response.data.message);
+      }
+    } catch (error: unknown) {
+      console.error('Erro ao tentar novamente o upload:', error);
+      const errorMessage = (error as any)?.response?.data?.message || 'Erro ao tentar novamente o upload';
+      console.error(errorMessage);
     }
   };
 
@@ -190,9 +245,19 @@ const RecordingsPage: React.FC = () => {
     try {
       await api.delete(endpoints.recordings.delete(recordingId));
       await handleRefresh();
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Erro ao excluir gravação:', err);
     }
+  };
+
+  const handlePlayRecording = (recording: Recording) => {
+    setSelectedRecording(recording);
+    setIsPlayerOpen(true);
+  };
+
+  const handleClosePlayer = () => {
+    setIsPlayerOpen(false);
+    setSelectedRecording(null);
   };
 
   useEffect(() => {
@@ -216,7 +281,10 @@ const RecordingsPage: React.FC = () => {
     return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const getStatusBadge = (status: string) => {
+  const getStatusBadge = (status: string, uploadStatus?: string) => {
+    // Priorizar upload_status se disponível
+    const currentStatus = uploadStatus || status;
+    
     const statusConfig = {
       recording: { color: 'bg-red-100 text-red-800', icon: Video, label: 'Gravando' },
       completed: { color: 'bg-primary-100 text-primary-800', icon: CheckCircle, label: 'Concluída' },
@@ -225,7 +293,7 @@ const RecordingsPage: React.FC = () => {
       failed: { color: 'bg-red-100 text-red-800', icon: AlertCircle, label: 'Falhou' }
     };
 
-    const config = statusConfig[status as keyof typeof statusConfig] || statusConfig.completed;
+    const config = statusConfig[currentStatus as keyof typeof statusConfig] || statusConfig.completed;
     const Icon = config.icon;
 
     return (
@@ -234,6 +302,15 @@ const RecordingsPage: React.FC = () => {
         {config.label}
       </Badge>
     );
+  };
+
+  const getStorageIcon = (recording: {s3Url?: string; localPath?: string}) => {
+    if (recording.s3Url) {
+      return <Cloud className="h-4 w-4 text-green-600" title="Armazenado no Wasabi S3" />;
+    } else if (recording.localPath) {
+      return <Database className="h-4 w-4 text-blue-600" title="Armazenado localmente" />;
+    }
+    return <AlertCircle className="h-4 w-4 text-red-600" title="Local de armazenamento desconhecido" />;
   };
 
   const filteredRecordings = recordings.filter(recording => {
@@ -298,7 +375,7 @@ const RecordingsPage: React.FC = () => {
         
         <MetricCard
           title="Armazenamento S3"
-          value={formatBytes(stats?.storageUsed.s3 || 0)}
+          value={formatBytes(stats?.storageUsed?.s3 || 0)}
           icon={Cloud}
           color="green"
         />
@@ -327,15 +404,15 @@ const RecordingsPage: React.FC = () => {
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <span className="text-sm text-gray-600">Pendentes</span>
-              <span className="font-medium text-yellow-600">{stats?.uploadQueue.pending || 0}</span>
+              <span className="font-medium text-yellow-600">{stats?.uploadQueue?.pending || 0}</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-sm text-gray-600">Processando</span>
-              <span className="font-medium text-primary-600">{stats?.uploadQueue.processing || 0}</span>
+              <span className="font-medium text-primary-600">{stats?.uploadQueue?.processing || 0}</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-sm text-gray-600">Falharam</span>
-              <span className="font-medium text-red-600">{stats?.uploadQueue.failed || 0}</span>
+              <span className="font-medium text-red-600">{stats?.uploadQueue?.failed || 0}</span>
             </div>
             <div className="pt-2 border-t">
               <div className="flex items-center justify-between">
@@ -415,18 +492,42 @@ const RecordingsPage: React.FC = () => {
           ) : (
             <div className="space-y-4">
               {filteredRecordings.map((recording) => (
-                <div key={recording.id} className="border border-gray-200 rounded-lg p-4">
+                <div key={recording.id} className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
                   <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center space-x-3">
-                      <Video className="w-5 h-5 text-primary-500" />
+                    <div 
+                      className="flex items-center space-x-3 cursor-pointer flex-1"
+                      onClick={() => handlePlayRecording(recording)}
+                    >
+                      <div className="relative">
+                        <Video className="w-5 h-5 text-primary-500" />
+                        <Play className="w-3 h-3 absolute -bottom-1 -right-1 bg-white rounded-full p-0.5 text-primary-600" />
+                      </div>
                       <div>
-                        <h4 className="font-medium">{recording.filename}</h4>
+                        <h4 className="font-medium hover:text-primary-600 transition-colors">{recording.filename}</h4>
                         <p className="text-sm text-gray-600">{recording.cameraName}</p>
+                        <p className="text-xs text-gray-500">
+                          {new Date(recording.startTime).toLocaleString('pt-BR')}
+                        </p>
                       </div>
                     </div>
                     <div className="flex items-center space-x-2">
-                      {getStatusBadge(recording.status)}
+                      {/* Ícone de armazenamento */}
+                      <div className="flex items-center space-x-1">
+                        {getStorageIcon(recording)}
+                        {getStatusBadge(recording.status, recording.uploadStatus)}
+                      </div>
                       <div className="flex space-x-1">
+                        {/* Botão de reprodução destacado */}
+                        {(recording.status === 'completed' || recording.status === 'uploaded') && (
+                          <Button
+                            size="sm"
+                            variant="default"
+                            onClick={() => handlePlayRecording(recording)}
+                            className="bg-primary-600 hover:bg-primary-700"
+                          >
+                            <Play className="w-4 h-4" />
+                          </Button>
+                        )}
                         {recording.status === 'recording' && (
                           <Button
                             size="sm"
@@ -445,11 +546,14 @@ const RecordingsPage: React.FC = () => {
                             <RefreshCw className="w-4 h-4" />
                           </Button>
                         )}
-                        {recording.s3Url && (
+                        {(recording.s3Url || recording.localPath) && (
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => window.open(recording.s3Url, '_blank')}
+                            onClick={() => {
+                              const downloadUrl = recording.s3Url || `http://localhost:3002/api/recordings/${recording.id}/download`;
+                              window.open(downloadUrl, '_blank');
+                            }}
                           >
                             <Download className="w-4 h-4" />
                           </Button>
@@ -476,19 +580,19 @@ const RecordingsPage: React.FC = () => {
                     </div>
                     <div>
                       <span className="text-gray-600">Resolução:</span>
-                      <p className="font-medium">{recording.metadata.resolution}</p>
+                      <p className="font-medium">{recording.metadata?.resolution || 'N/A'}</p>
                     </div>
                     <div>
                       <span className="text-gray-600">Segmentos:</span>
-                      <p className="font-medium">{recording.segments.length}</p>
+                      <p className="font-medium">{recording.segments?.length || 0}</p>
                     </div>
                   </div>
                   
-                  {recording.segments.length > 0 && (
+                  {recording.segments?.length > 0 && (
                     <div className="mt-4 pt-4 border-t border-gray-200">
                       <h5 className="text-sm font-medium mb-2">Segmentos:</h5>
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-                        {recording.segments.map((segment) => (
+                        {recording.segments?.map((segment: {id: string; filename: string; size: number; duration: number; status: string; uploadStatus?: string}) => (
                           <div key={segment.id} className="flex items-center justify-between p-2 bg-gray-50 rounded">
                             <div className="flex-1">
                               <p className="text-xs font-medium">{segment.filename}</p>
@@ -497,12 +601,14 @@ const RecordingsPage: React.FC = () => {
                               </p>
                             </div>
                             <div className="flex items-center space-x-1">
-                              {getStatusBadge(segment.status)}
-                              {segment.status === 'failed' && (
+                              {getStorageIcon(segment)}
+                              {getStatusBadge(segment.status, segment.uploadStatus)}
+                              {(segment.status === 'failed' || segment.uploadStatus === 'failed') && (
                                 <Button
                                   size="sm"
                                   variant="ghost"
                                   onClick={() => handleRetryUpload(recording.id, segment.id)}
+                                  title="Tentar novamente o upload"
                                 >
                                   <RefreshCw className="w-3 h-3" />
                                 </Button>
@@ -528,6 +634,15 @@ const RecordingsPage: React.FC = () => {
           </p>
         )}
       </div>
+
+      {/* Modal de Reprodução */}
+      {selectedRecording && (
+        <RecordingPlayer
+          recording={selectedRecording}
+          isOpen={isPlayerOpen}
+          onClose={handleClosePlayer}
+        />
+      )}
     </div>
   );
 };

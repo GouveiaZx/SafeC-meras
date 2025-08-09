@@ -135,15 +135,14 @@ const Security: React.FC = () => {
     try {
       setLoading(true);
       
-      const params = {
-        search: searchTerm,
-        severity: selectedSeverity,
-        type: selectedType,
-        start_date: dateRange.start,
-        end_date: dateRange.end,
-        page: currentPage.toString(),
-        limit: itemsPerPage.toString()
-      };
+      // const params = new URLSearchParams();
+       // if (searchTerm) params.append('search', searchTerm);
+       // if (selectedSeverity) params.append('severity', selectedSeverity);
+       // if (selectedType) params.append('type', selectedType);
+       // if (dateRange.start) params.append('start_date', dateRange.start);
+       // if (dateRange.end) params.append('end_date', dateRange.end);
+       // params.append('page', currentPage.toString());
+       // params.append('limit', itemsPerPage.toString());
       
       const [eventsData, statsData, settingsData, sessionsData] = await Promise.all([
         api.get<SecurityEventsResponse>(endpoints.security.getEvents(), params),
@@ -202,14 +201,6 @@ const Security: React.FC = () => {
   // Exportar eventos
   const handleExportEvents = useCallback(async () => {
     try {
-      const params = {
-        search: searchTerm,
-        severity: selectedSeverity,
-        type: selectedType,
-        start_date: dateRange.start,
-        end_date: dateRange.end
-      };
-      
       const response = await api.download(endpoints.security.exportEvents());
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);

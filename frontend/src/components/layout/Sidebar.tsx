@@ -58,30 +58,6 @@ const navigation: NavItem[] = [
     href: '/users',
     icon: Users,
     userTypes: ['ADMIN']
-  },
-  {
-    name: 'Relatórios',
-    href: '/reports',
-    icon: TrendingUp,
-    userTypes: ['ADMIN', 'INTEGRATOR']
-  },
-  {
-    name: 'Logs',
-    href: '/logs',
-    icon: FileText,
-    userTypes: ['ADMIN', 'INTEGRATOR']
-  },
-  {
-    name: 'Segurança',
-    href: '/security',
-    icon: Shield,
-    userTypes: ['ADMIN']
-  },
-  {
-    name: 'Configurações',
-    href: '/settings',
-    icon: Settings,
-    userTypes: ['ADMIN', 'INTEGRATOR', 'CLIENT']
   }
 ];
 

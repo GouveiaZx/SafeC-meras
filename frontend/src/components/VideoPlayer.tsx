@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { Play, Pause, Volume2, VolumeX, Maximize, RotateCcw, AlertCircle, Settings } from 'lucide-react';
+import { Play, Pause, Volume2, VolumeX, Maximize, RotateCcw, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import Hls from 'hls.js';
 
@@ -14,9 +14,6 @@ interface VideoPlayerProps {
   onError?: (error: string) => void;
   onLoadStart?: () => void;
   onLoadEnd?: () => void;
-  onQualityChange?: (quality: string) => void;
-  availableQualities?: string[];
-  currentQuality?: string;
 }
 
 const VideoPlayer: React.FC<VideoPlayerProps> = ({
@@ -29,10 +26,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
   token,
   onError,
   onLoadStart,
-  onLoadEnd,
-  onQualityChange,
-  availableQualities = ['1080p', '720p', '480p'],
-  currentQuality = '720p'
+  onLoadEnd
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -47,48 +41,9 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [retryCount, setRetryCount] = useState(0);
   const maxRetries = 3;
   const [hlsSupported, setHlsSupported] = useState(false);
-  const [showQualityMenu, setShowQualityMenu] = useState(false);
 
-  // Função para lidar com mudança de qualidade
-  const handleQualityChange = useCallback((quality: string) => {
-    console.log('VideoPlayer: Mudança de qualidade solicitada para:', quality);
-    
-    // Implementar troca de qualidade no HLS
-    if (hlsRef.current && hlsRef.current.levels.length > 0) {
-      // Mapeamento consistente com backend e frontend
-      const qualityMap: { [key: string]: number } = {
-        '4K': -1,    // Auto (melhor qualidade disponível) - ultra
-        '1080p': -1, // Auto para 1080p - high
-        '720p': 1,   // Qualidade média - medium
-        '480p': 0    // Qualidade baixa - low
-      };
-      
-      const targetLevel = qualityMap[quality];
-      console.log('VideoPlayer: Mapeamento de qualidade:', { quality, targetLevel, availableLevels: hlsRef.current.levels.length });
-      
-      if (targetLevel !== undefined) {
-        if (targetLevel === -1) {
-          // Auto quality - deixa o HLS escolher automaticamente
-          hlsRef.current.currentLevel = -1;
-          console.log('VideoPlayer: Qualidade definida para AUTO (melhor disponível)');
-        } else {
-          // Força um nível específico
-          const actualLevel = Math.min(targetLevel, hlsRef.current.levels.length - 1);
-          hlsRef.current.currentLevel = actualLevel;
-          console.log(`VideoPlayer: Qualidade definida para nível ${actualLevel}`);
-        }
-        
-        console.log(`VideoPlayer: Qualidade alterada para: ${quality} (nível HLS: ${hlsRef.current.currentLevel})`);
-      } else {
-        console.warn('VideoPlayer: Qualidade não reconhecida:', quality);
-      }
-    } else {
-      console.warn('VideoPlayer: HLS não disponível ou sem níveis de qualidade');
-    }
-    
-    // Sempre chamar o callback para notificar o componente pai
-    onQualityChange?.(quality);
-  }, [onQualityChange]);
+
+
 
   // Verificar suporte ao HLS e se é transmissão ao vivo
   useEffect(() => {
@@ -675,40 +630,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 </span>
               )}
               
-              {/* Quality Selector */}
-              <div className="relative">
-                <button
-                  onClick={() => setShowQualityMenu(!showQualityMenu)}
-                  className="text-white hover:text-gray-300 transition-colors"
-                  title="Qualidade do vídeo"
-                >
-                  <Settings className="h-5 w-5" />
-                </button>
-                
-                {showQualityMenu && (
-                  <div className="absolute bottom-8 right-0 bg-black bg-opacity-90 rounded-lg p-2 min-w-[120px] z-50">
-                    <div className="text-white text-xs font-medium mb-2 px-2">Qualidade</div>
-                    {availableQualities.map((quality) => (
-                      <button
-                        key={quality}
-                        onClick={() => {
-                          handleQualityChange(quality);
-                          setShowQualityMenu(false);
-                        }}
-                        className={`block w-full text-left px-2 py-1 text-sm rounded transition-colors ${
-                          currentQuality === quality
-                            ? 'bg-primary-600 text-white'
-                            : 'text-gray-300 hover:bg-gray-700 hover:text-white'
-                        }`}
-                      >
-                        {quality === '1080p' && 'Alta (1080p)'}
-                        {quality === '720p' && 'Média (720p)'}
-                        {quality === '480p' && 'Baixa (480p)'}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+
               
               <button
                 onClick={toggleFullscreen}

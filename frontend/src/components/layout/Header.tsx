@@ -99,30 +99,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
                   <button
                     onClick={() => {
                       setShowUserMenu(false);
-                      navigate('/profile');
-                    }}
-                    className="flex items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                  >
-                    <User className="h-4 w-4 mr-3" />
-                    Meu Perfil
-                  </button>
-                  
-                  <button
-                    onClick={() => {
-                      setShowUserMenu(false);
-                      navigate('/settings');
-                    }}
-                    className="flex items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                  >
-                    <Settings className="h-4 w-4 mr-3" />
-                    Configurações
-                  </button>
-                  
-                  <hr className="my-1" />
-                  
-                  <button
-                    onClick={() => {
-                      setShowUserMenu(false);
                       handleLogout();
                     }}
                     className="flex items-center w-full px-4 py-2 text-sm text-red-700 hover:bg-red-50"

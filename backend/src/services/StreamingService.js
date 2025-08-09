@@ -19,11 +19,11 @@ const logger = createModuleLogger('StreamingService');
 class StreamingService {
   constructor() {
     this.srsApiUrl = process.env.SRS_API_URL || 'http://localhost:1985/api/v1';
-    this.zlmApiUrl = process.env.ZLM_API_URL || 'http://localhost:9902/index/api';
+    this.zlmApiUrl = process.env.ZLM_API_URL || 'http://localhost:8000/index/api';
     this.zlmSecret = process.env.ZLM_SECRET || '9QqL3M2K7vHQexkbfp6RvbCUB3GkV4MK';
     this.activeStreams = new Map();
     this.streamViewers = new Map();
-    this.preferredServer = process.env.STREAMING_SERVER || 'srs'; // 'srs', 'zlm' ou 'simulation' - updated
+    this.preferredServer = process.env.STREAMING_SERVER || 'zlm'; // 'srs', 'zlm' ou 'simulation' - updated
     this.fallbackService = null;
     this.usesFallback = false;
     this.isInitialized = false;
@@ -196,6 +196,8 @@ class StreamingService {
     
     logger.info(`Iniciando stream ZLM para câmera ${camera.id} (${camera.name})`);
     logger.debug(`Parâmetros do stream: quality=${quality}, format=${format}, audio=${audio}, streamId=${streamId}`);
+    logger.debug(`Dados da câmera: stream_type=${camera.stream_type}, rtsp_url=${camera.rtsp_url}, rtmp_url=${camera.rtmp_url}`);
+    logger.debug(`Objeto câmera completo:`, JSON.stringify(camera, null, 2));
     logger.debug(`URL RTSP da câmera: ${camera.rtsp_url}`);
     logger.debug(`ZLM API URL: ${this.zlmApiUrl}`);
     
@@ -467,36 +469,19 @@ class StreamingService {
    */
   async stopExistingZLMStream(streamId) {
     try {
-      // Listar todos os proxies ativos
-      const response = await axios.post(`${this.zlmApiUrl}/getProxyList`, {
-        secret: this.zlmSecret
+      // Tentar fechar o stream usando close_stream
+      await axios.post(`${this.zlmApiUrl}/close_stream`, {
+        secret: this.zlmSecret,
+        schema: 'rtsp',
+        vhost: '__defaultVhost__',
+        app: 'live',
+        stream: streamId,
+        force: 1
       });
       
-      if (response.data.code === 0 && response.data.data) {
-        // Procurar por todos os proxies que correspondem ao streamId
-        const existingProxies = response.data.data.filter(proxy => 
-          proxy.stream === streamId && proxy.app === 'live'
-        );
-        
-        // Remover todos os proxies encontrados
-        for (const proxy of existingProxies) {
-          try {
-            await axios.post(`${this.zlmApiUrl}/delStreamProxy`, {
-              secret: this.zlmSecret,
-              key: proxy.key
-            });
-            logger.info(`Proxy ${proxy.key} do stream ${streamId} removido com sucesso`);
-          } catch (error) {
-            logger.warn(`Erro ao remover proxy ${proxy.key}:`, error.message);
-          }
-        }
-        
-        if (existingProxies.length > 0) {
-          logger.info(`${existingProxies.length} proxy(s) do stream ${streamId} removido(s)`);
-        }
-      }
+      logger.info(`Stream ${streamId} fechado com sucesso`);
     } catch (error) {
-      logger.debug(`Erro ao verificar/remover stream existente ${streamId}:`, error.message);
+      logger.debug(`Erro ao fechar stream existente ${streamId}:`, error.message);
       // Não fazer throw aqui para não interromper o fluxo
     }
   }
@@ -527,34 +512,16 @@ class StreamingService {
    */
   async checkStreamExists(streamId) {
     try {
-      // Verificar via proxy list
-      const proxyResponse = await axios.post(`${this.zlmApiUrl}/getProxyList`, {
-        secret: this.zlmSecret
+      // Verificar via media list (streams ativos)
+      const mediaResponse = await axios.post(`${this.zlmApiUrl}/getMediaList`, {
+        secret: this.zlmSecret,
+        vhost: '__defaultVhost__',
+        app: 'live',
+        stream: streamId
       });
       
-      if (proxyResponse.data.code === 0 && proxyResponse.data.data) {
-        const hasProxy = proxyResponse.data.data.some(proxy => 
-          proxy.stream === streamId && proxy.app === 'live'
-        );
-        if (hasProxy) {
-          return true;
-        }
-      }
-      
-      // Verificar via media list (streams ativos)
-      try {
-        const mediaResponse = await axios.post(`${this.zlmApiUrl}/getMediaList`, {
-          secret: this.zlmSecret,
-          vhost: '__defaultVhost__',
-          app: 'live',
-          stream: streamId
-        });
-        
-        if (mediaResponse.data.code === 0 && mediaResponse.data.data && mediaResponse.data.data.length > 0) {
-          return true;
-        }
-      } catch (error) {
-        logger.debug(`Erro ao verificar media list: ${error.message}`);
+      if (mediaResponse.data.code === 0 && mediaResponse.data.data && mediaResponse.data.data.length > 0) {
+        return true;
       }
       
       return false;

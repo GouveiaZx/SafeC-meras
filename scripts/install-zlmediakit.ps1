@@ -53,18 +53,18 @@ filePath=./www
 
 [hook]
 enable=1
-on_flow_report=http://localhost:3001/api/hook/on_flow_report
-on_http_access=http://localhost:3001/api/hook/on_http_access
-on_play=http://localhost:3001/api/hook/on_play
-on_publish=http://localhost:3001/api/hook/on_publish
-on_record_mp4=http://localhost:3001/api/hook/on_record_mp4
-on_rtsp_auth=http://localhost:3001/api/hook/on_rtsp_auth
-on_rtsp_realm=http://localhost:3001/api/hook/on_rtsp_realm
-on_server_started=http://localhost:3001/api/hook/on_server_started
-on_shell_login=http://localhost:3001/api/hook/on_shell_login
-on_stream_changed=http://localhost:3001/api/hook/on_stream_changed
-on_stream_none_reader=http://localhost:3001/api/hook/on_stream_none_reader
-on_stream_not_found=http://localhost:3001/api/hook/on_stream_not_found
+on_flow_report=http://localhost:3002/api/webhooks/on_flow_report
+on_http_access=http://localhost:3002/api/webhooks/on_http_access
+on_play=http://localhost:3002/api/webhooks/on_play
+on_publish=http://localhost:3002/api/webhooks/on_publish
+on_record_mp4=http://localhost:3002/api/webhooks/on_record_mp4
+on_rtsp_auth=http://localhost:3002/api/webhooks/on_rtsp_auth
+on_rtsp_realm=http://localhost:3002/api/webhooks/on_rtsp_realm
+on_server_started=http://localhost:3002/api/webhooks/on_server_started
+on_shell_login=http://localhost:3002/api/webhooks/on_shell_login
+on_stream_changed=http://localhost:3002/api/webhooks/on_stream_changed
+on_stream_none_reader=http://localhost:3002/api/webhooks/on_stream_none_reader
+on_stream_not_found=http://localhost:3002/api/webhooks/on_stream_not_found
 timeoutSec=10
 
 [http]

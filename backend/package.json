@@ -36,6 +36,7 @@
   "author": "NewCAM Team",
   "license": "MIT",
   "dependencies": {
+    "@prisma/client": "^6.13.0",
     "@sendgrid/mail": "^8.1.0",
     "@supabase/supabase-js": "^2.38.4",
     "archiver": "^7.0.1",

@@ -14,6 +14,8 @@ interface CameraData {
   location?: string;
   recording: boolean;
   recording_enabled?: boolean;
+  quality_profile?: string;
+  retention_days?: number;
   last_seen?: string;
 }
 
@@ -100,7 +102,10 @@ const Cameras: React.FC = () => {
       rtmp_url: '',
       location: camera.location || '',
       stream_type: 'rtsp',
-      type: 'ip' // Campo obrigatório para validação do backend
+      type: 'ip', // Campo obrigatório para validação do backend
+      recording_enabled: camera.recording_enabled || false,
+      quality_profile: camera.quality_profile || 'medium',
+      retention_days: camera.retention_days || 30
     });
     setShowSettingsModal(true);
   };
@@ -114,7 +119,10 @@ const Cameras: React.FC = () => {
       await api.put(endpoints.cameras.update(selectedCameraForSettings.id), {
         name: formData.name,
         rtsp_url: formData.rtsp_url,
-        location: formData.location
+        location: formData.location,
+        recording_enabled: formData.recording_enabled,
+        quality_profile: formData.quality_profile,
+        retention_days: formData.retention_days
       });
       
       toast.success('Câmera atualizada com sucesso!');
@@ -137,6 +145,12 @@ const Cameras: React.FC = () => {
   const confirmDelete = (cameraId: string) => {
     setCameraToDelete(cameraId);
     setShowDeleteConfirm(true);
+  };
+
+  // Função para navegar para visualização individual ao clicar na câmera
+  const handleCameraClick = (cameraId: string) => {
+    setSelectedCamera(cameraId);
+    setViewMode('single');
   };
 
   // Função para extrair hostname de uma URL
@@ -842,48 +856,28 @@ const Cameras: React.FC = () => {
               const status = streamStatus.get(camera.id);
               return (
                 <div key={camera.id} className="bg-white rounded-lg shadow-sm border overflow-hidden">
-                  {/* Video Player */}
-                  <div className="aspect-video bg-gray-900 relative">
-                    {status?.status === 'active' && status?.urls?.hls ? (
-                      <VideoPlayer
-                        src={status.urls.hls}
-                        poster=""
-                        className="w-full h-full"
-                        controls={true}
-                        autoPlay={true}
-                        muted={true}
-                        token={token}
-                      />
-                    ) : status?.status === 'active' ? (
-                      <div className="w-full h-full flex items-center justify-center text-white">
-                        <div className="text-center">
-                          <Play className="h-12 w-12 mx-auto mb-2 opacity-50" />
-                          <p className="text-sm opacity-75">Stream Ativo</p>
-                          <p className="text-xs opacity-50">{status.bitrate} kbps</p>
-                          <p className="text-xs opacity-50 mt-1">Aguardando URL do stream...</p>
-                        </div>
+                  {/* Placeholder clicável - sem VideoPlayer no grid */}
+                  <div 
+                    className="aspect-video bg-gray-900 relative cursor-pointer hover:bg-gray-800 transition-colors"
+                    onClick={() => handleCameraClick(camera.id)}
+                    title="Clique para visualizar esta câmera"
+                  >
+                    <div className="w-full h-full flex items-center justify-center text-gray-400">
+                      <div className="text-center">
+                        <Camera className="h-12 w-12 mx-auto mb-3 opacity-50" />
+                        <p className="text-sm mb-2">Clique para visualizar</p>
+                        {/* Status do Stream com destaque */}
+                        {status?.status === 'active' ? (
+                          <div className="bg-green-600 text-white px-3 py-1 rounded-full text-xs font-medium">
+                            Stream Ativo
+                          </div>
+                        ) : (
+                          <div className="bg-gray-600 text-gray-300 px-3 py-1 rounded-full text-xs">
+                            Stream Inativo
+                          </div>
+                        )}
+                        <p className="text-xs opacity-75 mt-2">{camera.name}</p>
                       </div>
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-gray-400">
-                        <div className="text-center">
-                          <Camera className="h-12 w-12 mx-auto mb-2 opacity-50" />
-                          <p className="text-sm">Stream Inativo</p>
-                        </div>
-                      </div>
-                    )}
-                    
-                    {/* Status Indicator */}
-                    <div className="absolute top-3 left-3">
-                      <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
-                        getStatusBadge(camera.status)
-                      }`}>
-                        <div className={`w-2 h-2 rounded-full mr-1 ${
-                          camera.status === 'online' ? 'bg-green-500' :
-                          camera.status === 'offline' ? 'bg-red-500' : 'bg-yellow-500'
-                        }`}></div>
-                        {camera.status === 'online' ? 'Online' :
-                         camera.status === 'offline' ? 'Offline' : 'Erro'}
-                      </span>
                     </div>
 
                     {/* Recording Indicators */}
@@ -933,34 +927,6 @@ const Cameras: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Controls */}
-                    <div className="flex space-x-2">
-                      {status?.status === 'active' ? (
-                        <button
-                          onClick={() => handleStopStream(camera.id)}
-                          className="flex-1 bg-red-600 text-white px-3 py-2 rounded-md text-sm font-medium hover:bg-red-700 transition-colors flex items-center justify-center"
-                        >
-                          <Pause className="h-4 w-4 mr-1" />
-                          Parar
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => handleStartStream(camera.id)}
-                          className="flex-1 bg-primary-600 text-white px-3 py-2 rounded-md text-sm font-medium hover:bg-primary-700 transition-colors flex items-center justify-center"
-                        >
-                          <Play className="h-4 w-4 mr-1" />
-                          {camera.status === 'online' ? 'Iniciar' : 'Tentar Iniciar'}
-                        </button>
-                      )}
-                      
-                      <button
-                        onClick={() => handleTestConnection(camera.id)}
-                        className="px-3 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
-                      >
-                        <RotateCcw className="h-4 w-4" />
-                      </button>
-                    </div>
-
                     {/* Last Seen */}
                     {camera.last_seen && (
                       <p className="text-xs text-gray-500 mt-2">
@@ -994,51 +960,180 @@ const Cameras: React.FC = () => {
             </div>
             
             {selectedCamera ? (
-              <div className="aspect-video bg-gray-900 relative">
-                {(() => {
-                  const camera = filteredCameras.find(c => c.id === selectedCamera);
-                  const status = streamStatus.get(selectedCamera);
-                  
-                  if (status?.status === 'active' && status?.urls?.hls) {
+              <div>
+                {/* Video Player */}
+                <div className="aspect-video bg-gray-900 relative">
+                  {(() => {
+                    const camera = filteredCameras.find(c => c.id === selectedCamera);
+                    const status = streamStatus.get(selectedCamera);
+                    
+                    if (status?.status === 'active' && status?.urls?.hls) {
+                      return (
+                        <VideoPlayer
+                          src={status.urls.hls}
+                          poster=""
+                          className="w-full h-full"
+                          controls={true}
+                          autoPlay={true}
+                          muted={false}
+                          token={token}
+                        />
+                      );
+                    }
+                    
                     return (
-                      <VideoPlayer
-                        src={status.urls.hls}
-                        poster=""
-                        className="w-full h-full"
-                        controls={true}
-                        autoPlay={true}
-                        muted={false}
-                        token={token}
-                        onQualityChange={handleQualityChange}
-                        availableQualities={availableQualities}
-                        currentQuality={currentQuality}
-                      />
+                      <div className="w-full h-full flex items-center justify-center text-white">
+                        <div className="text-center">
+                          <Camera className="h-16 w-16 mx-auto mb-4 opacity-50" />
+                          <p className="text-lg mb-2">{camera?.name}</p>
+                          {status?.status === 'active' ? (
+                            <p className="text-sm opacity-75">Aguardando URL do stream...</p>
+                          ) : (
+                            <div>
+                              <p className="text-sm opacity-75 mb-2">Stream não iniciado</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     );
-                  }
+                  })()}
                   
-                  return (
-                    <div className="w-full h-full flex items-center justify-center text-white">
-                      <div className="text-center">
-                        <Camera className="h-16 w-16 mx-auto mb-4 opacity-50" />
-                        <p className="text-lg mb-2">{camera?.name}</p>
-                        {status?.status === 'active' ? (
-                          <p className="text-sm opacity-75">Aguardando URL do stream...</p>
-                        ) : (
-                          <div>
-                            <p className="text-sm opacity-75 mb-2">Stream não iniciado</p>
+                  {/* Status Indicators na visualização individual */}
+                  {(() => {
+                    const camera = filteredCameras.find(c => c.id === selectedCamera);
+                    const status = streamStatus.get(selectedCamera);
+                    
+                    return (
+                      <>
+                        {/* Status Indicator */}
+                        <div className="absolute top-3 left-3">
+                          <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
+                            getStatusBadge(camera?.status || 'offline')
+                          }`}>
+                            <div className={`w-2 h-2 rounded-full mr-1 ${
+                              camera?.status === 'online' ? 'bg-green-500' :
+                              camera?.status === 'offline' ? 'bg-red-500' : 'bg-yellow-500'
+                            }`}></div>
+                            {camera?.status === 'online' ? 'Online' :
+                             camera?.status === 'offline' ? 'Offline' : 'Erro'}
+                          </span>
+                        </div>
+
+                        {/* Recording Indicators */}
+                        <div className="absolute top-3 right-3 flex flex-col space-y-1">
+                          {/* Recording Enabled Indicator */}
+                          {camera?.recording_enabled && (
+                            <div className="flex items-center bg-blue-600 text-white px-2 py-1 rounded-full text-xs">
+                              <div className="w-2 h-2 bg-white rounded-full mr-1"></div>
+                              GRAV
+                            </div>
+                          )}
+                          
+                          {/* Active Recording Indicator */}
+                          {camera?.recording && (
+                            <div className="flex items-center bg-red-600 text-white px-2 py-1 rounded-full text-xs">
+                              <div className="w-2 h-2 bg-white rounded-full mr-1 animate-pulse"></div>
+                              REC
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+                
+                {/* Controles da Visualização Individual */}
+                <div className="p-6 border-t">
+                  {(() => {
+                    const camera = filteredCameras.find(c => c.id === selectedCamera);
+                    const status = streamStatus.get(selectedCamera);
+                    
+                    return (
+                      <>
+                        {/* Informações da Câmera */}
+                        <div className="mb-4">
+                          <h3 className="text-lg font-semibold text-gray-900">{camera?.name}</h3>
+                          {camera?.location && (
+                            <p className="text-sm text-gray-500">{camera.location}</p>
+                          )}
+                        </div>
+                        
+                        {/* Stream Status */}
+                        <div className="mb-4 p-3 bg-gray-50 rounded-lg">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-sm font-medium text-gray-700">Status do Stream</p>
+                              <p className={`text-sm ${
+                                status?.status === 'active' ? 'text-green-600' :
+                                status?.status === 'error' ? 'text-red-600' : 'text-gray-500'
+                              }`}>
+                                {status?.status === 'active' ? 'Ativo' :
+                                 status?.status === 'error' ? 'Erro' : 'Inativo'}
+                              </p>
+                            </div>
+                            {status?.status === 'active' && status.bitrate && (
+                              <div className="text-right">
+                                <p className="text-sm text-gray-500">Bitrate</p>
+                                <p className="text-sm font-medium">{status.bitrate} kbps</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        
+                        {/* Controles de Stream */}
+                        <div className="flex space-x-2 mb-4">
+                          {status?.status === 'active' ? (
+                            <button
+                              onClick={() => handleStopStream(selectedCamera)}
+                              className="flex-1 bg-red-600 text-white px-3 py-2 rounded-md text-sm font-medium hover:bg-red-700 transition-colors flex items-center justify-center"
+                            >
+                              <Pause className="h-4 w-4 mr-1" />
+                              Parar Stream
+                            </button>
+                          ) : (
                             <button
                               onClick={() => handleStartStream(selectedCamera)}
-                              className="bg-primary-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-primary-700 transition-colors flex items-center mx-auto"
+                              className="flex-1 bg-primary-600 text-white px-3 py-2 rounded-md text-sm font-medium hover:bg-primary-700 transition-colors flex items-center justify-center"
                             >
                               <Play className="h-4 w-4 mr-1" />
                               {camera?.status === 'online' ? 'Iniciar Stream' : 'Tentar Iniciar Stream'}
                             </button>
+                          )}
+                          
+                          <button
+                            onClick={() => handleOpenSettings(camera!)}
+                            className="px-3 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors flex items-center"
+                          >
+                            <Settings className="h-4 w-4 mr-1" />
+                            Configurações
+                          </button>
+                          
+                          <button
+                            onClick={() => handleTestConnection(selectedCamera)}
+                            className="px-3 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                            title="Testar Conexão"
+                          >
+                            <RotateCcw className="h-4 w-4" />
+                          </button>
+                        </div>
+                        
+                        {/* Informações Adicionais */}
+                        <div className="grid grid-cols-2 gap-4 text-sm">
+                          <div>
+                            <p className="text-gray-500">Localização</p>
+                            <p className="font-medium">{camera?.location || 'Não informado'}</p>
                           </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })()}
+                          {camera?.last_seen && (
+                            <div>
+                              <p className="text-gray-500">Última atividade</p>
+                              <p className="font-medium">{new Date(camera.last_seen).toLocaleString('pt-BR')}</p>
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
               </div>
             ) : (
               <div className="aspect-video bg-gray-100 flex items-center justify-center">
@@ -1093,23 +1188,7 @@ const Cameras: React.FC = () => {
                   />
                 </div>
                 
-                <div>
-                  <label htmlFor="ip_address" className="block text-sm font-medium text-gray-700 mb-1">
-                    Endereço IP
-                  </label>
-                  <input
-                    type="text"
-                    id="ip_address"
-                    name="ip_address"
-                    value={formData.ip_address}
-                    onChange={handleInputChange}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    placeholder="192.168.1.100"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">
-                    Opcional se URL RTSP/RTMP for fornecida
-                  </p>
-                </div>
+
                 
                 <div>
                   <label htmlFor="stream_type" className="block text-sm font-medium text-gray-700 mb-1">
@@ -1212,25 +1291,7 @@ const Cameras: React.FC = () => {
                   </div>
                   
                   {formData.recording_enabled && (
-                    <div className="mt-4 space-y-3">
-                      <div>
-                        <label htmlFor="quality_profile" className="block text-sm font-medium text-gray-700 mb-1">
-                          Qualidade de Gravação
-                        </label>
-                        <select
-                          id="quality_profile"
-                          name="quality_profile"
-                          value={formData.quality_profile || 'medium'}
-                          onChange={handleSelectChange}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                        >
-                          <option value="low">Baixa (720p)</option>
-                          <option value="medium">Média (1080p)</option>
-                          <option value="high">Alta (1440p)</option>
-                          <option value="ultra">Ultra (4K)</option>
-                        </select>
-                      </div>
-                      
+                    <div className="mt-4">
                       <div>
                         <label htmlFor="retention_days" className="block text-sm font-medium text-gray-700 mb-1">
                           Retenção (dias)
@@ -1380,25 +1441,7 @@ const Cameras: React.FC = () => {
                   </div>
                   
                   {formData.recording_enabled && (
-                    <div className="mt-4 space-y-3">
-                      <div>
-                        <label htmlFor="edit-quality_profile" className="block text-sm font-medium text-gray-700 mb-1">
-                          Qualidade de Gravação
-                        </label>
-                        <select
-                          id="edit-quality_profile"
-                          name="quality_profile"
-                          value={formData.quality_profile || 'medium'}
-                          onChange={handleSelectChange}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                        >
-                          <option value="low">Baixa (720p)</option>
-                          <option value="medium">Média (1080p)</option>
-                          <option value="high">Alta (1440p)</option>
-                          <option value="ultra">Ultra (4K)</option>
-                        </select>
-                      </div>
-                      
+                    <div className="mt-4">
                       <div>
                         <label htmlFor="edit-retention_days" className="block text-sm font-medium text-gray-700 mb-1">
                           Retenção (dias)

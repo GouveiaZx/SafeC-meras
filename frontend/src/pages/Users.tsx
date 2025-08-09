@@ -138,7 +138,7 @@ const Users: React.FC = () => {
     } catch (error) {
       console.error('Erro ao carregar câmeras:', error);
     }
-  }, []);
+  }, [resetForm]);
   
 
 

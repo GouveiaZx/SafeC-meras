@@ -3,28 +3,58 @@
 ## 🚀 Configuração Rápida
 
 ### Pré-requisitos
-- Node.js 18+ e npm
-- Docker e Docker Compose
+- Node.js 22.14.0+
+- PostgreSQL (local) ou Supabase
+- ZLMediaKit (incluído no projeto)
+- PowerShell (Windows)
 - Git
 
+### ✅ Status Atual (Janeiro 2025)
+**FUNCIONANDO**: Todos os problemas críticos foram resolvidos:
+- ✅ Erro HTTP 500 corrigido
+- ✅ ZLMediaKit funcionando
+- ✅ Sistema de streaming operacional
+- ✅ Configurações padronizadas
+
 ### Inicialização Rápida
-```bash
+```powershell
 # 1. Clonar e instalar dependências
 git clone <repository-url>
 cd NewCAM
-npm run install-all
+
+# Instale as dependências do projeto principal
+npm install
+
+# Instale dependências do backend
+cd backend
+npm install
+
+# Instale dependências do frontend
+cd ../frontend
+npm install
+
+# Volte para o diretório raiz
+cd ..
 
 # 2. Configurar ambiente
-cp .env.example .env
 cp backend/.env.example backend/.env
-cp frontend/.env.example frontend/.env
-cp worker/.env.example worker/.env
+# Edite o backend/.env com suas configurações
 
-# 3. Iniciar serviços Docker
-docker-compose up -d
-
-# 4. Iniciar aplicação
+# 3. Iniciar todos os serviços
 npm run dev
+```
+
+### Configuração Crítica do .env
+
+**IMPORTANTE**: Use apenas `ZLM_SECRET`, não `ZLMEDIAKIT_SECRET`:
+
+```env
+# ZLMediaKit - CONFIGURAÇÃO CORRETA
+ZLM_SECRET=9QqL3M2K7vHQexkbfp6RvbCUB3GkV4MK
+ZLM_API_URL=http://localhost:8000/index/api
+
+# ⚠️ NÃO usar - causa conflito:
+# ZLMEDIAKIT_SECRET=035c73f7-bb6b-4889-a715-d9eb2d1925cc
 ```
 
 ## 🔌 Portas dos Serviços

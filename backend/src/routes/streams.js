@@ -47,7 +47,7 @@ const authenticateHLS = async (req, res, next) => {
     // Headers CORS primeiro (antes de qualquer validação)
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Range');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Range, Cache-Control, Pragma');
     res.header('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
     
     // Handle preflight requests
@@ -180,7 +180,7 @@ const authenticateHLS = async (req, res, next) => {
     // Headers CORS mesmo em caso de erro
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Range');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Range, Cache-Control, Pragma');
     
     return res.status(500).json({
       error: 'Erro interno',
