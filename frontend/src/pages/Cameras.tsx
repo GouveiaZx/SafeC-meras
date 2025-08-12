@@ -1,44 +1,47 @@
-import React, { useState, useEffect } from 'react';
-import { Camera, Play, Pause, RotateCcw, Settings, Grid3X3, Maximize2, AlertCircle, Plus, X, Save, Trash2, Edit } from 'lucide-react';
-import { toast } from 'sonner';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useLocation } from 'react-router-dom';
+import { toast } from 'sonner';
+import { Camera, AlertCircle, RotateCcw, Pause, Play, Trash2, Settings, Save, X, Plus, Grid3X3, Maximize2 } from 'lucide-react';
 import { api, endpoints } from '@/lib/api';
-import VideoPlayer from '@/components/VideoPlayer';
-import { useAuth } from '@/contexts/AuthContext';
+import AuthenticatedVideoPlayer from '../components/AuthenticatedVideoPlayer';
 
+// Tipos
 interface CameraData {
   id: string;
   name: string;
   rtsp_url: string;
-  status: 'online' | 'offline' | 'error';
   location?: string;
-  recording: boolean;
+  status: 'online' | 'offline' | 'error';
   recording_enabled?: boolean;
+  recording?: boolean;
   quality_profile?: string;
   retention_days?: number;
   last_seen?: string;
 }
 
 interface StreamStatus {
-  camera_id: string;
   status: 'active' | 'inactive' | 'error';
-  viewers: number;
-  bitrate?: number;
+  stream_id?: string;
   urls?: {
     hls?: string;
-    rtmp?: string;
-    rtsp?: string;
     flv?: string;
   };
-  stream_id?: string;
+  bitrate?: number;
 }
 
 interface CamerasResponse {
+  message: string;
   data: CameraData[];
+  pagination?: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+  cameras?: CameraData[]; // Manter para compatibilidade
 }
 
-const Cameras: React.FC = () => {
-  const { token } = useAuth();
+const Cameras = ({ token }) => {
   const [cameras, setCameras] = useState<CameraData[]>([]);
   const [filteredCameras, setFilteredCameras] = useState<CameraData[]>([]);
   const [streamStatus, setStreamStatus] = useState<Map<string, StreamStatus>>(new Map());
@@ -131,7 +134,7 @@ const Cameras: React.FC = () => {
       
       // Recarregar lista de câmeras
       const updatedResult = await api.get<CamerasResponse>(endpoints.cameras.getAll());
-      const updatedCameras = updatedResult.data || [];
+      const updatedCameras = updatedResult.data || updatedResult.cameras || [];
       setCameras(updatedCameras);
       setFilteredCameras(updatedCameras);
     } catch (error: any) {
@@ -319,7 +322,7 @@ const Cameras: React.FC = () => {
     const loadCameras = async () => {
       try {
         const result = await api.get<CamerasResponse>(endpoints.cameras.getAll());
-        const camerasData = result.data || [];
+        const camerasData = result.data || result.cameras || [];
         setCameras(camerasData);
         setFilteredCameras(camerasData);
         setLoading(false);
@@ -700,7 +703,7 @@ const Cameras: React.FC = () => {
       
       // Recarregar lista de câmeras
       const updatedResult = await api.get<CamerasResponse>(endpoints.cameras.getAll());
-      const updatedCameras = updatedResult.data || [];
+      const updatedCameras = updatedResult.data || updatedResult.cameras || [];
       setCameras(updatedCameras);
       setFilteredCameras(updatedCameras);
     } catch (err: any) {
@@ -969,14 +972,13 @@ const Cameras: React.FC = () => {
                     
                     if (status?.status === 'active' && status?.urls?.hls) {
                       return (
-                        <VideoPlayer
+                        <AuthenticatedVideoPlayer
                           src={status.urls.hls}
                           poster=""
                           className="w-full h-full"
                           controls={true}
                           autoPlay={true}
                           muted={false}
-                          token={token}
                         />
                       );
                     }
@@ -1244,7 +1246,7 @@ const Cameras: React.FC = () => {
                       placeholder="rtmp://servidor:1935/live/stream"
                     />
                     <p className="text-xs text-gray-500 mt-1">
-                      Exemplo: rtmp://localhost:1935/live/camera1
+                      Exemplo: rtmp://seu-servidor:1935/live/camera1
                     </p>
                   </div>
                 )}

@@ -5,7 +5,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import ImprovedRecordingService from './src/services/RecordingService_improved.js';
-import fetch from 'node-fetch';
+// Node 18+ possui fetch nativo - removido: import fetch from 'node-fetch';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';

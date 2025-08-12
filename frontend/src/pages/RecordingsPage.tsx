@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -20,6 +20,8 @@ import {
 import MetricCard from '@/components/dashboard/MetricCard';
 import LineChart from '@/components/charts/LineChart';
 import RecordingPlayer from '@/components/RecordingPlayer';
+import { buildAuthenticatedVideoUrl } from '@/utils/videoUrl';
+import { useAuth } from '@/contexts/AuthContext';
 
 
 
@@ -110,6 +112,7 @@ interface RecordingStats {
 }
 
 const RecordingsPage: React.FC = () => {
+  
   const [recordings, setRecordings] = useState<Recording[]>([]);
   const [stats, setStats] = useState<RecordingStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -117,11 +120,17 @@ const RecordingsPage: React.FC = () => {
   const [selectedCamera, setSelectedCamera] = useState<string>('all');
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
+
+  // Adicionar hook de autenticação para obter token
+  const { token } = useAuth();
+
   const [dateRange, setDateRange] = useState({ start: '', end: '' });
   const [selectedRecording, setSelectedRecording] = useState<Recording | null>(null);
   const [isPlayerOpen, setIsPlayerOpen] = useState(false);
 
-  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
+  
+
 
   // Dados de tendência de upload carregados da API
   const [uploadTrendData, setUploadTrendData] = useState([
@@ -147,15 +156,21 @@ const RecordingsPage: React.FC = () => {
 
   const fetchRecordings = useCallback(async () => {
     try {
-      const params = new URLSearchParams();
-      if (selectedCamera !== 'all') params.append('camera', selectedCamera);
-      if (selectedStatus !== 'all') params.append('status', selectedStatus);
-      if (searchTerm) params.append('search', searchTerm);
-      if (dateRange.start) params.append('startDate', dateRange.start);
-      if (dateRange.end) params.append('endDate', dateRange.end);
+      // Montar parâmetros como objeto para usar com api.get
+      const params: Record<string, string> = {};
+      if (selectedCamera !== 'all') params.camera_id = selectedCamera;
+      if (selectedStatus !== 'all') {
+        if (['recording', 'completed', 'failed'].includes(selectedStatus)) {
+          params.status = selectedStatus;
+        } else if (['uploading', 'uploaded', 'pending'].includes(selectedStatus)) {
+          params.upload_status = selectedStatus;
+        }
+      }
+      if (searchTerm) params.search = searchTerm;
+      if (dateRange.start) params.start_date = dateRange.start;
+      if (dateRange.end) params.end_date = dateRange.end;
 
-      const data = await api.get<{success: boolean; data: RecordingApiResponse[]; pagination: {page: number; limit: number; total: number; pages: number}}>(`${endpoints.recordings.getAll()}?${params}`);
-      console.log('API Response:', data); // Debug log
+      const data = await api.get<{success: boolean; data: RecordingApiResponse[]; pagination: {page: number; limit: number; total: number; pages: number}}>(endpoints.recordings.getAll(), params);
       
       // A API retorna { success: true, data: [...], pagination: {...} }
       if (data.success && Array.isArray(data.data)) {
@@ -187,6 +202,7 @@ const RecordingsPage: React.FC = () => {
       }
       setError(null);
     } catch (err: unknown) {
+      console.error('Erro ao buscar gravações:', err);
       setError(err instanceof Error ? err.message : 'Erro desconhecido');
     }
   }, [selectedCamera, selectedStatus, searchTerm, dateRange]);
@@ -313,14 +329,28 @@ const RecordingsPage: React.FC = () => {
     return <AlertCircle className="h-4 w-4 text-red-600" title="Local de armazenamento desconhecido" />;
   };
 
-  const filteredRecordings = recordings.filter(recording => {
-    if (selectedCamera !== 'all' && recording.cameraId !== selectedCamera) return false;
-    if (selectedStatus !== 'all' && recording.status !== selectedStatus) return false;
-    if (searchTerm && !recording.filename.toLowerCase().includes(searchTerm.toLowerCase()) &&
-        !recording.cameraName.toLowerCase().includes(searchTerm.toLowerCase())) return false;
-    return true;
-  });
-
+  const filteredRecordings = useMemo(() => {
+    return recordings.filter((recording) => {
+      // Camera filter
+      if (selectedCamera !== 'all' && recording.cameraId !== selectedCamera) {
+        return false;
+      }
+      
+      // Status filter
+      if (selectedStatus !== 'all' && recording.status !== selectedStatus) {
+        return false;
+      }
+      
+      // Search term filter
+      if (searchTerm && !recording.filename.toLowerCase().includes(searchTerm.toLowerCase()) &&
+          !recording.cameraName.toLowerCase().includes(searchTerm.toLowerCase())) {
+        return false;
+      }
+      
+      return true;
+    });
+  }, [recordings, selectedCamera, selectedStatus, searchTerm, dateRange]);
+  
   if (loading && !recordings.length) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -331,9 +361,10 @@ const RecordingsPage: React.FC = () => {
       </div>
     );
   }
-
   return (
     <div className="p-6 space-y-6">
+
+      
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -551,7 +582,8 @@ const RecordingsPage: React.FC = () => {
                             size="sm"
                             variant="outline"
                             onClick={() => {
-                              const downloadUrl = recording.s3Url || `http://localhost:3002/api/recordings/${recording.id}/download`;
+                              const baseDownload = recording.s3Url || `/api/recordings/${recording.id}/download`;
+                              const downloadUrl = buildAuthenticatedVideoUrl(baseDownload, { token: token || undefined, includeTokenInQuery: true });
                               window.open(downloadUrl, '_blank');
                             }}
                           >

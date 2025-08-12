@@ -1,5 +1,5 @@
 import { supabaseAdmin } from './src/config/database.js';
-import fetch from 'node-fetch';
+// Node 18+ possui fetch nativo - removido: import fetch from 'node-fetch';
 import jwt from 'jsonwebtoken';
 
 const API_BASE_URL = 'http://localhost:3002';

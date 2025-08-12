@@ -6,6 +6,8 @@ import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { api } from '@/lib/api';
 import { toast } from 'sonner';
+import { useAuth } from '@/contexts/AuthContext';
+import { buildAuthenticatedVideoUrl } from '@/utils/videoUrl';
 
 interface Recording {
   id: string;
@@ -42,6 +44,7 @@ const RecordingPlayer: React.FC<RecordingPlayerProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const { token } = useAuth();
 
   useEffect(() => {
     if (isOpen && recording) {
@@ -80,13 +83,15 @@ const RecordingPlayer: React.FC<RecordingPlayerProps> = ({
 
   const handleDownload = () => {
     if (downloadUrl) {
-      window.open(downloadUrl, '_blank');
+      const url = buildAuthenticatedVideoUrl(downloadUrl, { token: token || undefined, includeTokenInQuery: true });
+      window.open(url, '_blank');
     }
   };
 
   const handleOpenInNewTab = () => {
     if (playbackUrl) {
-      window.open(playbackUrl, '_blank');
+      const url = buildAuthenticatedVideoUrl(playbackUrl, { token: token || undefined, includeTokenInQuery: true });
+      window.open(url, '_blank');
     }
   };
 

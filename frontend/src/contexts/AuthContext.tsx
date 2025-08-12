@@ -209,6 +209,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     };
   }, []);
 
+
+
   const login = async (email: string, password: string): Promise<void> => {
     try {
       setIsLoading(true);
@@ -307,6 +309,20 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       localStorage.setItem('user', JSON.stringify(updatedUser));
     }
   };
+
+  // Escutar evento de token expirado do ApiClient
+  useEffect(() => {
+    const handleTokenExpired = () => {
+      console.log('[AuthContext] Token expirado detectado pelo ApiClient, fazendo logout...');
+      logout();
+    };
+
+    window.addEventListener('auth:token-expired', handleTokenExpired);
+    
+    return () => {
+      window.removeEventListener('auth:token-expired', handleTokenExpired);
+    };
+  }, [logout]);
 
   const value: AuthContextType = {
     user,

@@ -14,7 +14,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Carregar variáveis de ambiente
+// Primeiro carrega .env padrão
 dotenv.config({ path: join(__dirname, '../.env') });
+// Depois carrega .env.local se existir (sobrescreve configurações para desenvolvimento local)
+dotenv.config({ path: join(__dirname, '../.env.local') });
 
 // Importar middlewares
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
@@ -34,7 +37,7 @@ import metricsRoutes from './routes/metrics.js';
 import logsRoutes from './routes/logs.js';
 import discoveryRoutes from './routes/discovery.js';
 import workerRoutes from './routes/worker.js';
-import hookRoutes from './routes/hooks.js';
+import hookRoutes from './routes/hooks_improved.js';
 import healthRoutes from './routes/health.js';
 import segmentationRoutes, { injectSegmentationService } from './routes/segmentation.js';
 
@@ -73,8 +76,8 @@ app.use(helmet({
       styleSrc: ["'self'", "'unsafe-inline'"],
       scriptSrc: ["'self'"],
       imgSrc: ["'self'", "data:", "blob:"],
-      mediaSrc: ["'self'", "blob:", "http://localhost:3002", "http://127.0.0.1:3002", "http://localhost:3000", "http://127.0.0.1:3000"],
-      connectSrc: ["'self'", "ws:", "wss:", "http://localhost:3002", "http://127.0.0.1:3002"],
+      mediaSrc: ["'self'", "blob:", "http://localhost:3010", "http://127.0.0.1:3010", "http://localhost:3002", "http://127.0.0.1:3002", "http://localhost:3000", "http://127.0.0.1:3000"],
+      connectSrc: ["'self'", "ws:", "wss:", "http://localhost:3010", "http://127.0.0.1:3010", "http://localhost:3002", "http://127.0.0.1:3002"],
     },
   },
 }));
@@ -82,7 +85,7 @@ app.use(helmet({
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
-  max: NODE_ENV === 'production' ? 100 : 1000, // Limite de requisições por IP
+  max: NODE_ENV === 'production' ? 100 : 10000, // Limite muito alto para desenvolvimento
   message: {
     error: 'Muitas requisições deste IP, tente novamente em 15 minutos.'
   },
@@ -112,7 +115,7 @@ app.use(requestLogger);
 // Middleware de autenticação para rotas protegidas
 app.use('/api/users', authenticateToken);
 app.use('/api/cameras', authenticateToken);
-app.use('/api/streams', authenticateToken);
+// Nota: /api/streams usa seu próprio middleware de autenticação HLS
 // Aplicar autenticação apenas para rotas específicas de recordings (excluindo stream)
 app.use('/api/recordings', (req, res, next) => {
   console.log('🔍 [RECORDINGS MIDDLEWARE] Requisição recebida:', {
@@ -418,3 +421,4 @@ process.on('SIGINT', () => {
 });
 
 export { app, server, io };
+// Restart trigger

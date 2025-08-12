@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
-import fetch from 'node-fetch';
+// Node 18+ possui fetch nativo - removido: import fetch from 'node-fetch';
 
 // Carregar variáveis de ambiente
 dotenv.config();

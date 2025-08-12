@@ -1,4 +1,4 @@
-import fetch from 'node-fetch';
+// Node 18+ possui fetch nativo - removido: import fetch from 'node-fetch';
 
 const BACKEND_URL = 'http://localhost:3002';
 const FRONTEND_URL = 'http://localhost:5173';

@@ -1,4 +1,4 @@
-import fetch from 'node-fetch';
+// Node 18+ possui fetch nativo - removido: import fetch from 'node-fetch';
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
 

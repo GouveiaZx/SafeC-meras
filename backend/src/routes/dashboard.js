@@ -208,7 +208,7 @@ router.get('/performance',
 router.get('/storage',
   requireRole(['admin', 'operator']),
   asyncHandler(async (req, res) => {
-    const storageStats = await getStorageStats();
+    const storageStats = await getStorageOverview();
 
     res.json({
       message: 'Estatísticas de armazenamento obtidas com sucesso',
@@ -507,20 +507,22 @@ async function getDiskStats() {
     const MetricsService = (await import('../services/MetricsService.js')).default;
     const metrics = MetricsService.getMetrics();
     const { getStorageStats } = await import('../config/storage.js');
-    const storageStats = await getStorageStats('recordings');
+    const storageStats = await getStorageStats();
     
     // Calcular estatísticas de disco
     const totalBytes = metrics.disk?.total || 0;
     const freeBytes = metrics.disk?.free || 0;
     const usedBytes = totalBytes - freeBytes;
+    const recordingsTotalSize = storageStats?.recordings?.totalSize || 0;
+    const recordingsCount = storageStats?.recordings?.count || 0;
     
     return {
       total_gb: Math.round(totalBytes / (1024 ** 3) * 100) / 100,
       used_gb: Math.round(usedBytes / (1024 ** 3) * 100) / 100,
       free_gb: Math.round(freeBytes / (1024 ** 3) * 100) / 100,
       usage_percent: totalBytes > 0 ? Math.round((usedBytes / totalBytes) * 100) : 0,
-      recordings_size_gb: Math.round(storageStats.totalSize / (1024 ** 3) * 100) / 100,
-      recordings_count: storageStats.fileCount
+      recordings_size_gb: Math.round(recordingsTotalSize / (1024 ** 3) * 100) / 100,
+      recordings_count: recordingsCount
     };
   } catch (error) {
     logger.error('Erro ao obter estatísticas de disco:', error);
@@ -1008,7 +1010,7 @@ async function getPerformanceMetrics(period) {
   };
 }
 
-async function getStorageStats() {
+async function getStorageOverview() {
   try {
     // Importar utilitários de storage
     const { getStorageStats: getLocalStorageStats } = await import('../config/storage.js');

@@ -1,4 +1,4 @@
-import fetch from 'node-fetch';
+// Node 18+ possui fetch nativo - removido: import fetch from 'node-fetch';
 
 const BACKEND_URL = 'http://localhost:3002';
 
@@ -19,13 +19,15 @@ async function testRecordingsAPI() {
     });
     
     const loginData = await loginResponse.json();
+    console.log('Resposta do login:', JSON.stringify(loginData, null, 2));
     
-    if (!loginData.success) {
-      throw new Error('Falha no login: ' + (loginData.message || 'Erro desconhecido'));
+    if (!loginData.tokens || !loginData.tokens.accessToken) {
+      throw new Error('Falha no login: ' + (loginData.message || 'Token não encontrado'));
     }
     
-    const token = loginData.data.token;
+    const token = loginData.tokens?.accessToken || loginData.data?.token;
     console.log('✅ Login realizado com sucesso');
+    console.log('Token extraído:', token ? 'Sim' : 'Não');
     
     // Testar API /api/recordings
     console.log('\n📋 Testando API /api/recordings...');

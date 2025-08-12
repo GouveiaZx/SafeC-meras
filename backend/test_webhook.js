@@ -1,4 +1,4 @@
-import fetch from 'node-fetch';
+// Node 18+ possui fetch nativo - removido: import fetch from 'node-fetch';
 
 // Teste do webhook on_stream_changed
 async function testWebhook() {

@@ -388,12 +388,15 @@ class SegmentationService {
 
   /**
    * Atualiza o banco de dados com a segmentação
+   * NOTA: Não cria nova gravação aqui para evitar duplicidade.
+   * O webhook on_record_mp4 será responsável por criar o novo registro
+   * quando a ZLM iniciar o próximo arquivo MP4 após o restart.
    */
   async updateRecordingSegmentation(activeRecording, cameraId) {
     try {
       const now = new Date();
       
-      // Marca a gravação anterior como completa
+      // Marca a gravação anterior como completa (segmentada)
       const { error: updateError } = await this.supabase
         .from('recordings')
         .update({
@@ -409,25 +412,8 @@ class SegmentationService {
         throw updateError;
       }
 
-      // Cria uma nova gravação
-      const { error: createError } = await this.supabase
-        .from('recordings')
-        .insert({
-          camera_id: cameraId,
-          filename: `${cameraId}_${Date.now()}.mp4`,
-          status: 'recording',
-          start_time: now.toISOString(),
-          is_segmentation: true,
-          created_at: now.toISOString(),
-          updated_at: now.toISOString()
-        });
-      
-      if (createError) {
-        logger.error('Erro ao criar nova gravação:', createError);
-        throw createError;
-      }
-
-      logger.debug(`Banco de dados atualizado para segmentação da câmera ${cameraId}`);
+      // Não inserimos um novo registro aqui; aguardamos o webhook.
+      logger.debug(`Banco de dados atualizado (encerrada gravação anterior) para segmentação da câmera ${cameraId}`);
       
     } catch (error) {
       logger.error(`Erro ao atualizar banco de dados para câmera ${cameraId}:`, error);
@@ -446,6 +432,8 @@ class SegmentationService {
 
   /**
    * Callback quando uma nova stream é detectada
+   * NOTA: Apenas inicia gravação via API ZLM, não cria registros no banco
+   * Os registros no banco são criados pelos webhooks (on_record_mp4)
    */
   async onStreamStarted(streamKey, streamInfo) {
     try {
@@ -466,26 +454,15 @@ class SegmentationService {
         }
 
         if (!existingRecording) {
-          // Inicia gravação automaticamente
+          // Apenas inicia gravação via API ZLM
+          // O webhook on_record_mp4 cuidará de criar o registro no banco
           await this.startRecording(streamKey, streamInfo);
           
-          // Cria registro no banco
-          const { error: newRecordingError } = await this.supabase
-            .from('recordings')
-            .insert({
-              camera_id: cameraId,
-              filename: `${cameraId}_${Date.now()}.mp4`,
-              status: 'recording',
-              start_time: new Date().toISOString(),
-              is_segmentation: false
-            });
-          
-          if (newRecordingError) {
-            logger.error('Erro ao criar registro de gravação:', newRecordingError);
-            return;
-          }
-          
-          logger.info(`Gravação iniciada automaticamente para nova stream: ${streamKey}`);
+          logger.info(`Gravação iniciada automaticamente via API ZLM para nova stream: ${streamKey}`, {
+            cameraId,
+            streamKey,
+            note: 'Registro no banco será criado pelo webhook on_record_mp4'
+          });
         }
       }
     } catch (error) {

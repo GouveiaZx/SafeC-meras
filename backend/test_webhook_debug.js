@@ -1,4 +1,4 @@
-import fetch from 'node-fetch';
+// Node 18+ possui fetch nativo - removido: import fetch from 'node-fetch';
 import logger from './src/utils/logger.js';
 
 // Simular webhook on_record_mp4 para debug

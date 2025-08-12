@@ -6,6 +6,11 @@ import logger from '../utils/logger.js';
 import { Camera } from '../models/Camera.js';
 import RecordingService from '../services/RecordingService.js';
 import ImprovedRecordingService from '../services/RecordingService_improved.js';
+import { promises as fs } from 'fs';
+import jwt from 'jsonwebtoken';
+import { supabaseAdmin } from '../config/database.js';
+import S3Service from '../services/S3Service.js';
+import { computeEtag, computeLastModified, evaluateConditionalCache, setStandardCacheHeaders } from '../utils/httpCache.js';
 
 const router = express.Router();
 
@@ -198,6 +203,9 @@ router.post('/start',
   async (req, res) => {
     try {
       const { cameraId } = req.body;
+      const userId = req.user.id;
+      
+      logger.info(`Usuário ${userId} iniciando gravação para câmera ${cameraId}`);
 
       if (!cameraId) {
         return res.status(400).json({
@@ -206,21 +214,20 @@ router.post('/start',
         });
       }
 
-      logger.info(`[API] Requisição para iniciar gravação da câmera ${cameraId}`);
+      const recording = await RecordingService.startRecording(cameraId);
 
-      const result = await RecordingService.startRecording(cameraId);
-
-      res.json({
+      res.status(201).json({
         success: true,
         message: 'Gravação iniciada com sucesso',
-        data: result
+        data: recording
       });
 
     } catch (error) {
-      logger.error('[API] Erro ao iniciar gravação:', error);
+      logger.error('Erro ao iniciar gravação:', error);
       res.status(500).json({
         success: false,
-        message: error.message || 'Erro ao iniciar gravação'
+        message: 'Erro ao iniciar gravação',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
     }
   }
@@ -234,7 +241,10 @@ router.post('/start',
 router.post('/pause',
   async (req, res) => {
     try {
-      const { cameraId, recordingId } = req.body;
+      const { cameraId } = req.body;
+      const userId = req.user.id;
+      
+      logger.info(`Usuário ${userId} pausando gravação para câmera ${cameraId}`);
 
       if (!cameraId) {
         return res.status(400).json({
@@ -243,9 +253,7 @@ router.post('/pause',
         });
       }
 
-      logger.info(`[API] Requisição para pausar gravação da câmera ${cameraId}`);
-
-      const result = await RecordingService.pauseRecording(cameraId, recordingId);
+      const result = await RecordingService.pauseRecording(cameraId);
 
       res.json({
         success: true,
@@ -254,10 +262,11 @@ router.post('/pause',
       });
 
     } catch (error) {
-      logger.error('[API] Erro ao pausar gravação:', error);
+      logger.error('Erro ao pausar gravação:', error);
       res.status(500).json({
         success: false,
-        message: error.message || 'Erro ao pausar gravação'
+        message: 'Erro ao pausar gravação',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
     }
   }
@@ -272,6 +281,9 @@ router.post('/resume',
   async (req, res) => {
     try {
       const { cameraId } = req.body;
+      const userId = req.user.id;
+      
+      logger.info(`Usuário ${userId} retomando gravação para câmera ${cameraId}`);
 
       if (!cameraId) {
         return res.status(400).json({
@@ -279,8 +291,6 @@ router.post('/resume',
           message: 'ID da câmera é obrigatório'
         });
       }
-
-      logger.info(`[API] Requisição para retomar gravação da câmera ${cameraId}`);
 
       const result = await RecordingService.resumeRecording(cameraId);
 
@@ -291,10 +301,11 @@ router.post('/resume',
       });
 
     } catch (error) {
-      logger.error('[API] Erro ao retomar gravação:', error);
+      logger.error('Erro ao retomar gravação:', error);
       res.status(500).json({
         success: false,
-        message: error.message || 'Erro ao retomar gravação'
+        message: 'Erro ao retomar gravação',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
     }
   }
@@ -308,7 +319,10 @@ router.post('/resume',
 router.post('/stop',
   async (req, res) => {
     try {
-      const { cameraId, recordingId } = req.body;
+      const { cameraId } = req.body;
+      const userId = req.user.id;
+      
+      logger.info(`Usuário ${userId} parando gravação para câmera ${cameraId}`);
 
       if (!cameraId) {
         return res.status(400).json({
@@ -317,54 +331,11 @@ router.post('/stop',
         });
       }
 
-      logger.info(`[API] Requisição para parar gravação da câmera ${cameraId}`);
-
-      const result = await RecordingService.stopRecording(cameraId, recordingId);
+      const result = await RecordingService.stopRecording(cameraId);
 
       res.json({
         success: true,
-        message: 'Gravação parada com sucesso',
-        data: result
-      });
-
-    } catch (error) {
-      logger.error('[API] Erro ao parar gravação:', error);
-      res.status(500).json({
-        success: false,
-        message: error.message || 'Erro ao parar gravação'
-      });
-    }
-  }
-);
-
-/**
- * @route POST /api/recordings/:id/stop
- * @desc Parar gravação específica por ID
- * @access Private
- */
-router.post('/:id/stop',
-  async (req, res) => {
-    try {
-      const recordingId = req.params.id;
-      const userId = req.user.id;
-
-      // Buscar gravação para obter o camera_id
-      const recording = await RecordingService.getRecordingById(recordingId, userId);
-      if (!recording) {
-        return res.status(404).json({
-          success: false,
-          message: 'Gravação não encontrada'
-        });
-      }
-
-      logger.info(`Usuário ${userId} parando gravação ${recordingId} da câmera ${recording.camera_id}`);
-
-      // Parar gravação usando o RecordingService
-      const result = await RecordingService.stopRecording(recording.camera_id, recordingId);
-
-      res.json({
-        success: true,
-        message: 'Gravação parada com sucesso',
+        message: 'Gravação finalizada com sucesso',
         data: result
       });
 
@@ -379,115 +350,164 @@ router.post('/:id/stop',
   }
 );
 
-// Rota /:id movida para o final do arquivo
+/**
+ * @route POST /api/recordings/:id/stop
+ * @desc Parar uma gravação específica pelo ID
+ * @access Private
+ */
+router.post('/:id/stop',
+  async (req, res) => {
+    try {
+      const recordingId = req.params.id;
+      const userId = req.user.id;
+      
+      logger.info(`Usuário ${userId} parando gravação ${recordingId}`);
 
-// Middleware específico para autenticação de streaming (aceita token via query parameter)
+      const result = await RecordingService.stopRecordingById(recordingId, userId);
+
+      res.json({
+        success: true,
+        message: 'Gravação finalizada com sucesso',
+        data: result
+      });
+
+    } catch (error) {
+      logger.error('Erro ao parar gravação específica:', error);
+      res.status(500).json({
+        success: false,
+        message: error.message || 'Erro ao parar gravação',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+  }
+);
+
+// Middleware de autenticação para streaming (usado em :id/stream e :id/download)
 const authenticateStreamToken = async (req, res, next) => {
   try {
-    // Configurar headers CORS primeiro - permitir origem específica do frontend
-    const allowedOrigins = [
-      'http://localhost:5173',
-      'http://localhost:3000',
-      'http://127.0.0.1:5173',
-      'http://127.0.0.1:3000',
-      process.env.FRONTEND_URL
-    ].filter(Boolean);
-    
-    const origin = req.headers.origin;
-    if (allowedOrigins.includes(origin) || process.env.NODE_ENV === 'development') {
-      res.header('Access-Control-Allow-Origin', origin || '*');
-    }
-    
-    res.header('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Range, Cache-Control, Pragma, If-Range, If-Modified-Since, If-None-Match');
-    res.header('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length, Content-Type, ETag, Last-Modified, Cache-Control');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    
-    // Responder a requisições OPTIONS
+    // Configurar CORS para suporte a requisições de diferentes origens
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length, Content-Type, ETag, Last-Modified, Cache-Control');
+
+    // Responder a requisições OPTIONS rapidamente
     if (req.method === 'OPTIONS') {
       return res.status(200).end();
     }
-    
+
     let token = null;
-    
-    // Verificar token no header Authorization
-    const authHeader = req.headers['authorization'];
+
+    // Primeiro, tentar extrair token do cabeçalho Authorization
+    const authHeader = req.headers.authorization;
     if (authHeader && authHeader.startsWith('Bearer ')) {
-      token = authHeader.split(' ')[1];
+      token = authHeader.substring(7);
+      logger.debug('[StreamAuth] Token extraído do cabeçalho Authorization');
     }
-    
-    // Se não encontrou no header, verificar no query parameter
+
+    // Se não encontrado no cabeçalho, tentar query parameter
     if (!token && req.query.token) {
       token = req.query.token;
+      logger.debug('[StreamAuth] Token extraído de query parameter');
     }
-    
+
     if (!token) {
+      logger.warn('[StreamAuth] Token não fornecido');
       return res.status(401).json({
         success: false,
-        message: 'Token de acesso requerido'
+        message: 'Token de acesso não fornecido'
       });
     }
-    
-    // Verificar token JWT (mesmo sistema que o middleware principal)
-    const jwt = await import('jsonwebtoken');
-    const decoded = jwt.default.verify(token, process.env.JWT_SECRET);
-    
-    // Buscar dados do usuário na tabela users
-    const { supabaseAdmin } = await import('../config/database.js');
-    const { data: userData, error: userError } = await supabaseAdmin
-      .from('users')
-      .select('*')
-      .eq('id', decoded.userId)
-      .eq('active', true)
-      .single();
-    
-    if (userError || !userData) {
-      return res.status(401).json({
-        success: false,
-        message: 'Usuário não encontrado ou inativo'
-      });
+
+    // 1) Tentar validar como JWT interno da aplicação
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      if (decoded && decoded.userId) {
+        const { data: user, error } = await supabaseAdmin
+          .from('users')
+          .select('*')
+          .eq('id', decoded.userId)
+          .eq('active', true)
+          .single();
+
+        if (!error && user) {
+          req.user = {
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            role: user.role,
+            userType: user.role?.toUpperCase() || 'CLIENT',
+            permissions: user.permissions || [],
+            camera_access: user.camera_access || [],
+            active: user.active,
+            created_at: user.created_at
+          };
+          req.token = token;
+          logger.debug(`[StreamAuth] Usuário autenticado via JWT interno: ${user.id}`);
+          return next();
+        }
+
+        logger.warn('[StreamAuth] JWT válido, mas usuário não encontrado/ativo na base');
+        return res.status(401).json({ success: false, message: 'Token inválido' });
+      }
+    } catch (e) {
+      // Ignorar e tentar fallback Supabase
+      logger.debug('[StreamAuth] Falha na validação JWT interno, tentando Supabase...');
     }
-    
-    // Verificar se o usuário não foi bloqueado
-    if (userData.blocked_at) {
-      return res.status(403).json({
-        success: false,
-        message: 'Usuário bloqueado'
-      });
+
+    // 2) Fallback: validar como token de sessão do Supabase
+    try {
+      const { createClient } = await import('@supabase/supabase-js');
+      const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+      const { data: { user }, error } = await supabase.auth.getUser(token);
+
+      if (!error && user) {
+        // Confirmar que usuário existe e está ativo em nossa tabela
+        const { data: dbUser } = await supabaseAdmin
+          .from('users')
+          .select('*')
+          .eq('id', user.id)
+          .eq('active', true)
+          .single();
+
+        if (!dbUser) {
+          logger.warn('[StreamAuth] Usuário do Supabase não encontrado/ativo na tabela users');
+          return res.status(401).json({ success: false, message: 'Token inválido' });
+        }
+
+        req.user = {
+          id: dbUser.id,
+          email: dbUser.email,
+          name: dbUser.name,
+          role: dbUser.role,
+          userType: dbUser.role?.toUpperCase() || 'CLIENT',
+          permissions: dbUser.permissions || [],
+          camera_access: dbUser.camera_access || [],
+          active: dbUser.active,
+          created_at: dbUser.created_at
+        };
+        req.token = token;
+        logger.debug(`[StreamAuth] Usuário autenticado via token Supabase: ${dbUser.id}`);
+        return next();
+      }
+    } catch (e) {
+      logger.debug('[StreamAuth] Falha na validação via Supabase:', e?.message);
     }
-    
-    // Adicionar informações do usuário à requisição
-    req.user = {
-      id: userData.id,
-      email: userData.email,
-      name: userData.name,
-      role: userData.role,
-      permissions: userData.permissions || [],
-      camera_access: userData.camera_access || []
-    };
-    
-    next();
+
+    logger.warn('[StreamAuth] Token inválido ou expirado');
+    return res.status(401).json({
+      success: false,
+      message: 'Token inválido ou expirado'
+    });
   } catch (error) {
     logger.error('Erro na autenticação de streaming:', error);
-    
     if (error.name === 'JsonWebTokenError') {
-      return res.status(401).json({
-        success: false,
-        message: 'Token malformado'
-      });
+      return res.status(401).json({ success: false, message: 'Token malformado' });
     }
-    
     if (error.name === 'TokenExpiredError') {
-      return res.status(401).json({
-        success: false,
-        message: 'Token expirado'
-      });
+      return res.status(401).json({ success: false, message: 'Token expirado' });
     }
-    
-    return res.status(500).json({
-      success: false,
-      message: 'Erro interno do servidor'
-    });
+    return res.status(500).json({ success: false, message: 'Erro interno do servidor' });
   }
 };
 
@@ -502,51 +522,82 @@ router.get('/:id/download',
     try {
       const userId = req.user.id;
       const recordingId = req.params.id;
-      
+
       const recording = await RecordingService.getRecordingById(recordingId, userId);
-      
       if (!recording) {
         return res.status(404).json({
           success: false,
           message: 'Gravação não encontrada'
         });
       }
-      
-      const downloadInfo = await RecordingService.prepareDownload(recordingId, userId);
-      
-      // Debug: log das informações de download
-      logger.info(`[Stream Debug] Download info:`, {
+
+      const downloadInfo = await ImprovedRecordingService.prepareDownload(recordingId);
+
+      logger.info(`[Download Debug] Download info:`, {
         exists: downloadInfo.exists,
         isS3: downloadInfo.isS3,
         filePath: downloadInfo.filePath,
         filename: downloadInfo.filename,
-        fileSize: downloadInfo.fileSize
+        fileSize: downloadInfo.fileSize,
+        strategy: downloadInfo.strategy
       });
-      
+
       if (!downloadInfo.exists) {
         return res.status(404).json({
           success: false,
           message: 'Arquivo de gravação não encontrado no armazenamento'
         });
       }
-      
-      // Se é S3, redirecionar
+
+      // Se é S3, redirecionar com URL pré-assinada (se possível)
       if (downloadInfo.isS3) {
-        return res.redirect(downloadInfo.s3Url);
+        try {
+          let signedUrl = null;
+          if (downloadInfo.s3Key) {
+            signedUrl = await S3Service.getSignedUrl(downloadInfo.s3Key, 3600);
+          } else if (downloadInfo.s3Url) {
+            try {
+              const u = new URL(downloadInfo.s3Url);
+              const pathParts = decodeURIComponent(u.pathname).split('/').filter(Boolean);
+              if (pathParts.length >= 2) {
+                const derivedKey = pathParts.slice(1).join('/');
+                signedUrl = await S3Service.getSignedUrl(derivedKey, 3600);
+              }
+            } catch (e) {
+              logger.warn('Falha ao derivar S3 key da URL, usando s3Url direto');
+            }
+          }
+          return res.redirect(signedUrl || downloadInfo.s3Url);
+        } catch (e) {
+          logger.warn('Falha ao gerar URL pré-assinada para S3, usando s3Url direto:', e?.message);
+          return res.redirect(downloadInfo.s3Url);
+        }
       }
-      
-      // Configurar headers para download
+
+      // Arquivo local: preparar metadados e condicionais de cache
+      const filePath = downloadInfo.filePath;
+      const stats = await fs.stat(filePath);
+      const etag = computeEtag(stats);
+      const lastModified = computeLastModified(stats);
+
+      // Condicionais de cache
+      const { notModified } = evaluateConditionalCache(req, stats, etag);
+      if (notModified) {
+        setStandardCacheHeaders(res, etag, lastModified);
+        return res.status(304).end();
+      }
+
+      res.status(200);
       res.setHeader('Content-Type', 'video/mp4');
       res.setHeader('Content-Disposition', `attachment; filename="${downloadInfo.filename}"`);
-      res.setHeader('Content-Length', downloadInfo.fileSize);
-      
-      // Stream do arquivo
-      const fileStream = await RecordingService.getFileStream(downloadInfo.filePath);
-      fileStream.pipe(res);
-      
-      // Log do download
+      res.setHeader('Content-Length', stats.size);
+      res.setHeader('Accept-Ranges', 'bytes');
+      setStandardCacheHeaders(res, etag, lastModified);
+
+      const { stream } = await ImprovedRecordingService.getFileStream(filePath);
+      stream.pipe(res);
+
       logger.info(`Download iniciado - Usuário: ${userId}, Gravação: ${recordingId}`);
-      
     } catch (error) {
       logger.error('Erro no download da gravação:', error);
       res.status(500).json({
@@ -554,6 +605,78 @@ router.get('/:id/download',
         message: 'Erro interno do servidor',
         error: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
+    }
+  }
+);
+
+/**
+ * @route HEAD /api/recordings/:id/download
+ * @desc Headers para download de uma gravação
+ * @access Private
+ */
+router.head('/:id/download',
+  authenticateStreamToken,
+  async (req, res) => {
+    try {
+      const userId = req.user.id;
+      const recordingId = req.params.id;
+
+      const recording = await RecordingService.getRecordingById(recordingId, userId);
+      if (!recording) {
+        return res.status(404).end();
+      }
+
+      const downloadInfo = await ImprovedRecordingService.prepareDownload(recordingId);
+      if (!downloadInfo.exists) {
+        return res.status(404).end();
+      }
+      if (downloadInfo.isS3) {
+        // Gerar URL pré-assinada para HEAD redirecionar
+        try {
+          let signedUrl = null;
+          if (downloadInfo.s3Key) {
+            signedUrl = await S3Service.getSignedUrl(downloadInfo.s3Key, 3600);
+          } else if (downloadInfo.s3Url) {
+            try {
+              const u = new URL(downloadInfo.s3Url);
+              const pathParts = decodeURIComponent(u.pathname).split('/').filter(Boolean);
+              if (pathParts.length >= 2) {
+                const derivedKey = pathParts.slice(1).join('/');
+                signedUrl = await S3Service.getSignedUrl(derivedKey, 3600);
+              }
+            } catch (e) {
+              logger.warn('Falha ao derivar S3 key da URL (HEAD)');
+            }
+          }
+          res.setHeader('Location', signedUrl || downloadInfo.s3Url);
+        } catch (e) {
+          logger.warn('Falha ao gerar URL pré-assinada para S3 (HEAD):', e?.message);
+          res.setHeader('Location', downloadInfo.s3Url);
+        }
+        return res.status(302).end();
+      }
+
+      const stats = await fs.stat(downloadInfo.filePath);
+      const etag = computeEtag(stats);
+      const lastModified = computeLastModified(stats);
+
+      // Condicionais de cache
+      const { notModified } = evaluateConditionalCache(req, stats, etag);
+      if (notModified) {
+        setStandardCacheHeaders(res, etag, lastModified);
+        return res.status(304).end();
+      }
+
+      res.status(200);
+      res.setHeader('Content-Type', 'video/mp4');
+      res.setHeader('Content-Disposition', `attachment; filename="${downloadInfo.filename}"`);
+      res.setHeader('Content-Length', stats.size);
+      res.setHeader('Accept-Ranges', 'bytes');
+      setStandardCacheHeaders(res, etag, lastModified);
+      return res.end();
+    } catch (error) {
+      logger.error('Erro no HEAD /:id/download:', error);
+      return res.status(500).end();
     }
   }
 );
@@ -570,137 +693,191 @@ router.get('/:id/stream',
       const userId = req.user.id;
       const recordingId = req.params.id;
       
-      // 🔍 [DEBUG] Log da requisição de streaming
-      logger.info(`🎥 [STREAMING DEBUG] Requisição de streaming recebida:`, {
-        recordingId,
-        userId,
-        userAgent: req.headers['user-agent'],
-        origin: req.headers.origin,
-        referer: req.headers.referer,
-        range: req.headers.range,
-        timestamp: new Date().toISOString()
-      });
-      
       const recording = await RecordingService.getRecordingById(recordingId, userId);
       
-      // 🔍 [DEBUG] Log do resultado da busca da gravação
-      logger.info(`🎥 [STREAMING DEBUG] Resultado da busca da gravação:`, {
-        recordingId,
-        found: !!recording,
-        recordingData: recording ? {
-          id: recording.id,
-          filename: recording.filename,
-          file_path: recording.file_path,
-          file_size: recording.file_size,
-          duration: recording.duration,
-          camera_id: recording.camera_id
-        } : null
-      });
-      
       if (!recording) {
-        logger.warn(`🎥 [STREAMING DEBUG] Gravação não encontrada: ${recordingId}`);
         return res.status(404).json({
           success: false,
           message: 'Gravação não encontrada'
         });
       }
       
-      const downloadInfo = await RecordingService.prepareDownload(recordingId, userId);
+      const downloadInfo = await ImprovedRecordingService.prepareDownload(recordingId);
       
-      // 🔍 [DEBUG] Log do resultado do prepareDownload
-      logger.info(`🎥 [STREAMING DEBUG] Resultado do prepareDownload:`, {
-        recordingId,
-        downloadInfo: {
-          exists: downloadInfo.exists,
-          isS3: downloadInfo.isS3,
-          filePath: downloadInfo.filePath,
-          fileSize: downloadInfo.fileSize,
-          filename: downloadInfo.filename,
-          s3Url: downloadInfo.s3Url ? '[S3_URL_PRESENTE]' : null,
-          message: downloadInfo.message
-        }
+      // Debug: log das informações de stream
+      logger.info(`[Stream Debug] Stream info:`, {
+        exists: downloadInfo.exists,
+        isS3: downloadInfo.isS3,
+        filePath: downloadInfo.filePath,
+        filename: downloadInfo.filename,
+        fileSize: downloadInfo.fileSize,
+        strategy: downloadInfo.strategy
       });
       
       if (!downloadInfo.exists) {
-        logger.error(`🎥 [STREAMING DEBUG] Arquivo não encontrado no armazenamento: ${recordingId}`);
         return res.status(404).json({
           success: false,
           message: 'Arquivo de gravação não encontrado no armazenamento'
         });
       }
       
-      // Se é S3, redirecionar
+      // Se é S3, redirecionar com URL pré-assinada (se possível)
       if (downloadInfo.isS3) {
-        logger.info(`🎥 [STREAMING DEBUG] Redirecionando para S3: ${recordingId}`);
-        return res.redirect(downloadInfo.s3Url);
+        try {
+          let signedUrl = null;
+          if (downloadInfo.s3Key) {
+            signedUrl = await S3Service.getSignedUrl(downloadInfo.s3Key, 3600);
+          } else if (downloadInfo.s3Url) {
+            try {
+              const u = new URL(downloadInfo.s3Url);
+              const pathParts = decodeURIComponent(u.pathname).split('/').filter(Boolean);
+              if (pathParts.length >= 2) {
+                const derivedKey = pathParts.slice(1).join('/');
+                signedUrl = await S3Service.getSignedUrl(derivedKey, 3600);
+              }
+            } catch (e) {
+              logger.warn('Falha ao derivar S3 key da URL (stream)');
+            }
+          }
+          return res.redirect(signedUrl || downloadInfo.s3Url);
+        } catch (e) {
+          logger.warn('Falha ao gerar URL pré-assinada para S3 (stream):', e?.message);
+          return res.redirect(downloadInfo.s3Url);
+        }
       }
       
-      const filePath = downloadInfo.filePath;
-      const fileSize = downloadInfo.fileSize;
-      
-      // 🔍 [DEBUG] Log dos dados finais de streaming
-      logger.info(`🎥 [STREAMING DEBUG] Iniciando streaming local:`, {
-        recordingId,
-        filePath,
-        fileSize,
-        hasRangeHeader: !!req.headers.range
-      });
-      
-      // Suporte a Range Requests para streaming de vídeo
+      // Verificar range request
       const range = req.headers.range;
+      const filePath = downloadInfo.filePath;
+      
+      // Metadados de arquivo para headers
+      const stats = await fs.stat(filePath);
+      const etag = computeEtag(stats);
+      const lastModified = computeLastModified(stats);
+
+      // Headers básicos
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Content-Type', 'video/mp4');
+      setStandardCacheHeaders(res, etag, lastModified);
+      
+      // Condicionais de cache: apenas quando não for Range Request
+      const { notModified } = evaluateConditionalCache(req, stats, etag);
+      if (!range && notModified) {
+         return res.status(304).end();
+       }
       
       if (range) {
-        const parts = range.replace(/bytes=/, "").split("-");
-        const start = parseInt(parts[0], 10);
-        const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-        const chunksize = (end - start) + 1;
+        // Range request - streaming parcial
+        const { stream, contentLength, contentRange } = await ImprovedRecordingService.getFileStream(filePath, range);
         
         res.status(206);
-        res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
-        res.setHeader('Accept-Ranges', 'bytes');
-        res.setHeader('Content-Length', chunksize);
-        res.setHeader('Content-Type', 'video/mp4');
+        res.setHeader('Content-Range', contentRange);
+        res.setHeader('Content-Length', contentLength);
         
-        const { createReadStream } = await import('fs');
-        const stream = createReadStream(filePath, { start, end });
         stream.pipe(res);
       } else {
-        res.setHeader('Content-Length', fileSize);
-        res.setHeader('Content-Type', 'video/mp4');
-        res.setHeader('Accept-Ranges', 'bytes');
+        // Request completo
+        const { stream, contentLength } = await ImprovedRecordingService.getFileStream(filePath);
         
-        const fileStream = await RecordingService.getFileStream(filePath);
-        fileStream.pipe(res);
+        res.status(200);
+        res.setHeader('Content-Length', contentLength);
+        
+        stream.pipe(res);
       }
       
-      // 🔍 [DEBUG] Log de sucesso do streaming
-      logger.info(`🎥 [STREAMING DEBUG] Streaming iniciado com sucesso:`, {
-        userId,
-        recordingId,
-        filePath,
-        fileSize,
-        rangeRequest: !!req.headers.range,
-        timestamp: new Date().toISOString()
-      });
+      // Log do stream
+      logger.info(`Stream iniciado - Usuário: ${userId}, Gravação: ${recordingId}, Range: ${range || 'completo'}`);
       
     } catch (error) {
-      // 🔍 [DEBUG] Log detalhado de erro
-      logger.error(`🎥 [STREAMING DEBUG] Erro no streaming da gravação:`, {
-        recordingId,
-        userId,
-        error: {
-          name: error.name,
-          message: error.message,
-          stack: error.stack
-        },
-        timestamp: new Date().toISOString()
-      });
-      
+      logger.error('Erro no stream da gravação:', error);
       res.status(500).json({
         success: false,
         message: 'Erro interno do servidor',
         error: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
+    }
+  }
+);
+
+/**
+ * @route HEAD /api/recordings/:id/stream
+ * @desc Headers para stream de uma gravação
+ * @access Private
+ */
+router.head('/:id/stream',
+  authenticateStreamToken,
+  async (req, res) => {
+    try {
+      const userId = req.user.id;
+      const recordingId = req.params.id;
+
+      const recording = await RecordingService.getRecordingById(recordingId, userId);
+      if (!recording) {
+        return res.status(404).end();
+      }
+
+      const downloadInfo = await ImprovedRecordingService.prepareDownload(recordingId);
+      if (!downloadInfo.exists) {
+        return res.status(404).end();
+      }
+      if (downloadInfo.isS3) {
+        // Gerar URL pré-assinada para S3 (HEAD)
+        try {
+          let signedUrl = null;
+          if (downloadInfo.s3Key) {
+            signedUrl = await S3Service.getSignedUrl(downloadInfo.s3Key, 3600);
+          } else if (downloadInfo.s3Url) {
+            try {
+              const u = new URL(downloadInfo.s3Url);
+              const pathParts = decodeURIComponent(u.pathname).split('/').filter(Boolean);
+              if (pathParts.length >= 2) {
+                const derivedKey = pathParts.slice(1).join('/');
+                signedUrl = await S3Service.getSignedUrl(derivedKey, 3600);
+              }
+            } catch (e) {
+              logger.warn('Falha ao derivar S3 key da URL (HEAD stream)');
+            }
+          }
+          res.setHeader('Location', signedUrl || downloadInfo.s3Url);
+        } catch (e) {
+          logger.warn('Falha ao gerar URL pré-assinada para S3 (HEAD stream):', e?.message);
+          res.setHeader('Location', downloadInfo.s3Url);
+        }
+        return res.status(302).end();
+      }
+
+      const filePath = downloadInfo.filePath;
+      const stats = await fs.stat(filePath);
+      const etag = computeEtag(stats);
+      const lastModified = computeLastModified(stats);
+
+      const range = req.headers.range;
+      // Condicionais de cache (apenas quando não houver Range)
+      const { notModified } = evaluateConditionalCache(req, stats, etag);
+      if (!range && notModified) {
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Content-Type', 'video/mp4');
+        setStandardCacheHeaders(res, etag, lastModified);
+        return res.status(304).end();
+      }
+
+      if (range) {
+        const { contentLength, contentRange } = await ImprovedRecordingService.getFileStream(filePath, range);
+        res.status(206);
+        res.setHeader('Content-Range', contentRange);
+        res.setHeader('Content-Length', contentLength);
+      } else {
+        res.status(200);
+        res.setHeader('Content-Length', stats.size);
+      }
+
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Content-Type', 'video/mp4');
+      setStandardCacheHeaders(res, etag, lastModified);
+      return res.end();
+    } catch (error) {
+      logger.error('Erro no HEAD /:id/stream:', error);
+      return res.status(500).end();
     }
   }
 );

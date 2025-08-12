@@ -1,844 +1,49 @@
-import { createClient } from '@supabase/supabase-js';
-import { promises as fs } from 'fs';
-import { createReadStream } from 'fs';
+import { v4 as uuidv4 } from 'uuid';
+import fs from 'fs';
 import path from 'path';
 import archiver from 'archiver';
-import { v4 as uuidv4 } from 'uuid';
-import axios from 'axios';
-import logger from '../utils/logger.js';
-import { Camera } from '../models/Camera.js';
-import S3Service from './S3Service.js';
+import S3Service from '../services/S3Service.js';
 import VideoMetadataExtractor from '../utils/videoMetadata.js';
+import { createModuleLogger } from '../config/logger.js';
+import { supabaseAdmin } from '../config/database.js';
+
+const logger = createModuleLogger('RecordingService');
 
 class RecordingService {
   constructor() {
-    // Usando SERVICE_ROLE_KEY para operações administrativas
-    this.supabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_ROLE_KEY
-    );
-    
-    // Diretórios de armazenamento
-    this.recordingsPath = path.resolve(process.cwd(), process.env.RECORDINGS_PATH || './storage/bin/www/record');
-    this.exportsPath = path.resolve(process.cwd(), process.env.EXPORTS_PATH || './storage/exports');
-    
-    // Jobs de exportação em andamento
-    this.exportJobs = new Map();
-    
-    this.initializeStorage();
-  }
-  
-  /**
-   * Inicializar diretórios de armazenamento
-   */
-  async initializeStorage() {
-    try {
-      await fs.mkdir(this.recordingsPath, { recursive: true });
-      await fs.mkdir(this.exportsPath, { recursive: true });
-      logger.info('Diretórios de armazenamento inicializados');
-    } catch (error) {
-      logger.error('Erro ao inicializar armazenamento:', error);
-    }
-  }
-  
-  /**
-   * Iniciar gravação de uma câmera
-   */
-  async startRecording(cameraId) {
-    try {
-      logger.info(`[RecordingService] Iniciando gravação para câmera ${cameraId}`);
-      
-      // Verificar variáveis de ambiente necessárias
-      if (!process.env.ZLMEDIAKIT_API_URL) {
-        logger.error('[RecordingService] ZLMEDIAKIT_API_URL não configurado');
-        throw new Error('ZLMEDIAKIT_API_URL não está configurado');
-      }
-      
-      if (!process.env.ZLMEDIAKIT_SECRET) {
-        logger.error('[RecordingService] ZLMEDIAKIT_SECRET não configurado');
-        throw new Error('ZLMEDIAKIT_SECRET não está configurado');
-      }
-      
-      // Buscar dados da câmera
-      const { data: camera, error: cameraError } = await this.supabase
-        .from('cameras')
-        .select('*')
-        .eq('id', cameraId)
-        .single();
-      
-      if (cameraError || !camera) {
-        logger.error(`[RecordingService] Câmera ${cameraId} não encontrada:`, cameraError);
-        throw new Error(`Câmera ${cameraId} não encontrada`);
-      }
-      
-      logger.info(`[RecordingService] Câmera encontrada: ${camera.name}`);
-      
-      // CORREÇÃO: Verificar se já existe uma gravação ativa para esta câmera
-      const { data: activeRecording, error: activeError } = await this.supabase
-        .from('recordings')
-        .select('*')
-        .eq('camera_id', cameraId)
-        .eq('status', 'recording')
-        .single();
-      
-      if (!activeError && activeRecording) {
-        logger.warn(`[RecordingService] Gravação já ativa para câmera ${cameraId}: ${activeRecording.id}`);
-        return {
-          success: true,
-          recordingId: activeRecording.id,
-          message: 'Gravação já está ativa para esta câmera',
-          isExisting: true
-        };
-      }
-      
-      // Usar o ID da câmera como nome do stream (igual ao StreamingService)
-      // Isso garante consistência entre os serviços
-      const recordParams = {
-        type: 0, // 0=hls+mp4, 1=hls, 2=mp4
-        vhost: '__defaultVhost__',
-        app: 'live',
-        stream: cameraId, // Usar ID da câmera como nome do stream
-        customized_path: `recordings/${cameraId}`,
-        max_second: 1800, // 30 minutos máximo por arquivo
-        secret: process.env.ZLMEDIAKIT_SECRET
-      };
-      
-      logger.info(`[RecordingService] Parâmetros de gravação:`, recordParams);
-      
-      // Chamar API do ZLMediaKit
-      const zlmResponse = await axios.get(
-        `${process.env.ZLMEDIAKIT_API_URL}/index/api/startRecord`,
-        {
-          params: recordParams,
-          timeout: 10000
-        }
-      );
-      
-      logger.info(`[RecordingService] Resposta ZLMediaKit:`, zlmResponse.data);
-      
-      if (zlmResponse.data.code !== 0) {
-        throw new Error(`ZLMediaKit erro: ${zlmResponse.data.msg}`);
-      }
-      
-      // Criar registro de gravação no banco
-      const recordingId = await this.createRecordingRecord(cameraId, recordParams);
-      
-      logger.info(`[RecordingService] Gravação iniciada com sucesso. ID: ${recordingId}`);
-      
-      return {
-        success: true,
-        recordingId,
-        message: 'Gravação iniciada com sucesso',
-        zlmResponse: zlmResponse.data
-      };
-      
-    } catch (error) {
-      logger.error(`[RecordingService] Erro ao iniciar gravação:`, error);
-      throw error;
-    }
+    this.supabase = supabaseAdmin;
+    this.logger = logger;
   }
 
-  /**
-   * Pausar gravação de uma câmera
-   */
-  async pauseRecording(cameraId, recordingId = null) {
-    try {
-      logger.info(`[RecordingService] Pausando gravação para câmera ${cameraId}`);
-      
-      // Buscar dados da câmera
-      const { data: camera, error: cameraError } = await this.supabase
-        .from('cameras')
-        .select('*')
-        .eq('id', cameraId)
-        .single();
-      
-      if (cameraError || !camera) {
-        throw new Error(`Câmera ${cameraId} não encontrada`);
-      }
-      
-      // Atualizar status das gravações ativas para 'completed' (pausar = finalizar segmento atual)
-      const { data: pausedRecordings, error: pauseError } = await this.supabase
-        .from('recordings')
-        .update({ 
-          status: 'completed',
-          end_time: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        })
-        .eq('camera_id', cameraId)
-        .eq('status', 'recording')
-        .select();
-      
-      if (pauseError) {
-        logger.error('[RecordingService] Erro ao pausar gravações:', pauseError);
-        throw pauseError;
-      }
-      
-      // Configurar parâmetros para parar gravação no ZLMediaKit
-      const stopParams = {
-        type: 0,
-        vhost: '__defaultVhost__',
-        app: 'live',
-        stream: cameraId,
-        secret: process.env.ZLMEDIAKIT_SECRET
-      };
-      
-      logger.info(`[RecordingService] Parâmetros para pausar:`, stopParams);
-      
-      // Chamar API do ZLMediaKit para parar gravação
-      const zlmResponse = await axios.get(
-        `${process.env.ZLMEDIAKIT_API_URL}/index/api/stopRecord`,
-        { params: stopParams }
-      );
-      
-      logger.info(`[RecordingService] Resposta ZLMediaKit (pause):`, zlmResponse.data);
-      
-      return {
-        success: true,
-        message: 'Gravação pausada com sucesso',
-        paused_recordings: pausedRecordings,
-        zlm_response: zlmResponse.data
-      };
-      
-    } catch (error) {
-      logger.error('[RecordingService] Erro ao pausar gravação:', error);
-      throw error;
-    }
-  }
+  exportJobs = new Map();
 
   /**
-   * Retomar gravação de uma câmera
-   */
-  async resumeRecording(cameraId) {
-    try {
-      logger.info(`[RecordingService] Retomando gravação para câmera ${cameraId}`);
-      
-      // Buscar dados da câmera
-      const { data: camera, error: cameraError } = await this.supabase
-        .from('cameras')
-        .select('*')
-        .eq('id', cameraId)
-        .single();
-      
-      if (cameraError || !camera) {
-        throw new Error(`Câmera ${cameraId} não encontrada`);
-      }
-      
-      // Verificar se há gravações recentemente pausadas (completed nos últimos 5 minutos)
-      const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-      const { data: pausedRecordings, error: pausedError } = await this.supabase
-        .from('recordings')
-        .select('*')
-        .eq('camera_id', cameraId)
-        .eq('status', 'completed')
-        .gte('updated_at', fiveMinutesAgo);
-      
-      if (pausedError) {
-        throw pausedError;
-      }
-      
-      if (!pausedRecordings || pausedRecordings.length === 0) {
-        throw new Error('Nenhuma gravação pausada encontrada para esta câmera');
-      }
-      
-      // Iniciar nova gravação (o ZLMediaKit criará um novo segmento)
-      const result = await this.startRecording(cameraId);
-      
-      // As gravações já estão como 'completed', apenas logamos a retomada
-      logger.info(`[RecordingService] Retomando após ${pausedRecordings.length} gravação(ões) pausada(s)`);
-      
-      return {
-        success: true,
-        message: 'Gravação retomada com sucesso',
-        new_recording: result,
-        completed_recordings: pausedRecordings.length
-      };
-      
-    } catch (error) {
-      logger.error('[RecordingService] Erro ao retomar gravação:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Parar gravação de uma câmera
-   */
-  async stopRecording(cameraId, recordingId = null) {
-    try {
-      logger.info(`[RecordingService] Parando gravação para câmera ${cameraId}`);
-      
-      // Buscar dados da câmera
-      const { data: camera, error: cameraError } = await this.supabase
-        .from('cameras')
-        .select('*')
-        .eq('id', cameraId)
-        .single();
-      
-      if (cameraError || !camera) {
-        throw new Error(`Câmera ${cameraId} não encontrada`);
-      }
-      
-      // CORREÇÃO: Finalizar todas as gravações ativas desta câmera antes de parar
-      const { data: activeRecordings, error: activeError } = await this.supabase
-        .from('recordings')
-        .select('*')
-        .eq('camera_id', cameraId)
-        .eq('status', 'recording');
-      
-      if (!activeError && activeRecordings && activeRecordings.length > 0) {
-        logger.info(`[RecordingService] Finalizando ${activeRecordings.length} gravação(ões) ativa(s) da câmera ${cameraId}`);
-        
-        for (const recording of activeRecordings) {
-          await this.supabase
-            .from('recordings')
-            .update({
-              status: 'completed',
-              end_time: new Date().toISOString(),
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', recording.id);
-          
-          logger.info(`[RecordingService] Gravação ${recording.id} finalizada`);
-        }
-      }
-      
-      // Configurar parâmetros para parar gravação
-      // Usar o ID da câmera como nome do stream (igual ao StreamingService)
-      const stopParams = {
-        type: 0,
-        vhost: '__defaultVhost__',
-        app: 'live',
-        stream: cameraId, // Usar ID da câmera como nome do stream
-        secret: process.env.ZLMEDIAKIT_SECRET
-      };
-      
-      logger.info(`[RecordingService] Parâmetros para parar:`, stopParams);
-      
-      // Chamar API do ZLMediaKit
-      const zlmResponse = await axios.get(
-        `${process.env.ZLMEDIAKIT_API_URL}/index/api/stopRecord`,
-        {
-          params: stopParams,
-          timeout: 10000
-        }
-      );
-      
-      logger.info(`[RecordingService] Resposta ZLMediaKit (stop):`, zlmResponse.data);
-      
-      // Atualizar status no banco se recordingId específico foi fornecido
-      if (recordingId) {
-        await this.updateRecordingStatus(recordingId, 'completed');
-      }
-      
-      logger.info(`[RecordingService] Gravação parada com sucesso`);
-      
-      return {
-        success: true,
-        message: 'Gravação parada com sucesso',
-        zlmResponse: zlmResponse.data,
-        finalized_recordings: activeRecordings?.length || 0
-      };
-      
-    } catch (error) {
-      logger.error(`[RecordingService] Erro ao parar gravação:`, error);
-      throw error;
-    }
-  }
-
-  /**
-   * Extrair informações de stream da URL RTSP
-   */
-  parseRtspUrl(rtspUrl) {
-    try {
-      // Exemplo: rtsp://user:pass@ip:port/app/stream
-      const url = new URL(rtspUrl);
-      const pathParts = url.pathname.split('/').filter(p => p);
-      
-      // Para URLs do tipo rtsp://user:pass@ip:port/stream
-      // ou rtsp://user:pass@ip:port/app/stream
-      let app = 'live';
-      let stream = pathParts[0];
-      
-      if (pathParts.length >= 2) {
-        app = pathParts[0];
-        stream = pathParts[1];
-      } else if (pathParts.length === 1) {
-        stream = pathParts[0];
-      } else {
-        stream = `camera_${Date.now()}`;
-      }
-      
-      return {
-        vhost: '__defaultVhost__',
-        app: app,
-        stream: stream
-      };
-    } catch (error) {
-      logger.warn(`[RecordingService] Erro ao parsear RTSP URL: ${error.message}`);
-      return {
-        vhost: '__defaultVhost__',
-        app: 'live',
-        stream: `camera_${Date.now()}`
-      };
-    }
-  }
-
-  /**
-   * Criar registro de gravação no banco de dados
-   */
-  async createRecordingRecord(cameraId, params) {
-    try {
-      const recordingId = uuidv4();
-      const now = new Date().toISOString();
-      
-      const { data, error } = await this.supabase
-        .from('recordings')
-        .insert([{
-          id: recordingId,
-          camera_id: cameraId,
-          filename: `recording_${Date.now()}`,
-          file_path: params.customized_path,
-          start_time: now, // Campo obrigatório
-          started_at: now, // Timestamp quando a gravação foi iniciada
-          status: 'recording',
-          created_at: now,
-          metadata: {
-            vhost: params.vhost,
-            app: params.app,
-            stream: params.stream,
-            type: params.type
-          }
-        }])
-        .select()
-        .single();
-      
-      if (error) {
-        throw error;
-      }
-      
-      return recordingId;
-    } catch (error) {
-      logger.error('Erro ao criar registro de gravação:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Atualizar status de gravação
-   */
-  async updateRecordingStatus(recordingId, status, uploadStatus = null) {
-    try {
-      const updateData = {
-        status: status,
-        updated_at: new Date().toISOString()
-      };
-      
-      // Atualizar upload_status se fornecido
-      if (uploadStatus !== null) {
-        updateData.upload_status = uploadStatus;
-      }
-      
-      const { error } = await this.supabase
-        .from('recordings')
-        .update(updateData)
-        .eq('id', recordingId);
-      
-      if (error) {
-        throw error;
-      }
-      
-      const statusMsg = uploadStatus ? `${status} (upload: ${uploadStatus})` : status;
-      logger.info(`[RecordingService] Status de gravação ${recordingId} atualizado para: ${statusMsg}`);
-    } catch (error) {
-      logger.error('Erro ao atualizar status de gravação:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Atualizar erro de upload
-   */
-  async updateUploadError(recordingId, errorMessage) {
-    try {
-      const { error } = await this.supabase
-        .from('recordings')
-        .update({
-          status: 'failed',
-          upload_status: 'failed',
-          error_message: errorMessage,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', recordingId);
-      
-      if (error) {
-        throw error;
-      }
-      
-      logger.error(`[RecordingService] Erro de upload registrado para gravação ${recordingId}: ${errorMessage}`);
-    } catch (error) {
-      logger.error('Erro ao atualizar erro de upload:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Buscar todas as gravações
-   */
-  async getRecordings() {
-    try {
-      const { data, error } = await this.supabase
-        .from('recordings')
-        .select(`
-          *,
-          cameras:camera_id (id, name)
-        `)
-        .order('created_at', { ascending: false });
-      
-      if (error) {
-        throw error;
-      }
-      
-      return data;
-    } catch (error) {
-      logger.error('Erro ao buscar gravações:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Buscar gravações com filtros e paginação
-   */
-  async searchRecordings(userId, filters = {}) {
-    try {
-      const {
-        camera_id,
-        start_date,
-        end_date,
-        duration_min,
-        duration_max,
-        file_size_min,
-        file_size_max,
-        quality,
-        event_type,
-        page = 1,
-        limit = 20,
-        sort_by = 'created_at',
-        sort_order = 'desc'
-      } = filters;
-
-      // Buscar câmeras do usuário usando o modelo Camera
-      const { Camera } = await import('../models/Camera.js');
-      const cameras = await Camera.findByUserId(userId);
-      
-      logger.debug(`[RecordingService] searchRecordings - userId: ${userId}, cameras encontradas: ${cameras.length}`);
-      if (cameras.length > 0) {
-        logger.debug(`[RecordingService] IDs das câmeras: ${cameras.map(c => c.id).join(', ')}`);
-      }
-
-      if (!cameras || cameras.length === 0) {
-        return {
-          data: [],
-          recordings: [], // Manter compatibilidade
-          page: parseInt(page),
-          limit: parseInt(limit),
-          total: 0,
-          pages: 0,
-          appliedFilters: {
-            camera_id,
-            start_date,
-            end_date,
-            duration_min,
-            duration_max,
-            file_size_min,
-            file_size_max,
-            quality,
-            event_type,
-            sort_by,
-            sort_order
-          }
-        };
-      }
-
-      const cameraIds = cameras.map(cam => cam.id);
-
-      // Construir query base
-      let query = this.supabase
-        .from('recordings')
-        .select(`
-          *,
-          cameras:camera_id (id, name, location)
-        `, { count: 'exact' })
-        .in('camera_id', cameraIds);
-
-      // Aplicar filtros
-      if (camera_id) {
-        query = query.eq('camera_id', camera_id);
-      }
-
-      if (start_date) {
-        query = query.gte('created_at', start_date);
-      }
-
-      if (end_date) {
-        query = query.lte('created_at', end_date);
-      }
-
-      if (duration_min) {
-        query = query.gte('duration', duration_min);
-      }
-
-      if (duration_max) {
-        query = query.lte('duration', duration_max);
-      }
-
-      if (file_size_min) {
-        query = query.gte('file_size', file_size_min);
-      }
-
-      if (file_size_max) {
-        query = query.lte('file_size', file_size_max);
-      }
-
-      if (quality) {
-        query = query.eq('quality', quality);
-      }
-
-      if (event_type) {
-        query = query.eq('event_type', event_type);
-      }
-
-      // Aplicar ordenação
-      const ascending = sort_order === 'asc';
-      query = query.order(sort_by, { ascending });
-
-      // Aplicar paginação
-      const offset = (page - 1) * limit;
-      query = query.range(offset, offset + limit - 1);
-
-      const { data, error, count } = await query;
-
-      if (error) {
-        throw error;
-      }
-
-      const total = count || 0;
-      const pages = Math.ceil(total / limit);
-
-      return {
-        data: data || [],
-        recordings: data || [], // Manter compatibilidade
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages,
-        appliedFilters: {
-          camera_id,
-          start_date,
-          end_date,
-          duration_min,
-          duration_max,
-          file_size_min,
-          file_size_max,
-          quality,
-          event_type,
-          sort_by,
-          sort_order
-        }
-      };
-    } catch (error) {
-      logger.error('Erro ao buscar gravações com filtros:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Buscar gravações por câmera
-   */
-  async getRecordingsByCamera(cameraId) {
-    try {
-      const { data, error } = await this.supabase
-        .from('recordings')
-        .select(`
-          *,
-          cameras:camera_id (id, name)
-        `)
-        .eq('camera_id', cameraId)
-        .order('created_at', { ascending: false });
-      
-      if (error) {
-        throw error;
-      }
-      
-      return data;
-    } catch (error) {
-      logger.error('Erro ao buscar gravações por câmera:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Buscar gravação por ID
+   * Obter gravação por ID
    */
   async getRecordingById(recordingId, userId = null) {
     try {
-      let query = this.supabase
+      const { data: recording, error } = await this.supabase
         .from('recordings')
-        .select(`
-          *,
-          cameras:camera_id (id, name)
-        `)
-        .eq('id', recordingId);
+        .select('*')
+        .eq('id', recordingId)
+        .single();
 
-      // Se userId for fornecido, verificar permissões
-      if (userId) {
-        const { Camera } = await import('../models/Camera.js');
-        const cameras = await Camera.findByUserId(userId);
-        
-        if (!cameras || cameras.length === 0) {
-          return null;
-        }
-        
-        const cameraIds = cameras.map(cam => cam.id);
-        query = query.in('camera_id', cameraIds);
-      }
-
-      const { data, error } = await query.single();
-      
-      if (error) {
-        if (error.code === 'PGRST116') {
-          return null; // Não encontrado
-        }
-        throw error;
-      }
-      
-      return data;
-    } catch (error) {
-      logger.error('Erro ao buscar gravação:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Deletar gravação
-   */
-  async deleteRecording(recordingId, userId = null) {
-    try {
-      // Buscar gravação para obter caminho do arquivo
-      const recording = await this.getRecordingById(recordingId, userId);
-      
-      if (!recording) {
-        throw new Error('Gravação não encontrada');
-      }
-      
-      // Deletar arquivo se existir
-      if (recording.file_path) {
-        const filePath = path.join(this.recordingsPath, recording.file_path);
-        try {
-          await fs.unlink(filePath);
-          logger.info(`[RecordingService] Arquivo deletado: ${filePath}`);
-        } catch (fileError) {
-          logger.warn(`[RecordingService] Erro ao deletar arquivo: ${fileError.message}`);
-        }
-      }
-      
-      // Deletar do banco
-      const { error } = await this.supabase
-        .from('recordings')
-        .delete()
-        .eq('id', recordingId);
-      
       if (error) {
         throw error;
       }
-      
-      logger.info(`[RecordingService] Gravação ${recordingId} deletada com sucesso`);
-      
-      return { success: true, message: 'Gravação deletada com sucesso' };
+
+      return { data: recording || [] };
+
     } catch (error) {
-      logger.error('Erro ao deletar gravação:', error);
+      this.logger.error('Erro ao buscar gravação:', error);
       throw error;
     }
   }
 
   /**
-   * Deletar múltiplas gravações
+   * Verificar acesso em lote
    */
-  async deleteRecordings(recordingIds, userId = null) {
-    try {
-      logger.info(`[RecordingService] Deletando ${recordingIds.length} gravações`);
-      
-      let deletedCount = 0;
-      let failedCount = 0;
-      let freedSpace = 0;
-      const errors = [];
-      
-      for (const recordingId of recordingIds) {
-        try {
-          // Buscar gravação para obter caminho do arquivo
-          const recording = await this.getRecordingById(recordingId, userId);
-          
-          if (!recording) {
-            failedCount++;
-            errors.push(`Gravação ${recordingId} não encontrada`);
-            continue;
-          }
-          
-          // Deletar arquivo se existir
-          if (recording.file_path) {
-            const filePath = path.join(this.recordingsPath, recording.file_path);
-            try {
-              const stats = await fs.stat(filePath);
-              freedSpace += stats.size;
-              await fs.unlink(filePath);
-              logger.info(`[RecordingService] Arquivo deletado: ${filePath}`);
-            } catch (fileError) {
-              logger.warn(`[RecordingService] Erro ao deletar arquivo: ${fileError.message}`);
-            }
-          }
-          
-          // Deletar do banco
-          const { error } = await this.supabase
-            .from('recordings')
-            .delete()
-            .eq('id', recordingId);
-          
-          if (error) {
-            failedCount++;
-            errors.push(`Erro ao deletar gravação ${recordingId}: ${error.message}`);
-            logger.error(`[RecordingService] Erro ao deletar gravação ${recordingId}:`, error);
-          } else {
-            deletedCount++;
-            logger.info(`[RecordingService] Gravação ${recordingId} deletada com sucesso`);
-          }
-          
-        } catch (recordingError) {
-          failedCount++;
-          errors.push(`Erro ao processar gravação ${recordingId}: ${recordingError.message}`);
-          logger.error(`[RecordingService] Erro ao processar gravação ${recordingId}:`, recordingError);
-        }
-      }
-      
-      const freedSpaceMB = (freedSpace / (1024 * 1024)).toFixed(2);
-      
-      logger.info(`[RecordingService] Deleção em lote concluída: ${deletedCount} deletadas, ${failedCount} falharam, ${freedSpaceMB} MB liberados`);
-      
-      return {
-        deletedCount,
-        failedCount,
-        freedSpace,
-        freedSpaceMB: parseFloat(freedSpaceMB),
-        errors: errors.length > 0 ? errors : undefined
-      };
-      
-    } catch (error) {
-      logger.error('[RecordingService] Erro na deleção em lote:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Verificar acesso em lote a gravações
-   */
-  async checkBulkAccess(recordingIds, userId) {
+  async checkAccess(recordingIds, userId) {
     try {
       const accessibleIds = [];
       const inaccessibleIds = [];
@@ -1121,6 +326,90 @@ class RecordingService {
       
     } catch (error) {
       logger.error('[RecordingService] Erro na limpeza de gravações antigas:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Buscar gravações com filtros
+   */
+  async searchRecordings({ camera_id, start_date, end_date, duration_min, duration_max, file_size_min, file_size_max, quality, event_type, status, upload_status, page = 1, limit = 20, sort_by = 'created_at', sort_order = 'desc', user_id }) {
+    try {
+      // Montar query base
+      let query = this.supabase
+        .from('recordings')
+        .select('*', { count: 'exact' });
+
+      const appliedFilters = {};
+
+      if (camera_id) {
+        query = query.eq('camera_id', camera_id);
+        appliedFilters.camera_id = camera_id;
+      }
+      if (start_date) {
+        query = query.gte('created_at', new Date(start_date).toISOString());
+        appliedFilters.start_date = start_date;
+      }
+      if (end_date) {
+        query = query.lte('created_at', new Date(end_date).toISOString());
+        appliedFilters.end_date = end_date;
+      }
+      if (duration_min != null) {
+        query = query.gte('duration', duration_min);
+        appliedFilters.duration_min = duration_min;
+      }
+      if (duration_max != null) {
+        query = query.lte('duration', duration_max);
+        appliedFilters.duration_max = duration_max;
+      }
+      if (file_size_min != null) {
+        query = query.gte('file_size', file_size_min);
+        appliedFilters.file_size_min = file_size_min;
+      }
+      if (file_size_max != null) {
+        query = query.lte('file_size', file_size_max);
+        appliedFilters.file_size_max = file_size_max;
+      }
+      if (quality) {
+        query = query.eq('quality', quality);
+        appliedFilters.quality = quality;
+      }
+      if (event_type) {
+        query = query.eq('event_type', event_type);
+        appliedFilters.event_type = event_type;
+      }
+      if (status) {
+        query = query.eq('status', status);
+        appliedFilters.status = status;
+      }
+      if (upload_status) {
+        query = query.eq('upload_status', upload_status);
+        appliedFilters.upload_status = upload_status;
+      }
+
+      // Ordenação e paginação
+      const offset = (page - 1) * limit;
+      query = query.order(sort_by, { ascending: sort_order === 'asc' }).range(offset, offset + limit - 1);
+
+      const { data, error, count } = await query;
+      if (error) {
+        this.logger.error('Erro ao buscar gravações:', error);
+        throw error;
+      }
+
+      return {
+        data: data || [],
+        pagination: {
+          page,
+          limit,
+          total: count || 0,
+          totalPages: count ? Math.ceil(count / limit) : 0
+        },
+        appliedFilters
+      };
+
+    } catch (error) {
+      this.logger.error('[RecordingService] Erro na busca de gravações:', error);
       throw error;
     }
   }
@@ -2612,7 +1901,7 @@ class RecordingService {
             
             if (fs.existsSync(possiblePath)) {
               const stats = fs.statSync(possiblePath);
-              logger.info(`✅ [RecordingService] Estratégia 4 - Arquivo similar encontrado: ${possiblePath}`);
+              logger.info(`✅ [RecordingService] Estratégia 4 - Arquivo encontrado por nome similar: ${possiblePath}`);
               return {
                 found: true,
                 strategy: 'fuzzy_search',
@@ -2628,9 +1917,12 @@ class RecordingService {
       }
     }
 
-    logger.error(`❌ [RecordingService] Arquivo não encontrado após todas as estratégias:`, {
+    // Nenhuma estratégia foi bem-sucedida
+    logger.error(`❌ [RecordingService] Arquivo não encontrado após todas as estratégias`, {
       fileName,
       filePath,
+      cameraId,
+      startTime,
       searchedPaths
     });
 
@@ -2639,8 +1931,7 @@ class RecordingService {
       strategy: null,
       finalPath: null,
       actualSize: null,
-      searchedPaths,
-      reason: `Arquivo não encontrado em nenhum dos ${searchedPaths.length} caminhos pesquisados`
+      searchedPaths
     };
   }
 }

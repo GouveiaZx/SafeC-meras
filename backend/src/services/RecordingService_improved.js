@@ -18,8 +18,8 @@ class ImprovedRecordingService {
       process.env.SUPABASE_SERVICE_ROLE_KEY
     );
     
-    this.recordingsPath = process.env.RECORDINGS_PATH || path.join(process.cwd(), 'recordings');
-    this.zlmApiUrl = process.env.ZLMEDIAKIT_API_URL || 'http://localhost:8080';
+    this.recordingsPath = process.env.RECORDINGS_PATH || path.join(process.cwd(), 'storage', 'www', 'record', 'live');
+    this.zlmApiUrl = process.env.ZLMEDIAKIT_API_URL || 'http://localhost:8000';
     this.zlmSecret = process.env.ZLMEDIAKIT_SECRET;
     
     // Garantir que o diretório de gravações existe

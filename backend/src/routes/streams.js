@@ -35,9 +35,6 @@ function isValidUUID(uuid) {
 const router = express.Router();
 const logger = createModuleLogger('StreamRoutes');
 
-// Aplicar autenticação a todas as rotas
-router.use(authenticateToken);
-
 /**
  * Middleware de autenticação para HLS (suporta query parameter)
  * Melhorado com tratamento CORS otimizado e logs detalhados
@@ -72,9 +69,20 @@ const authenticateHLS = async (req, res, next) => {
     }
     
     if (!token && req.query.token) {
-      token = req.query.token;
+      // Se token é um array (múltiplos tokens), pegar o primeiro válido
+      if (Array.isArray(req.query.token)) {
+        logger.warn(`⚠️ Múltiplos tokens detectados: ${req.query.token.length} tokens`);
+        // Filtrar tokens válidos (não vazios e com tamanho mínimo)
+        const validTokens = req.query.token.filter(t => t && typeof t === 'string' && t.length > 10);
+        if (validTokens.length > 0) {
+          token = validTokens[0]; // Usar o primeiro token válido
+          logger.debug(`🔐 Usando primeiro token válido de ${req.query.token.length} tokens fornecidos`);
+        }
+      } else {
+        token = req.query.token;
+        logger.debug('🔐 Token encontrado no query parameter');
+      }
       tokenSource = 'query';
-      logger.debug('🔐 Token encontrado no query parameter');
     }
     
     if (!token && req.headers['x-auth-token']) {
@@ -92,9 +100,17 @@ const authenticateHLS = async (req, res, next) => {
       });
     }
     
-    // Validação básica do token
+    // Validação básica do token com logs detalhados
+    logger.debug(`🔍 Token recebido - Tipo: ${typeof token}, Comprimento: ${token?.length || 0}, Valor: ${typeof token === 'string' ? token.substring(0, 50) + '...' : JSON.stringify(token)}`);
+    
+    // Se o token for um array, pegar o primeiro elemento
+    if (Array.isArray(token) && token.length > 0) {
+      token = token[0];
+      logger.debug(`🔄 Token era array, usando primeiro elemento: ${typeof token === 'string' ? token.substring(0, 50) + '...' : JSON.stringify(token)}`);
+    }
+    
     if (typeof token !== 'string' || token.length < 10) {
-      logger.warn('❌ HLS Auth - Token inválido (muito curto ou tipo incorreto)');
+      logger.warn(`❌ HLS Auth - Token inválido (muito curto ou tipo incorreto) - Tipo: ${typeof token}, Comprimento: ${token?.length || 0}`);
       return res.status(401).json({
         error: 'Token inválido',
         message: 'Formato de token inválido',
@@ -233,12 +249,26 @@ router.get('/:stream_id/hls/*', authenticateHLS, asyncHandler(async (req, res) =
     return res.status(403).send('Acesso negado a este stream.');
   }
 
-  const ZLM_BASE_URL = process.env.ZLM_BASE_URL || 'http://localhost:8001';
+  const ZLM_BASE_URL = process.env.ZLM_BASE_URL || 'http://localhost:8000';
   const proxyUrl = `${ZLM_BASE_URL}/live/${stream_id}/${file}`;
 
   try {
-    const response = await fetch(proxyUrl);
+    // Configurar timeout para o fetch
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 segundos timeout
+    
+    const response = await fetch(proxyUrl, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'NewCAM-Backend/1.0',
+        'Accept': file.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp2t'
+      }
+    });
+    
+    clearTimeout(timeoutId);
+    
     if (!response.ok) {
+      logger.warn(`ZLMediaKit retornou status ${response.status} para ${proxyUrl}`);
       return res.status(response.status).send(await response.text());
     }
 
@@ -247,8 +277,9 @@ router.get('/:stream_id/hls/*', authenticateHLS, asyncHandler(async (req, res) =
       const baseUrl = `/api/streams/${stream_id}/hls`;
 
       // Reescreve as URLs para apontar para o nosso proxy
-      manifest = manifest.replace(/^(.*\.m3u8)$/gm, `${baseUrl}/$1?token=${token}`)
-                         .replace(/^(.*\.ts)$/gm, `${baseUrl}/$1?token=${token}`);
+      // Regex melhorada que evita capturar notação científica (e+, e-, E+, E-)
+      manifest = manifest.replace(/^([^#\n\r]*\.m3u8)$/gm, `${baseUrl}/$1?token=${token}`)
+                         .replace(/^([^#\n\r]*(?<!e[+-]\d*)\.ts)$/gm, `${baseUrl}/$1?token=${token}`);
 
       res.set('Content-Type', 'application/vnd.apple.mpegurl');
       res.send(manifest);
@@ -276,6 +307,10 @@ router.get('/:stream_id/hls/*', authenticateHLS, asyncHandler(async (req, res) =
       }
     }
   } catch (error) {
+    if (error.name === 'AbortError') {
+      logger.error(`Timeout no proxy HLS para ${proxyUrl}`);
+      return res.status(504).send('Timeout ao acessar stream.');
+    }
     logger.error(`Erro no proxy HLS para ${proxyUrl}:`, error);
     res.status(500).send('Erro interno no proxy HLS.');
   }

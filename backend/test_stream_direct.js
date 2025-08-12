@@ -1,4 +1,4 @@
-import fetch from 'node-fetch';
+// Node 18+ possui fetch nativo - removido: import fetch from 'node-fetch';
 
 const API_BASE = 'http://localhost:3002/api';
 
@@ -76,7 +76,7 @@ async function testStreamDirect() {
         }
         
         if (streamResponse.ok) {
-            const buffer = await streamResponse.buffer();
+            const buffer = Buffer.from(await streamResponse.arrayBuffer());
             console.log('✅ Streaming funcionando!');
             console.log('📏 Tamanho da resposta:', buffer.length, 'bytes');
             console.log('🔍 Primeiros bytes:', buffer.slice(0, 20).toString('hex'));

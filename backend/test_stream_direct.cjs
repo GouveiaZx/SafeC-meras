@@ -1,4 +1,4 @@
-const fetch = require('node-fetch');
+const fetch = global.fetch;
 const { createClient } = require('@supabase/supabase-js');
 
 const supabaseUrl = process.env.SUPABASE_URL || 'https://grkvfzuadctextnbpajb.supabase.co';

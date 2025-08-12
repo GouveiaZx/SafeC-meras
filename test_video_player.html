@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teste Player de Vídeo - Codec OPUS</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f0f0f0;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        video {
+            width: 100%;
+            max-width: 640px;
+            height: auto;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .status {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .success { background-color: #d4edda; color: #155724; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        .info { background-color: #d1ecf1; color: #0c5460; }
+        .codec-test {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+        }
+        .codec-result {
+            margin: 5px 0;
+            padding: 5px;
+            border-radius: 3px;
+        }
+        .supported { background-color: #d4edda; color: #155724; }
+        .not-supported { background-color: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Teste Player de Vídeo - Codec OPUS</h1>
+        
+        <div class="codec-test">
+            <h3>Teste de Suporte a Codecs de Áudio:</h3>
+            <div id="codec-results"></div>
+        </div>
+        
+        <div id="status" class="status info">
+            Inicializando teste...
+        </div>
+        
+        <video id="video" controls muted>
+            Seu navegador não suporta o elemento de vídeo.
+        </video>
+        
+        <div id="hls-info" style="margin-top: 20px;"></div>
+    </div>
+
+    <script>
+        // Teste de suporte a codecs
+        function testCodecSupport() {
+            const codecs = [
+                'audio/mp4; codecs="mp4a.40.2"',  // AAC LC
+                'audio/mp4; codecs="mp4a.40.5"',  // AAC HE
+                'audio/aac',                       // AAC genérico
+                'audio/mpeg',                      // MP3
+                'audio/webm; codecs="opus"',       // Opus
+                'audio/webm; codecs="vorbis"'      // Vorbis
+            ];
+            
+            const resultsDiv = document.getElementById('codec-results');
+            
+            codecs.forEach(codec => {
+                const supported = MediaSource.isTypeSupported(codec);
+                const div = document.createElement('div');
+                div.className = `codec-result ${supported ? 'supported' : 'not-supported'}`;
+                div.textContent = `${codec}: ${supported ? 'SUPORTADO' : 'NÃO SUPORTADO'}`;
+                resultsDiv.appendChild(div);
+                
+                console.log(`Codec ${codec}: ${supported ? 'SUPORTADO' : 'NÃO SUPORTADO'}`);
+            });
+        }
+        
+        // Função para atualizar status
+        function updateStatus(message, type = 'info') {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = message;
+            statusDiv.className = `status ${type}`;
+            console.log(`[${type.toUpperCase()}] ${message}`);
+        }
+        
+        // Função para testar HLS
+        function testHLS() {
+            const video = document.getElementById('video');
+            const hlsInfoDiv = document.getElementById('hls-info');
+            
+            if (Hls.isSupported()) {
+                updateStatus('HLS.js suportado. Tentando carregar stream...', 'info');
+                
+                const hls = new Hls({
+                    debug: true,
+                    enableWorker: false,
+                    lowLatencyMode: true,
+                    backBufferLength: 90
+                });
+                
+                // URL de teste do ZLMediaKit
+                const streamUrl = 'http://localhost:8000/live/test.m3u8';
+                
+                hls.loadSource(streamUrl);
+                hls.attachMedia(video);
+                
+                hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                    updateStatus('Manifesto HLS carregado com sucesso!', 'success');
+                    
+                    // Mostrar informações sobre as faixas
+                    const levels = hls.levels;
+                    const audioTracks = hls.audioTracks;
+                    
+                    let info = '<h4>Informações do Stream:</h4>';
+                    info += `<p><strong>Níveis de vídeo:</strong> ${levels.length}</p>`;
+                    info += `<p><strong>Faixas de áudio:</strong> ${audioTracks.length}</p>`;
+                    
+                    if (audioTracks.length > 0) {
+                        info += '<h5>Detalhes das faixas de áudio:</h5>';
+                        audioTracks.forEach((track, index) => {
+                            info += `<p>Faixa ${index}: ${track.name || 'Sem nome'} - Codec: ${track.codec || 'Não especificado'}</p>`;
+                        });
+                    }
+                    
+                    hlsInfoDiv.innerHTML = info;
+                });
+                
+                hls.on(Hls.Events.ERROR, function(event, data) {
+                    console.error('Erro HLS:', data);
+                    
+                    if (data.fatal) {
+                        switch(data.type) {
+                            case Hls.ErrorTypes.NETWORK_ERROR:
+                                updateStatus(`Erro de rede: ${data.details}`, 'error');
+                                break;
+                            case Hls.ErrorTypes.MEDIA_ERROR:
+                                updateStatus(`Erro de mídia: ${data.details} - ${data.reason || ''}`, 'error');
+                                break;
+                            default:
+                                updateStatus(`Erro fatal: ${data.details}`, 'error');
+                                break;
+                        }
+                    } else {
+                        updateStatus(`Erro não fatal: ${data.details}`, 'error');
+                    }
+                });
+                
+                hls.on(Hls.Events.FRAG_LOADED, function(event, data) {
+                    console.log('Fragmento carregado:', data.frag.url);
+                });
+                
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                updateStatus('HLS nativo suportado', 'info');
+                video.src = 'http://localhost:8000/live/test.m3u8';
+            } else {
+                updateStatus('HLS não suportado neste navegador', 'error');
+            }
+        }
+        
+        // Inicializar testes
+        document.addEventListener('DOMContentLoaded', function() {
+            updateStatus('Testando suporte a codecs...', 'info');
+            testCodecSupport();
+            
+            setTimeout(() => {
+                updateStatus('Iniciando teste HLS...', 'info');
+                testHLS();
+            }, 1000);
+        });
+    </script>
+</body>
+</html>

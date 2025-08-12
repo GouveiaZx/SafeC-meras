@@ -5,7 +5,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
-import fetch from 'node-fetch';
+// Node 18+ possui fetch nativo - removido: import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -136,7 +136,7 @@ async function testVideoStreaming() {
       
       if (rangeResponse.status === 206) {
         console.log('✅ Range request bem-sucedido!');
-        const buffer = await rangeResponse.buffer();
+        const buffer = Buffer.from(await rangeResponse.arrayBuffer());
         console.log('📦 Dados recebidos:', buffer.length, 'bytes');
         
         // Verificar se é um arquivo MP4 válido (deve começar com bytes específicos)

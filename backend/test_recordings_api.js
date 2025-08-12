@@ -1,4 +1,4 @@
-import fetch from 'node-fetch';
+// Removido: import fetch from 'node-fetch'; // Node 18+ possui fetch nativo
 
 // Teste da API de recordings sem autenticação (para debug)
 async function testRecordingsAPI() {

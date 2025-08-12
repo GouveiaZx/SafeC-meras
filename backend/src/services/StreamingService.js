@@ -138,8 +138,16 @@ class StreamingService {
 
       const streamId = camera.id;
       
+      // Debug: verificar estado do activeStreams
+      logger.debug(`[DEBUG] Verificando stream ${streamId}:`);
+      logger.debug(`[DEBUG] activeStreams.size: ${this.activeStreams.size}`);
+      logger.debug(`[DEBUG] activeStreams.has(${streamId}): ${this.activeStreams.has(streamId)}`);
+      logger.debug(`[DEBUG] activeStreams keys: ${Array.from(this.activeStreams.keys()).join(', ')}`);
+      
       // Verificar se stream já está ativo
       if (this.activeStreams.has(streamId)) {
+        const existingStream = this.activeStreams.get(streamId);
+        logger.error(`[DEBUG] Stream existente:`, existingStream);
         throw new ValidationError('Stream já está ativo para esta câmera');
       }
 
@@ -1297,6 +1305,72 @@ class StreamingService {
       '1080p': 5000000  // 5 Mbps
     };
     return bitrates[quality] || bitrates['720p'];
+  }
+
+  /**
+   * Sincronizar streams existentes do ZLMediaKit com o Map activeStreams
+   */
+  async syncExistingStreams() {
+    try {
+      logger.info('Sincronizando streams existentes do ZLMediaKit...');
+      
+      const response = await axios.post(`${this.zlmApiUrl}/getMediaList`, {
+        secret: this.zlmSecret
+      }, {
+        timeout: 5000
+      });
+      
+      if (response.data.code !== 0) {
+        logger.warn('Erro ao obter lista de streams do ZLMediaKit:', response.data.msg);
+        return;
+      }
+      
+      const activeStreams = response.data.data || [];
+      logger.info(`Encontrados ${activeStreams.length} streams ativos no ZLMediaKit`);
+      
+      for (const stream of activeStreams) {
+        const streamId = stream.stream;
+        
+        // Verificar se é um UUID válido (ID de câmera)
+        if (this.isValidUUID(streamId)) {
+          // Verificar se já está registrado no Map
+          if (!this.activeStreams.has(streamId)) {
+            logger.info(`Registrando stream existente: ${streamId}`);
+            
+            // Criar configuração básica do stream
+            const streamConfig = {
+              id: streamId,
+              camera_id: streamId,
+              status: 'active',
+              server: 'zlm',
+              app: stream.app,
+              stream: stream.stream,
+              vhost: stream.vhost,
+              schema: stream.schema,
+              viewers: stream.totalReaderCount || 0,
+              created_at: new Date(stream.createStamp * 1000).toISOString(),
+              isRecordingHLS: stream.isRecordingHLS || false,
+              isRecordingMP4: stream.isRecordingMP4 || false,
+              bytesSpeed: stream.bytesSpeed || 0,
+              aliveSecond: stream.aliveSecond || 0
+            };
+            
+            // Registrar no Map
+            this.activeStreams.set(streamId, streamConfig);
+            this.streamViewers.set(streamId, new Set());
+            
+            logger.info(`Stream ${streamId} sincronizado com sucesso`);
+          } else {
+            logger.debug(`Stream ${streamId} já está registrado`);
+          }
+        }
+      }
+      
+      logger.info(`Sincronização concluída. Total de streams registrados: ${this.activeStreams.size}`);
+      
+    } catch (error) {
+      logger.error('Erro ao sincronizar streams existentes:', error);
+    }
   }
 
   /**

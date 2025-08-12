@@ -11,6 +11,7 @@
     "check": "tsc -b --noEmit"
   },
   "dependencies": {
+    "@executeautomation/playwright-mcp-server": "^1.0.6",
     "@radix-ui/react-popover": "^1.1.14",
     "@radix-ui/react-select": "^2.2.5",
     "@types/hls.js": "^0.13.3",
