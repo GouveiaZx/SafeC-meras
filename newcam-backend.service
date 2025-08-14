@@ -1,0 +1,18 @@
+[Unit]
+Description=NewCAM Backend Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/www/newcam/backend
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=10
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=newcam-backend
+
+[Install]
+WantedBy=multi-user.target

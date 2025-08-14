@@ -1,0 +1,18 @@
+{
+  "streaming": {
+    "server": "zlm",
+    "baseUrl": "http://nuvem.safecameras.com.br",
+    "apiUrl": "http://nuvem.safecameras.com.br/index/api",
+    "disableSimulation": true,
+    "forceZLM": true,
+    "hlsUrl": "http://nuvem.safecameras.com.br/live/{id}/playlist.m3u8",
+    "flvUrl": "http://nuvem.safecameras.com.br/live/{id}.live.flv",
+    "wsUrl": "ws://nuvem.safecameras.com.br/live/{id}.live.flv",
+    "thumbnailUrl": "http://nuvem.safecameras.com.br/live/{id}.live.jpg",
+    "directHlsUrl": "http://nuvem.safecameras.com.br/live/{id}/hls.m3u8"
+  },
+  "backend": {
+    "baseUrl": "http://nuvem.safecameras.com.br/api"
+  },
+  "timestamp": "2025-08-13T16:25:00.000Z"
+}
