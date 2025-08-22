@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Search, Plus, Edit, Trash2, Shield, Eye, EyeOff, UserCheck, UserX, Settings, Filter, Download } from 'lucide-react';
+import { Search, Plus, Edit, Trash2, Shield, Eye, EyeOff, UserCheck, UserX, Settings, Filter } from 'lucide-react';
 import { toast } from 'sonner';
 import { api, endpoints } from '@/lib/api';
 
@@ -18,11 +18,10 @@ interface User {
   approved_by?: string;
   suspended_at?: string;
   suspended_by?: string;
-  permissions: string[];
-  camera_access: string[];
+  permissions: string[] | { all: boolean };
+  camera_access: string[] | { all: boolean };
   login_attempts?: number;
   last_ip?: string;
-  two_factor_enabled: boolean;
 }
 
 interface UsersResponse {
@@ -36,7 +35,9 @@ interface UsersResponse {
 }
 
 interface CamerasResponse {
-  cameras: Camera[];
+  message: string;
+  data: Camera[];
+  pagination?: any;
 }
 
 interface UserFormData {
@@ -48,13 +49,14 @@ interface UserFormData {
   status: 'pending' | 'active' | 'inactive' | 'suspended';
   permissions: string[];
   camera_access: string[];
-  two_factor_enabled: boolean;
 }
 
 interface Camera {
   id: string;
   name: string;
-  location: string;
+  location?: string;
+  description?: string;
+  status: string;
 }
 
 const AVAILABLE_PERMISSIONS = [
@@ -105,8 +107,7 @@ const Users: React.FC = () => {
     role: 'viewer',
     status: 'pending',
     permissions: [],
-    camera_access: [],
-    two_factor_enabled: false
+    camera_access: []
   });
   
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
@@ -147,8 +148,7 @@ const Users: React.FC = () => {
       role: 'viewer',
       status: 'pending',
       permissions: [],
-      camera_access: [],
-      two_factor_enabled: false
+      camera_access: []
     });
     setFormErrors({});
     setEditingUser(null);
@@ -158,7 +158,7 @@ const Users: React.FC = () => {
   const loadCameras = useCallback(async () => {
     try {
       const data = await api.get<CamerasResponse>(endpoints.cameras.getAll());
-      setCameras(data.cameras || []);
+      setCameras(data.data || []);
     } catch (error) {
       console.error('Erro ao carregar câmeras:', error);
     }
@@ -282,18 +282,27 @@ const Users: React.FC = () => {
   // Abrir modal de edição
   const handleEditUser = useCallback((user: User) => {
     setEditingUser(user);
+    
+    // Garantir que camera_access seja sempre um array
+    let cameraAccess = [];
+    if (Array.isArray(user.camera_access)) {
+      cameraAccess = user.camera_access;
+    } else if (user.camera_access && typeof user.camera_access === 'object' && user.camera_access.all) {
+      // Se tem acesso a todas as câmeras, carregar todas as IDs disponíveis
+      cameraAccess = cameras.map(camera => camera.id);
+    }
+    
     setFormData({
       username: user.username,
       email: user.email,
       full_name: user.full_name,
       role: user.role,
       status: user.status, // Manter status original
-      permissions: user.permissions,
-      camera_access: user.camera_access,
-      two_factor_enabled: user.two_factor_enabled
+      permissions: Array.isArray(user.permissions) ? user.permissions : [],
+      camera_access: cameraAccess
     });
     setShowUserModal(true);
-  }, []);
+  }, [cameras]);
   
   // Atualizar permissões baseado no role
   const handleRoleChange = useCallback((role: 'admin' | 'integrator' | 'operator' | 'client' | 'viewer') => {
@@ -353,25 +362,6 @@ const Users: React.FC = () => {
   }, [loadUsers]);
   
   // Exportar usuários
-  const handleExportUsers = useCallback(async () => {
-    try {
-      const response = await api.download(endpoints.users.export());
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `usuarios_${new Date().toISOString().split('T')[0]}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
-      
-      toast.success('Exportação concluída');
-    } catch (error) {
-      console.error('Erro na exportação:', error);
-      toast.error('Erro ao exportar usuários');
-    }
-  }, []);
   
   // Effects
   useEffect(() => {
@@ -427,14 +417,6 @@ const Users: React.FC = () => {
             >
               <Filter className="w-4 h-4" />
               <span>Filtros</span>
-            </button>
-            
-            <button
-              onClick={handleExportUsers}
-              className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
-            >
-              <Download className="w-4 h-4" />
-              <span>Exportar</span>
             </button>
             
             <button
@@ -532,9 +514,6 @@ const Users: React.FC = () => {
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Último Login
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      2FA
-                    </th>
                     <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Ações
                     </th>
@@ -579,13 +558,6 @@ const Users: React.FC = () => {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {user.last_login ? new Date(user.last_login).toLocaleString() : 'Nunca'}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        {user.two_factor_enabled ? (
-                          <span className="text-green-600">✓</span>
-                        ) : (
-                          <span className="text-gray-400">✗</span>
-                        )}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                         <div className="flex items-center justify-end space-x-2">
@@ -831,39 +803,28 @@ const Users: React.FC = () => {
                       <label key={camera.id} className="flex items-center space-x-2 py-1">
                         <input
                           type="checkbox"
-                          checked={formData.camera_access.includes(camera.id)}
+                          checked={Array.isArray(formData.camera_access) && formData.camera_access.includes(camera.id)}
                           onChange={(e) => {
                             if (e.target.checked) {
                               setFormData(prev => ({
                                 ...prev,
-                                camera_access: [...prev.camera_access, camera.id]
+                                camera_access: [...(Array.isArray(prev.camera_access) ? prev.camera_access : []), camera.id]
                               }));
                             } else {
                               setFormData(prev => ({
                                 ...prev,
-                                camera_access: prev.camera_access.filter(id => id !== camera.id)
+                                camera_access: Array.isArray(prev.camera_access) ? prev.camera_access.filter(id => id !== camera.id) : []
                               }));
                             }
                           }}
                           className="w-4 h-4 text-primary-600 bg-gray-100 border-gray-300 rounded focus:ring-primary-500"
                         />
-                        <span className="text-sm">{camera.name} - {camera.location}</span>
+                        <span className="text-sm">{camera.name}{camera.location ? ` - ${camera.location}` : ''}</span>
                       </label>
                     ))}
                   </div>
                 </div>
                 
-                <div>
-                  <label className="flex items-center space-x-2">
-                    <input
-                      type="checkbox"
-                      checked={formData.two_factor_enabled}
-                      onChange={(e) => setFormData(prev => ({ ...prev, two_factor_enabled: e.target.checked }))}
-                      className="w-4 h-4 text-primary-600 bg-gray-100 border-gray-300 rounded focus:ring-primary-500"
-                    />
-                    <span className="text-sm font-medium text-gray-700">Habilitar autenticação de dois fatores</span>
-                  </label>
-                </div>
                 
                 <div className="flex items-center justify-end space-x-3 pt-4">
                   <button

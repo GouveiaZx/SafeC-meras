@@ -1375,6 +1375,48 @@ router.post('/:id/segments/:segmentId/retry-upload',
 );
 
 /**
+ * @route GET /api/recordings/:id/segments
+ * @desc Buscar segmentos de uma gravação
+ * @access Private
+ */
+router.get('/:id/segments',
+  async (req, res) => {
+    try {
+      const userId = req.user.id;
+      const { id: recordingId } = req.params;
+      
+      const recording = await RecordingService.getRecordingById(recordingId, userId);
+      
+      if (!recording) {
+        return res.status(404).json({
+          success: false,
+          message: 'Gravação não encontrada'
+        });
+      }
+      
+      const segments = await RecordingService.getRecordingSegments(
+        recordingId, 
+        recording.camera_id, 
+        recording.filename
+      );
+      
+      res.json({
+        success: true,
+        data: segments
+      });
+      
+    } catch (error) {
+      logger.error('Erro ao buscar segmentos da gravação:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Erro interno do servidor',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+  }
+);
+
+/**
  * @route GET /api/recordings/upload-queue
  * @desc Obter informações da fila de upload
  * @access Private

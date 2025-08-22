@@ -271,12 +271,19 @@ const RecordingPlayer: React.FC<RecordingPlayerProps> = ({
 
         {/* Recording Details */}
         <div className="p-6 border-t border-gray-200 bg-gray-50">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+          <div className="grid grid-cols-2 gap-6">
             <div className="flex items-center space-x-3">
               <Clock className="w-5 h-5 text-primary-600" />
               <div>
                 <p className="text-sm text-gray-500">Duração</p>
-                <p className="font-medium text-gray-900">{formatDuration(recording.duration)}</p>
+                <p className="font-medium text-gray-900">
+                  {recording.duration && recording.duration > 0 ? 
+                    formatDuration(recording.duration) :
+                    recording.end_time && recording.start_time ? 
+                      formatDuration(Math.floor((new Date(recording.end_time).getTime() - new Date(recording.start_time).getTime()) / 1000)) :
+                      '--'
+                  }
+                </p>
               </div>
             </div>
             
@@ -284,23 +291,10 @@ const RecordingPlayer: React.FC<RecordingPlayerProps> = ({
               <HardDrive className="w-5 h-5 text-primary-600" />
               <div>
                 <p className="text-sm text-gray-500">Tamanho</p>
-                <p className="font-medium text-gray-900">{formatBytes(recording.size)}</p>
-              </div>
-            </div>
-            
-            <div className="flex items-center space-x-3">
-              <Monitor className="w-5 h-5 text-primary-600" />
-              <div>
-                <p className="text-sm text-gray-500">Resolução</p>
-                <p className="font-medium text-gray-900">{recording.metadata?.resolution || 'N/A'}</p>
-              </div>
-            </div>
-            
-            <div className="flex items-center space-x-3">
-              <Play className="w-5 h-5 text-primary-600" />
-              <div>
-                <p className="text-sm text-gray-500">FPS</p>
-                <p className="font-medium text-gray-900">{recording.metadata?.fps || 'N/A'}</p>
+                <p className="font-medium text-gray-900">
+                  {recording.file_size && recording.file_size > 0 ? formatBytes(recording.file_size) : 
+                   recording.size && recording.size > 0 ? formatBytes(recording.size) : '--'}
+                </p>
               </div>
             </div>
           </div>

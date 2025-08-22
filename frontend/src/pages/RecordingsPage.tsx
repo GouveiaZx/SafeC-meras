@@ -23,7 +23,15 @@ import RecordingPlayer from '@/components/RecordingPlayer';
 import { buildAuthenticatedVideoUrl } from '@/utils/videoUrl';
 import { useAuth } from '@/contexts/AuthContext';
 
+interface Camera {
+  id: string;
+  name: string;
+  status: string;
+}
 
+interface CamerasResponse {
+  data: Camera[];
+}
 
 interface StatsResponse {
   data: RecordingStats;
@@ -115,6 +123,7 @@ interface RecordingStats {
 const RecordingsPage: React.FC = () => {
   
   const [recordings, setRecordings] = useState<Recording[]>([]);
+  const [cameras, setCameras] = useState<Camera[]>([]);
   const [stats, setStats] = useState<RecordingStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [, setError] = useState<string | null>(null);
@@ -155,6 +164,41 @@ const RecordingsPage: React.FC = () => {
     }
   }, []);
 
+  const loadCameras = useCallback(async () => {
+    try {
+      const response = await api.get<CamerasResponse>(endpoints.cameras.getAll());
+      const camerasData = response.data || [];
+      setCameras(camerasData);
+    } catch (err) {
+      console.error('Erro ao carregar câmeras:', err);
+      setCameras([]);
+    }
+  }, []);
+
+  const fetchRecordingSegments = useCallback(async (recordingId: string): Promise<RecordingSegment[]> => {
+    try {
+      const data = await api.get<{success: boolean; data: any[]}>(endpoints.recordings.getSegments(recordingId));
+      if (data.success && Array.isArray(data.data)) {
+        return data.data.map((segment: any) => ({
+          id: segment.id,
+          filename: segment.filename,
+          startTime: segment.start_time,
+          endTime: segment.end_time,
+          duration: segment.duration || 0,
+          size: segment.file_size || 0,
+          status: segment.status,
+          localPath: segment.file_path,
+          s3Url: segment.s3_url,
+          uploadAttempts: segment.upload_attempts || 0
+        }));
+      }
+      return [];
+    } catch (error) {
+      console.error('Erro ao buscar segmentos da gravação:', error);
+      return [];
+    }
+  }, []);
+
   const fetchRecordings = useCallback(async () => {
     try {
       // Montar parâmetros como objeto para usar com api.get
@@ -176,26 +220,46 @@ const RecordingsPage: React.FC = () => {
       // A API retorna { success: true, data: [...], pagination: {...} }
       if (data.success && Array.isArray(data.data)) {
         // Mapear os dados da API para o formato esperado pelo frontend
-        const mappedRecordings = data.data.map((recording: RecordingApiResponse) => ({
-          id: recording.id,
-          cameraId: recording.camera_id,
-          cameraName: recording.camera_name || 'Câmera desconhecida',
-          filename: recording.filename,
-          startTime: recording.start_time,
-          endTime: recording.end_time,
-          duration: recording.duration || 0,
-          size: recording.file_size || 0,
-          status: recording.status,
-          localPath: recording.file_path,
-          s3Url: recording.s3_url,
-          segments: [], // Por enquanto vazio, pode ser implementado depois
-          metadata: {
-            resolution: recording.resolution || 'N/A',
-            fps: recording.fps || 0,
-            codec: recording.codec || 'N/A',
-            bitrate: recording.bitrate || 0
-          }
-        }));
+        const mappedRecordings = await Promise.all(
+          data.data.map(async (recording: RecordingApiResponse) => {
+            // Calcular duração se não estiver disponível
+            let duration = recording.duration || 0;
+            if (!duration && recording.start_time && recording.end_time) {
+              const startTime = new Date(recording.start_time);
+              const endTime = new Date(recording.end_time);
+              duration = Math.round((endTime.getTime() - startTime.getTime()) / 1000);
+            }
+            
+            // Extrair nome da câmera corretamente
+            const cameraName = recording.camera_name || 
+                              recording.cameras?.name || 
+                              `Câmera ${recording.camera_id?.substring(0, 8) || 'Desconhecida'}`;
+            
+            // Buscar segmentos da gravação
+            const segments = await fetchRecordingSegments(recording.id);
+            
+            return {
+              id: recording.id,
+              cameraId: recording.camera_id,
+              cameraName: cameraName,
+              filename: recording.filename,
+              startTime: recording.start_time,
+              endTime: recording.end_time,
+              duration: duration,
+              size: recording.file_size || 0,
+              status: recording.status,
+              localPath: recording.file_path,
+              s3Url: recording.s3_url,
+              segments: segments,
+              metadata: {
+                resolution: recording.resolution || 'N/A',
+                fps: recording.fps || 0,
+                codec: recording.codec || 'h264',
+                bitrate: recording.bitrate || 0
+              }
+            };
+          })
+        );
         
         setRecordings(mappedRecordings);
       } else {
@@ -206,7 +270,7 @@ const RecordingsPage: React.FC = () => {
       console.error('Erro ao buscar gravações:', err);
       setError(err instanceof Error ? err.message : 'Erro desconhecido');
     }
-  }, [selectedCamera, selectedStatus, searchTerm, dateRange]);
+  }, [selectedCamera, selectedStatus, searchTerm, dateRange, fetchRecordingSegments]);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -280,6 +344,10 @@ const RecordingsPage: React.FC = () => {
   useEffect(() => {
     handleRefresh();
   }, [selectedCamera, selectedStatus, searchTerm, dateRange, handleRefresh]);
+
+  useEffect(() => {
+    loadCameras();
+  }, [loadCameras]);
 
 
 
@@ -476,9 +544,11 @@ const RecordingsPage: React.FC = () => {
             className="px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-transparent"
           >
             <option value="all">Todas as câmeras</option>
-            <option value="cam-001">CAM-001</option>
-            <option value="cam-002">CAM-002</option>
-            <option value="cam-003">CAM-003</option>
+            {cameras.map((camera) => (
+              <option key={camera.id} value={camera.id}>
+                {camera.name}
+              </option>
+            ))}
           </select>
           
           <select
@@ -603,63 +673,26 @@ const RecordingsPage: React.FC = () => {
                     </div>
                   </div>
                   
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                  <div className="grid grid-cols-2 gap-4 text-sm">
                     <div>
                       <span className="text-gray-600">Duração:</span>
                       <p className="font-medium">
-                        {recording.duration && recording.duration > 0 
-                          ? formatDuration(recording.duration) 
-                          : recording.startTime && recording.endTime 
-                            ? formatDuration(Math.round((new Date(recording.endTime).getTime() - new Date(recording.startTime).getTime()) / 1000))
-                            : 'Calculando...'
+                        {recording.duration && recording.duration > 0 ? 
+                          formatDuration(recording.duration) :
+                          recording.end_time && recording.start_time ? 
+                            formatDuration(Math.floor((new Date(recording.end_time).getTime() - new Date(recording.start_time).getTime()) / 1000)) :
+                            '--'
                         }
                       </p>
                     </div>
                     <div>
                       <span className="text-gray-600">Tamanho:</span>
-                      <p className="font-medium">{formatBytes(recording.size)}</p>
-                    </div>
-                    <div>
-                      <span className="text-gray-600">Resolução:</span>
-                      <p className="font-medium">{recording.metadata?.resolution || 'N/A'}</p>
-                    </div>
-                    <div>
-                      <span className="text-gray-600">Segmentos:</span>
-                      <p className="font-medium">{recording.segments?.length || 0}</p>
+                      <p className="font-medium">
+                        {recording.file_size && recording.file_size > 0 ? formatBytes(recording.file_size) : 
+                         recording.size && recording.size > 0 ? formatBytes(recording.size) : '--'}
+                      </p>
                     </div>
                   </div>
-                  
-                  {recording.segments?.length > 0 && (
-                    <div className="mt-4 pt-4 border-t border-gray-200">
-                      <h5 className="text-sm font-medium mb-2">Segmentos:</h5>
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-                        {recording.segments?.map((segment: {id: string; filename: string; size: number; duration: number; status: string; uploadStatus?: string}) => (
-                          <div key={segment.id} className="flex items-center justify-between p-2 bg-gray-50 rounded">
-                            <div className="flex-1">
-                              <p className="text-xs font-medium">{segment.filename}</p>
-                              <p className="text-xs text-gray-600">
-                                {formatBytes(segment.size)} • {formatDuration(segment.duration)}
-                              </p>
-                            </div>
-                            <div className="flex items-center space-x-1">
-                              {getStorageIcon(segment)}
-                              {getStatusBadge(segment.status, segment.uploadStatus)}
-                              {(segment.status === 'failed' || segment.uploadStatus === 'failed') && (
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  onClick={() => handleRetryUpload(recording.id, segment.id)}
-                                  title="Tentar novamente o upload"
-                                >
-                                  <RefreshCw className="w-3 h-3" />
-                                </Button>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
                 </div>
               ))}
             </div>

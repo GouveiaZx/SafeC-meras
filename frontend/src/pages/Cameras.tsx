@@ -9,7 +9,8 @@ import AuthenticatedVideoPlayer from '../components/AuthenticatedVideoPlayer';
 interface CameraData {
   id: string;
   name: string;
-  rtsp_url: string;
+  rtsp_url?: string;
+  rtmp_url?: string;
   location?: string;
   status: 'online' | 'offline' | 'error';
   recording_enabled?: boolean;
@@ -98,13 +99,18 @@ const Cameras = ({ token }) => {
 
   const handleOpenSettings = (camera: CameraData) => {
     setSelectedCameraForSettings(camera);
+    
+    // Detectar tipo de stream baseado nos campos preenchidos
+    const isRtmp = camera.rtmp_url && !camera.rtsp_url;
+    const streamType = isRtmp ? 'rtmp' : 'rtsp';
+    
     setFormData({
       name: camera.name,
       ip_address: '', // Não temos IP no modelo atual
-      rtsp_url: camera.rtsp_url,
-      rtmp_url: '',
+      rtsp_url: camera.rtsp_url || '',
+      rtmp_url: camera.rtmp_url || '',
       location: camera.location || '',
-      stream_type: 'rtsp',
+      stream_type: streamType,
       type: 'ip', // Campo obrigatório para validação do backend
       recording_enabled: camera.recording_enabled || false,
       quality_profile: camera.quality_profile || 'medium',
@@ -121,7 +127,8 @@ const Cameras = ({ token }) => {
     try {
       await api.put(endpoints.cameras.update(selectedCameraForSettings.id), {
         name: formData.name,
-        rtsp_url: formData.rtsp_url,
+        rtsp_url: formData.rtsp_url || null,
+        rtmp_url: formData.rtmp_url || null,
         location: formData.location,
         recording_enabled: formData.recording_enabled,
         quality_profile: formData.quality_profile,
@@ -1363,6 +1370,13 @@ const Cameras = ({ token }) => {
             
             <form onSubmit={handleUpdateCamera} className="p-6">
               <div className="space-y-4">
+                {/* Tipo de câmera (apenas informativo) */}
+                <div className="bg-gray-50 p-3 rounded-md">
+                  <p className="text-sm font-medium text-gray-700">
+                    Tipo: <span className="text-primary-600">{formData.stream_type === 'rtsp' ? 'RTSP' : 'RTMP'}</span>
+                  </p>
+                </div>
+                
                 <div>
                   <label htmlFor="edit-name" className="block text-sm font-medium text-gray-700 mb-1">
                     Nome da Câmera *
@@ -1379,21 +1393,40 @@ const Cameras = ({ token }) => {
                   />
                 </div>
                 
-                <div>
-                  <label htmlFor="edit-rtsp_url" className="block text-sm font-medium text-gray-700 mb-1">
-                    URL RTSP *
-                  </label>
-                  <input
-                    type="text"
-                    id="edit-rtsp_url"
-                    name="rtsp_url"
-                    value={formData.rtsp_url}
-                    onChange={handleInputChange}
-                    required
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    placeholder="rtsp://usuario:senha@192.168.1.100:554/stream"
-                  />
-                </div>
+                {/* Campo de URL baseado no tipo de stream */}
+                {formData.stream_type === 'rtsp' ? (
+                  <div>
+                    <label htmlFor="edit-rtsp_url" className="block text-sm font-medium text-gray-700 mb-1">
+                      URL RTSP *
+                    </label>
+                    <input
+                      type="text"
+                      id="edit-rtsp_url"
+                      name="rtsp_url"
+                      value={formData.rtsp_url}
+                      onChange={handleInputChange}
+                      required
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      placeholder="rtsp://usuario:senha@192.168.1.100:554/stream"
+                    />
+                  </div>
+                ) : (
+                  <div>
+                    <label htmlFor="edit-rtmp_url" className="block text-sm font-medium text-gray-700 mb-1">
+                      URL RTMP *
+                    </label>
+                    <input
+                      type="text"
+                      id="edit-rtmp_url"
+                      name="rtmp_url"
+                      value={formData.rtmp_url}
+                      onChange={handleInputChange}
+                      required
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      placeholder="rtmp://servidor:porta/live/stream_key"
+                    />
+                  </div>
+                )}
                 
                 <div>
                   <label htmlFor="edit-location" className="block text-sm font-medium text-gray-700 mb-1">

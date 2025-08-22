@@ -268,6 +268,14 @@ function normalizePath(filePath) {
   // Converter separadores para Unix
   normalized = normalized.replace(/\\/g, '/');
   
+  // NOVA FUNCIONALIDADE: Remover ponto do início do filename se existir
+  const pathParts = normalized.split('/');
+  const filename = pathParts[pathParts.length - 1];
+  if (filename && filename.startsWith('.') && filename.endsWith('.mp4')) {
+    pathParts[pathParts.length - 1] = filename.substring(1); // Remove o ponto
+    normalized = pathParts.join('/');
+  }
+  
   // Remover prefixos absolutos e manter apenas relativo
   if (normalized.includes('storage/www/record/live')) {
     const index = normalized.indexOf('storage/www/record/live');
@@ -1185,34 +1193,6 @@ router.post('/on_record_mp4', async (req, res) => {
       file_to_process: file_name
     });
 
-    // Segundo, verificar se arquivo já foi processado com esse filename
-    const { data: existingRecording, error: queryError } = await supabaseAdmin
-      .from('recordings')
-      .select('id, status')
-      .eq('filename', file_name)
-      .eq('camera_id', cameraId)
-      .single();
-
-    logger.info('📊 RESULTADO DA CONSULTA DE DUPLICATAS POR FILENAME:', {
-      webhookId,
-      existing_found: !!existingRecording,
-      existing_data: existingRecording,
-      query_error: queryError,
-      query: { table: 'recordings', filename: file_name, camera_id: cameraId }
-    });
-
-    if (existingRecording) {
-      logger.warn('⚠️ PASSO 5 INTERROMPIDO: Gravação já existe no banco:', {
-        webhookId,
-        recordingId: existingRecording.id,
-        status: existingRecording.status,
-        file_name
-      });
-      processedRecordings.add(cacheKey);
-      return res.json({ code: 0, msg: 'already exists in database' });
-    }
-    logger.info('✅ PASSO 5 CONCLUÍDO: Nenhuma duplicata por filename encontrada', { webhookId });
-
     // Validar se arquivo físico existe - Busca robusta em múltiplos locais
     let fullFilePath = file_path;
     let fileInfo = null;
@@ -1229,6 +1209,41 @@ router.post('/on_record_mp4', async (req, res) => {
     if (!cleanFileName.endsWith('.mp4') && cleanFileName.length > 0) {
       cleanFileName = cleanFileName.replace(/\.[^/.]+$/, '') + '.mp4';
     }
+    
+    logger.info('🔧 FILENAME PROCESSADO:', {
+      'Original': file_name,
+      'Limpo': cleanFileName,
+      'Com ponto': cleanFileName.startsWith('.') ? 'SIM' : 'NÃO'
+    });
+
+    // Verificar se arquivo já foi processado com o filename LIMPO
+    const { data: existingRecording, error: queryError } = await supabaseAdmin
+      .from('recordings')
+      .select('id, status')
+      .eq('filename', cleanFileName)
+      .eq('camera_id', cameraId)
+      .single();
+
+    logger.info('📊 RESULTADO DA CONSULTA DE DUPLICATAS POR FILENAME LIMPO:', {
+      webhookId,
+      existing_found: !!existingRecording,
+      existing_data: existingRecording,
+      query_error: queryError,
+      query: { table: 'recordings', filename: cleanFileName, camera_id: cameraId }
+    });
+
+    if (existingRecording) {
+      logger.warn('⚠️ PASSO 5 INTERROMPIDO: Gravação já existe no banco:', {
+        webhookId,
+        recordingId: existingRecording.id,
+        status: existingRecording.status,
+        clean_file_name: cleanFileName,
+        original_file_name: file_name
+      });
+      processedRecordings.add(cacheKey);
+      return res.json({ code: 0, msg: 'already exists in database' });
+    }
+    logger.info('✅ PASSO 5 CONCLUÍDO: Nenhuma duplicata por filename encontrada', { webhookId });
     
     // Versões alternativas para busca abrangente
     const fileWithDot = '.' + cleanFileName;
@@ -1314,24 +1329,42 @@ router.post('/on_record_mp4', async (req, res) => {
     // Usar tamanho real do arquivo se não fornecido
     const actualFileSize = file_size || fileInfo.size;
 
-    // CORREÇÃO: Calcular duração usando ffprobe se não fornecida
+    // CORREÇÃO: Calcular duração e metadados usando ffprobe se não fornecida
     let actualDuration = duration;
+    let videoMetadata = {
+      resolution: null,
+      fps: null,
+      codec: 'h264',
+      bitrate: null,
+      width: null,
+      height: null
+    };
+
     if (!actualDuration || actualDuration === 0) {
       try {
         const { spawn } = await import('child_process');
+        
+        // Tentar ffprobe via Docker primeiro (mais confiável)
+        const dockerPath = fullFilePath.replace(/\\/g, '/').replace('storage/', '/opt/media/bin/');
+        
         const ffprobeResult = await new Promise((resolve, reject) => {
-          const ffprobe = spawn('ffprobe', [
+          const ffprobe = spawn('docker', [
+            'exec', 'newcam-zlmediakit', 'ffprobe',
             '-v', 'quiet',
-            '-show_entries', 'format=duration',
-            '-of', 'csv=p=0',
-            fullFilePath
+            '-show_entries', 'format=duration:stream=width,height,r_frame_rate,codec_name,bit_rate',
+            '-of', 'json',
+            dockerPath
           ]);
           
           let output = '';
           ffprobe.stdout.on('data', (data) => output += data);
           ffprobe.on('close', (code) => {
             if (code === 0 && output.trim()) {
-              resolve(parseFloat(output.trim()));
+              try {
+                resolve(JSON.parse(output.trim()));
+              } catch (e) {
+                resolve(null);
+              }
             } else {
               resolve(null);
             }
@@ -1339,12 +1372,53 @@ router.post('/on_record_mp4', async (req, res) => {
           ffprobe.on('error', () => resolve(null));
         });
         
-        if (ffprobeResult && ffprobeResult > 0) {
-          actualDuration = Math.round(ffprobeResult);
-          logger.info('✅ Duração calculada via ffprobe:', { duration: actualDuration });
+        if (ffprobeResult) {
+          // Extrair duração
+          if (ffprobeResult.format?.duration) {
+            actualDuration = Math.round(parseFloat(ffprobeResult.format.duration));
+          }
+          
+          // Extrair metadados do stream de vídeo
+          const videoStream = ffprobeResult.streams?.find(s => s.codec_type === 'video');
+          if (videoStream) {
+            videoMetadata.width = videoStream.width;
+            videoMetadata.height = videoStream.height;
+            videoMetadata.resolution = `${videoStream.width}x${videoStream.height}`;
+            
+            // Mapear codec para valores permitidos
+            const codecName = videoStream.codec_name?.toLowerCase();
+            if (codecName === 'hevc' || codecName === 'h265') {
+              videoMetadata.codec = 'h265';
+            } else if (codecName === 'mjpeg') {
+              videoMetadata.codec = 'mjpeg';
+            } else {
+              videoMetadata.codec = 'h264'; // Default
+            }
+            
+            // Calcular FPS
+            if (videoStream.r_frame_rate) {
+              const [num, den] = videoStream.r_frame_rate.split('/').map(Number);
+              if (den && den !== 0) {
+                videoMetadata.fps = Math.round(num / den);
+              }
+            }
+            
+            // Bitrate
+            if (videoStream.bit_rate) {
+              videoMetadata.bitrate = Math.round(parseInt(videoStream.bit_rate) / 1000); // kbps
+            }
+          }
+          
+          logger.info('✅ Metadados calculados via ffprobe:', { 
+            duration: actualDuration,
+            resolution: videoMetadata.resolution,
+            fps: videoMetadata.fps,
+            codec: videoMetadata.codec,
+            bitrate: videoMetadata.bitrate
+          });
         }
       } catch (error) {
-        logger.warn('⚠️ Erro ao calcular duração via ffprobe:', error.message);
+        logger.warn('⚠️ Erro ao calcular metadados via ffprobe:', error.message);
       }
     }
 
@@ -1364,12 +1438,21 @@ router.post('/on_record_mp4', async (req, res) => {
     const { default: RecordingService } = await import('../services/RecordingService.js');
     const { default: UploadQueueService } = await import('../services/UploadQueueService.js');
 
-    // Normalizar paths antes de salvar
-    const normalizedPath = normalizePath(fullFilePath);
+    // Normalizar paths antes de salvar - USANDO FILENAME LIMPO
+    let normalizedPath = normalizePath(fullFilePath);
+    
+    // CORREÇÃO CRÍTICA: Substituir filename no path pelo filename limpo (sem ponto)
+    if (normalizedPath && cleanFileName) {
+      const pathParts = normalizedPath.split('/');
+      pathParts[pathParts.length - 1] = cleanFileName; // Substituir último elemento (filename)
+      normalizedPath = pathParts.join('/');
+    }
     
     logger.info('🔧 Path normalizado:', {
       original: fullFilePath,
-      normalized: normalizedPath
+      cleanFilename: cleanFileName,
+      normalized: normalizedPath,
+      pathFixed: 'filename substituído por versão limpa'
     });
 
     // PASSO 6: ATUALIZAR REGISTRO ATIVO OU CRIAR NOVO (CORREÇÃO PRINCIPAL)
@@ -1397,9 +1480,14 @@ router.post('/on_record_mp4', async (req, res) => {
         // NÃO marcar como ended_at ainda - gravação pode continuar
         // ended_at: new Date().toISOString(),
         status: 'recording', // CORREÇÃO: Manter como 'recording' - só completar quando parar explicitamente
-        quality: 'medium',
-        codec: 'h264',
+        quality: videoMetadata.bitrate > 2000 ? 'high' : videoMetadata.bitrate > 1000 ? 'medium' : 'low',
+        codec: videoMetadata.codec || 'h264',
         format: 'mp4',
+        resolution: videoMetadata.resolution,
+        width: videoMetadata.width,
+        height: videoMetadata.height,
+        fps: videoMetadata.fps,
+        bitrate: videoMetadata.bitrate,
         metadata: {
           ...activeRecording.metadata,
           stream_name: stream,
@@ -1455,9 +1543,14 @@ router.post('/on_record_mp4', async (req, res) => {
         // NÃO marcar como ended_at ainda - pode ser arquivo temporário
         // ended_at: new Date().toISOString(),
         status: 'recording', // CORREÇÃO: Manter como 'recording' - só completar quando parar explicitamente
-        quality: 'medium',
-        codec: 'h264',
+        quality: videoMetadata.bitrate > 2000 ? 'high' : videoMetadata.bitrate > 1000 ? 'medium' : 'low',
+        codec: videoMetadata.codec || 'h264',
         format: 'mp4',
+        resolution: videoMetadata.resolution,
+        width: videoMetadata.width,
+        height: videoMetadata.height,
+        fps: videoMetadata.fps,
+        bitrate: videoMetadata.bitrate,
         metadata: {
           stream_name: stream,
           hook_id: hookId,

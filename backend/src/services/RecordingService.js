@@ -129,14 +129,13 @@ class RecordingService {
     const filename = recording.filename || (recording.file_path ? path.basename(recording.file_path) : null);
     this.logger.info(`📁 [FIND] Filename extraído: ${filename}`);
     if (filename) {
-      // Buscar tanto na raiz quanto em diretórios processados
-      const projectRoot = path.join(process.cwd(), '..');
-      const processedPath = path.join(projectRoot, 'storage', 'www', 'record', 'live', 'processed', filename);
+      // Buscar no diretório processed atual
+      const processedPath = path.join(process.cwd(), 'storage', 'www', 'record', 'live', 'processed', filename);
       this.logger.info(`📁 [FIND] Adicionado path processed: ${processedPath}`);
       searchPaths.push(processedPath);
       
       // Também buscar em storage/www/record/live/ direto
-      const directPath = path.join(projectRoot, 'storage', 'www', 'record', 'live', filename);
+      const directPath = path.join(process.cwd(), 'storage', 'www', 'record', 'live', filename);
       searchPaths.push(directPath);
     }
     
@@ -144,13 +143,12 @@ class RecordingService {
     if (recording.camera_id && !filename) {
       const today = new Date().toISOString().split('T')[0];
       const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-      const projectRoot = path.join(process.cwd(), '..');
       
       // Buscar arquivos MP4 recentes para esta câmera
       const cameraPaths = [
-        path.join(projectRoot, 'storage', 'www', 'record', 'live', recording.camera_id, today),
-        path.join(projectRoot, 'storage', 'www', 'record', 'live', recording.camera_id, yesterday),
-        path.join(projectRoot, 'storage', 'www', 'record', 'live', 'processed'),
+        path.join(process.cwd(), 'storage', 'www', 'record', 'live', recording.camera_id, today),
+        path.join(process.cwd(), 'storage', 'www', 'record', 'live', recording.camera_id, yesterday),
+        path.join(process.cwd(), 'storage', 'www', 'record', 'live', 'processed'),
       ];
       
       for (const cameraPath of cameraPaths) {
@@ -555,6 +553,11 @@ class RecordingService {
           event_type: recording.event_type || 'automatic',
           format: recording.format || 'mp4',
           codec: recording.codec || 'h264',
+          resolution: recording.resolution || null,
+          width: recording.width || null,
+          height: recording.height || null,
+          fps: recording.fps || null,
+          bitrate: recording.bitrate || null,
           thumbnail_url: recording.thumbnail_url || null,
           download_url: `http://localhost:3002/api/recording-files/${recording.id}/download`,
           stream_url: `http://localhost:3002/api/recording-files/${recording.id}/play`,
@@ -563,7 +566,16 @@ class RecordingService {
           file_valid: hasValidFile && hasValidSize,
           playable: hasValidFile && (recording.status === 'completed' || recording.status === 'uploaded'),
           cameras: camera, // Manter compatibilidade com frontend
-          metadata: recording.metadata || {}
+          segments: [], // Will be populated separately if needed
+          metadata: {
+            ...recording.metadata || {},
+            resolution: recording.resolution || 'N/A',
+            fps: recording.fps || 0,
+            codec: recording.codec || 'h264',
+            bitrate: recording.bitrate || 0,
+            width: recording.width || null,
+            height: recording.height || null
+          }
         };
       });
 
@@ -596,19 +608,56 @@ class RecordingService {
         throw new Error('Gravação não encontrada');
       }
 
-      // Tentar deletar arquivo físico
-      if (recording.file_path || recording.local_path) {
-        const filePath = recording.file_path || recording.local_path;
-        const absolutePath = this.resolveAbsolutePath(filePath);
+      this.logger.info(`🗑️ [DELETE] Iniciando exclusão da gravação ${recordingId}:`, {
+        filename: recording.filename,
+        file_path: recording.file_path,
+        local_path: recording.local_path,
+        camera_id: recording.camera_id
+      });
+
+      // Buscar arquivo físico usando o método findRecordingFile
+      let fileDeleted = false;
+      let deletedPath = null;
+
+      try {
+        const foundPath = await this.findRecordingFile(recording);
         
-        if (absolutePath) {
-          try {
-            await fs.unlink(absolutePath);
-            this.logger.info(`🗑️ Arquivo deletado: ${absolutePath}`);
-          } catch (error) {
-            this.logger.warn(`⚠️ Erro ao deletar arquivo: ${error.message}`);
+        if (foundPath) {
+          await fs.unlink(foundPath);
+          fileDeleted = true;
+          deletedPath = foundPath;
+          this.logger.info(`✅ [DELETE] Arquivo físico deletado: ${foundPath}`);
+        } else {
+          // Tentar deletar usando paths do banco como fallback
+          const pathsToTry = [
+            recording.file_path && this.resolveAbsolutePath(recording.file_path),
+            recording.local_path && this.resolveAbsolutePath(recording.local_path)
+          ].filter(Boolean);
+
+          for (const testPath of pathsToTry) {
+            try {
+              await fs.access(testPath);
+              await fs.unlink(testPath);
+              fileDeleted = true;
+              deletedPath = testPath;
+              this.logger.info(`✅ [DELETE] Arquivo físico deletado (fallback): ${testPath}`);
+              break;
+            } catch (error) {
+              this.logger.debug(`🔍 [DELETE] Arquivo não encontrado: ${testPath}`);
+            }
+          }
+
+          if (!fileDeleted) {
+            this.logger.warn(`⚠️ [DELETE] Arquivo físico não encontrado para gravação ${recordingId}`, {
+              filename: recording.filename,
+              searched_paths: pathsToTry,
+              note: 'Arquivo pode já ter sido deletado ou movido'
+            });
           }
         }
+      } catch (error) {
+        this.logger.error(`❌ [DELETE] Erro ao deletar arquivo físico:`, error);
+        // Continuar com a exclusão do banco mesmo se o arquivo não puder ser deletado
       }
 
       // Deletar registro do banco
@@ -618,14 +667,26 @@ class RecordingService {
         .eq('id', recordingId);
 
       if (error) {
+        this.logger.error(`❌ [DELETE] Erro ao deletar registro do banco:`, error);
         throw error;
       }
 
-      this.logger.info(`✅ Gravação deletada: ${recordingId}`);
-      return { success: true };
+      this.logger.info(`✅ [DELETE] Gravação completamente deletada:`, {
+        recordingId,
+        filename: recording.filename,
+        file_deleted: fileDeleted,
+        deleted_path: deletedPath,
+        database_deleted: true
+      });
+
+      return { 
+        success: true, 
+        file_deleted: fileDeleted, 
+        deleted_path: deletedPath 
+      };
 
     } catch (error) {
-      this.logger.error(`Erro ao deletar gravação ${recordingId}:`, error);
+      this.logger.error(`❌ [DELETE] Erro ao deletar gravação ${recordingId}:`, error);
       throw error;
     }
   }
@@ -941,6 +1002,92 @@ class RecordingService {
     }, 5 * 60 * 1000); // 5 minutos
 
     this.logger.info('[RecordingService] Verificador de timeout iniciado (5min)');
+  }
+
+  /**
+   * Buscar segmentos de uma gravação (arquivos relacionados)
+   */
+  async getRecordingSegments(recordingId, cameraId, filename) {
+    try {
+      if (!cameraId || !filename) {
+        this.logger.warn(`⚠️ getRecordingSegments: parametros faltando`, { recordingId, cameraId, filename });
+        return [];
+      }
+
+      // Limpar filename se começar com ponto
+      let cleanFilename = filename;
+      if (cleanFilename.startsWith('.')) {
+        cleanFilename = cleanFilename.substring(1);
+      }
+
+      // Buscar outros arquivos da mesma câmera no mesmo período
+      const baseFilename = cleanFilename.replace(/\.\w+$/, ''); // Remove extensão
+      const timePattern = baseFilename.match(/(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})/);
+      
+      if (!timePattern) {
+        this.logger.warn(`⚠️ getRecordingSegments: padrão de tempo não encontrado no filename`, { filename, cleanFilename, baseFilename });
+        return [];
+      }
+
+      const timePrefix = timePattern[1];
+      
+      this.logger.info(`🔍 Buscando segmentos relacionados:`, {
+        recordingId,
+        cameraId,
+        originalFilename: filename,
+        cleanFilename,
+        timePrefix,
+        searchPattern: `${timePrefix}%`
+      });
+      
+      // Buscar gravações relacionadas no banco - incluir variações com/sem ponto
+      const { data: relatedRecordings, error } = await this.supabase
+        .from('recordings')
+        .select('id, filename, file_size, duration, file_path, status, created_at')
+        .eq('camera_id', cameraId)
+        .or(`filename.ilike.${timePrefix}%,filename.ilike..${timePrefix}%`)
+        .order('filename');
+
+      if (error) {
+        this.logger.error(`❌ Erro ao buscar gravações relacionadas:`, error);
+        return [];
+      }
+
+      if (!relatedRecordings || relatedRecordings.length === 0) {
+        this.logger.warn(`⚠️ Nenhuma gravação relacionada encontrada:`, {
+          recordingId,
+          cameraId,
+          timePrefix,
+          searchAttempted: `${timePrefix}% OR .${timePrefix}%`
+        });
+        return [];
+      }
+
+      this.logger.info(`✅ Encontradas ${relatedRecordings.length} gravações relacionadas:`, {
+        recordings: relatedRecordings.map(r => ({
+          id: r.id,
+          filename: r.filename,
+          status: r.status,
+          size: r.file_size
+        }))
+      });
+
+      // Formatar segmentos
+      return relatedRecordings.map((rec, index) => ({
+        id: rec.id,
+        filename: rec.filename || `segment-${index + 1}.mp4`,
+        size: rec.file_size || 0,
+        duration: rec.duration || 0,
+        status: rec.status || 'unknown',
+        uploadStatus: 'completed', // Simplificado por enquanto
+        path: rec.file_path,
+        created_at: rec.created_at
+      }));
+
+    } catch (error) {
+      this.logger.error(`❌ Erro ao buscar segmentos da gravação ${recordingId}:`, error);
+      return [];
+    }
   }
 
   /**

@@ -3,12 +3,10 @@ import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import {
-  Activity,
   Camera,
   Cpu,
   MemoryStick,
   XCircle,
-  RefreshCw,
   Video
 } from 'lucide-react';
 import MetricCard from '@/components/dashboard/MetricCard';
@@ -92,7 +90,6 @@ const Dashboard: React.FC = () => {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
   const [cpuHistoryData, setCpuHistoryData] = useState([]);
@@ -196,26 +193,11 @@ const Dashboard: React.FC = () => {
     }
   }, []);
 
-  const handleRefresh = useCallback(async () => {
+  useEffect(() => {
     setLoading(true);
-    await Promise.all([fetchMetrics(), fetchAlerts()]);
-    setLoading(false);
+    Promise.all([fetchMetrics(), fetchAlerts()]).finally(() => setLoading(false));
   }, [fetchMetrics, fetchAlerts]);
 
-  useEffect(() => {
-    handleRefresh();
-  }, [handleRefresh]);
-
-  useEffect(() => {
-    if (!autoRefresh) return;
-
-    const interval = setInterval(() => {
-      fetchMetrics();
-      fetchAlerts();
-    }, 5000);
-
-    return () => clearInterval(interval);
-  }, [autoRefresh, fetchMetrics, fetchAlerts]);
 
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return '0 B';
@@ -247,7 +229,7 @@ const Dashboard: React.FC = () => {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center">
-          <RefreshCw className="w-8 h-8 animate-spin mx-auto mb-4 text-primary-500" />
+          <div className="w-8 h-8 border-2 border-primary-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
           <p className="text-gray-600">Carregando métricas...</p>
         </div>
       </div>
@@ -260,10 +242,6 @@ const Dashboard: React.FC = () => {
         <div className="text-center">
           <XCircle className="w-8 h-8 mx-auto mb-4 text-red-500" />
           <p className="text-red-600 mb-4">{error}</p>
-          <Button onClick={handleRefresh} variant="outline">
-            <RefreshCw className="w-4 h-4 mr-2" />
-            Tentar Novamente
-          </Button>
         </div>
       </div>
     );
@@ -288,18 +266,6 @@ const Dashboard: React.FC = () => {
               {metrics?.isCollecting ? 'Coletando' : 'Parado'}
             </span>
           </div>
-          <Button
-            onClick={() => setAutoRefresh(!autoRefresh)}
-            variant={autoRefresh ? 'default' : 'outline'}
-            size="sm"
-          >
-            <Activity className="w-4 h-4 mr-2" />
-            Auto-refresh
-          </Button>
-          <Button onClick={handleRefresh} variant="outline" size="sm" disabled={loading}>
-            <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-            Atualizar
-          </Button>
         </div>
       </div>
 
@@ -404,7 +370,7 @@ const Dashboard: React.FC = () => {
         {/* Métricas de Sistema */}
         <Card className="p-6">
           <h3 className="text-lg font-semibold mb-4 flex items-center">
-            <Activity className="w-5 h-5 mr-2 text-primary-500" />
+            <Cpu className="w-5 h-5 mr-2 text-primary-500" />
             Sistema
           </h3>
           <div className="space-y-4">
@@ -435,7 +401,6 @@ const Dashboard: React.FC = () => {
         {lastUpdate && (
           <p>
             Última atualização: {lastUpdate.toLocaleTimeString('pt-BR')}
-            {autoRefresh && ' • Atualizando automaticamente a cada 5 segundos'}
           </p>
         )}
       </div>

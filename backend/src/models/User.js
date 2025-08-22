@@ -188,6 +188,7 @@ class User {
           .update({
             email: this.email,
             username: this.username,
+            name: this.full_name, // Campo name obrigatório
             full_name: this.full_name,
             role: this.role,
             permissions: this.permissions,
@@ -227,6 +228,7 @@ class User {
           .insert({
             email: this.email,
             username: this.username,
+            name: this.full_name, // Campo name obrigatório
             full_name: this.full_name,
             password: this.password,
             role: this.role,
@@ -242,7 +244,8 @@ class User {
             approved_at: this.approved_at,
             approved_by: this.approved_by,
             suspended_at: this.suspended_at,
-            suspended_by: this.suspended_by
+            suspended_by: this.suspended_by,
+            created_by: this.created_by
           })
           .select()
           .single();
