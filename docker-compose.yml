@@ -1,21 +1,21 @@
 version: '3.8'
 
 services:
-  # PostgreSQL Database (Supabase local)
-  postgres:
-    image: postgres:15
-    container_name: newcam-postgres
-    environment:
-      POSTGRES_DB: newcam
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres123
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./database/init:/docker-entrypoint-initdb.d
-    networks:
-      - newcam-network
+  # PostgreSQL removido - usando apenas Supabase
+  # postgres:
+  #   image: postgres:15
+  #   container_name: newcam-postgres
+  #   environment:
+  #     POSTGRES_DB: newcam
+  #     POSTGRES_USER: postgres
+  #     POSTGRES_PASSWORD: postgres123
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #     - ./database/init:/docker-entrypoint-initdb.d
+  #   networks:
+  #     - newcam-network
 
   # Redis for caching and sessions
   redis:
@@ -64,8 +64,8 @@ services:
       - TZ=America/Sao_Paulo
     volumes:
       - ./docker/zlmediakit/config.ini:/opt/media/conf/config.ini:ro
-      - ./storage/recordings:/opt/media/bin/www/record/proxy
       - ./storage/www:/opt/media/bin/www
+      - ./storage/live:/opt/media/bin/live
     ports:
       - "1935:1935"  # RTMP
       - "8000:80"    # HTTP-HLS e API (porta interna 80)
@@ -151,7 +151,6 @@ services:
     restart: unless-stopped
 
 volumes:
-  postgres_data:
   redis_data:
   minio_data:
   zlmediakit_data:

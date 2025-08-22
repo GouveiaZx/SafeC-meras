@@ -1,7 +1,9 @@
 import axios from 'axios';
 import cron from 'node-cron';
+import { v4 as uuidv4 } from 'uuid';
 import { createClient } from '@supabase/supabase-js';
 import logger from '../utils/logger.js';
+import RecordingService from './RecordingService.js';
 
 class SegmentationService {
   constructor() {
@@ -11,9 +13,10 @@ class SegmentationService {
     );
     this.zlmApiUrl = process.env.ZLM_API_URL || 'http://localhost:8000';
     this.zlmSecret = process.env.ZLM_SECRET || '9QqL3M2K7vHQexkbfp6RvbCUB3GkV4MK';
-    this.segmentationInterval = process.env.SEGMENTATION_INTERVAL_MINUTES || 30;
+    this.segmentationInterval = process.env.SEGMENTATION_INTERVAL_MINUTES || 1; // 1 minuto por padrão
     this.isRunning = false;
     this.activeStreams = new Map();
+    this.recordingService = RecordingService;
   }
 
   /**
@@ -88,6 +91,7 @@ class SegmentationService {
     this.monitoringCron = cron.schedule('*/1 * * * *', async () => {
       try {
         await this.updateActiveStreams();
+        await this.monitorNewRecordings(); // Monitorar novos arquivos MP4
       } catch (error) {
         logger.error('Erro durante monitoramento de streams:', error);
       }
@@ -371,13 +375,14 @@ class SegmentationService {
           type: 1, // MP4
           vhost: streamInfo.vhost || '__defaultVhost__',
           app: streamInfo.app,
-          stream: streamInfo.stream
+          stream: streamInfo.stream,
+          max_second: 60 // 60 segundos por segmento
         },
         timeout: 10000
       });
 
       if (response.data.code === 0) {
-        logger.debug(`Gravação iniciada para stream: ${streamKey}`);
+        logger.debug(`Gravação iniciada para stream: ${streamKey} (60 segundos)`);
       } else {
         logger.warn(`Falha ao iniciar gravação para stream ${streamKey}:`, response.data.msg);
       }
@@ -506,6 +511,150 @@ class SegmentationService {
   async forceSegmentation() {
     logger.info('Forçando segmentação manual');
     await this.performSegmentation();
+  }
+
+  /**
+   * Monitora novos arquivos MP4 criados e registra no banco
+   */
+  async monitorNewRecordings() {
+    try {
+      // Buscar arquivos MP4 recentes no diretório do ZLMediaKit
+      const response = await axios.get(`${this.zlmApiUrl}/index/api/getMp4RecordFile`, {
+        params: {
+          secret: this.zlmSecret,
+          vhost: '__defaultVhost__',
+          app: 'live'
+        },
+        timeout: 5000
+      });
+
+      if (response.data.code === 0 && response.data.data) {
+        for (const recording of response.data.data) {
+          await this.processNewRecordingFile(recording);
+        }
+      }
+    } catch (error) {
+      logger.debug('Erro ao monitorar novos arquivos (normal se não houver arquivos):', error.message);
+    }
+  }
+
+  /**
+   * Processa um novo arquivo de gravação detectado
+   */
+  async processNewRecordingFile(recordingInfo) {
+    try {
+      const { stream, file_path, file_name, file_size, start_time, time_len } = recordingInfo;
+      
+      // Extrair cameraId
+      const cameraId = this.extractCameraId(stream);
+      if (!cameraId) return;
+
+      // Verificar se já existe registro no banco
+      const { data: existing } = await this.supabase
+        .from('recordings')
+        .select('id')
+        .eq('filename', file_name)
+        .single();
+
+      if (existing) return; // Já existe
+
+      // Validar integridade do arquivo MP4
+      const isValid = await this.validateMp4File(file_path);
+      
+      // Criar novo registro
+      const recordingData = {
+        id: uuidv4(),
+        camera_id: cameraId,
+        filename: file_name,
+        file_path: file_path,
+        local_path: file_path,
+        status: isValid ? 'completed' : 'failed',
+        start_time: new Date(start_time * 1000).toISOString(),
+        end_time: new Date((start_time + time_len) * 1000).toISOString(),
+        duration: time_len,
+        size: file_size,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        metadata: {
+          resolution: '1920x1080',
+          fps: 25,
+          codec: 'h264',
+          format: 'mp4',
+          validated: isValid,
+          validation_date: new Date().toISOString()
+        }
+      };
+
+      await this.supabase.from('recordings').insert(recordingData);
+      
+      logger.info(`Novo arquivo de gravação registrado: ${file_name}`, {
+        cameraId,
+        duration: time_len,
+        size: file_size,
+        valid: isValid
+      });
+
+    } catch (error) {
+      logger.error('Erro ao processar novo arquivo de gravação:', error);
+    }
+  }
+
+  /**
+   * Valida integridade de arquivo MP4 usando ffprobe
+   */
+  async validateMp4File(filePath) {
+    try {
+      const { spawn } = await import('child_process');
+      
+      return new Promise((resolve) => {
+        const ffprobe = spawn('ffprobe', [
+          '-v', 'error',
+          '-show_entries', 'format=duration',
+          '-of', 'default=noprint_wrappers=1:nokey=1',
+          filePath
+        ]);
+
+        let output = '';
+        let hasError = false;
+
+        ffprobe.stdout.on('data', (data) => {
+          output += data.toString();
+        });
+
+        ffprobe.stderr.on('data', (data) => {
+          const error = data.toString();
+          if (error.includes('moov atom not found') || error.includes('Invalid data')) {
+            hasError = true;
+          }
+        });
+
+        ffprobe.on('close', (code) => {
+          const duration = parseFloat(output.trim());
+          const isValid = !hasError && code === 0 && !isNaN(duration) && duration > 0;
+          
+          if (!isValid) {
+            logger.warn(`Arquivo MP4 corrompido detectado: ${filePath}`, {
+              exitCode: code,
+              hasError,
+              duration,
+              output: output.trim()
+            });
+          }
+          
+          resolve(isValid);
+        });
+
+        // Timeout de 5 segundos
+        setTimeout(() => {
+          ffprobe.kill();
+          resolve(false);
+        }, 5000);
+      });
+
+    } catch (error) {
+      logger.error('Erro ao validar arquivo MP4:', error);
+      return false;
+    }
   }
 }
 

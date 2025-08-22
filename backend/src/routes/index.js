@@ -10,6 +10,9 @@ import reportRoutes from './reports.js';
 import fileRoutes from './files.js';
 import logRoutes from './logs.js';
 import metricsRoutes from './metrics.js';
+import streamRoutes from './streams.js';
+import hookRoutes from './hooks.js';
+import recordingFilesRoutes from './recordingFiles.js';
 
 const router = express.Router();
 
@@ -35,5 +38,8 @@ router.use('/reports', reportRoutes);
 router.use('/files', fileRoutes);
 router.use('/logs', logRoutes);
 router.use('/metrics', metricsRoutes);
+router.use('/streams', streamRoutes);
+router.use('/hook', hookRoutes);
+router.use('/recording-files', recordingFilesRoutes);
 
 export default router;

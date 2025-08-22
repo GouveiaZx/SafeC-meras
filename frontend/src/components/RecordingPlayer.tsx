@@ -19,8 +19,12 @@ interface Recording {
   duration: number;
   size: number;
   status: 'recording' | 'completed' | 'uploading' | 'uploaded' | 'failed';
+  uploadStatus?: 'pending' | 'queued' | 'uploading' | 'uploaded' | 'failed' | 'cancelled' | 'retrying';
+  uploadProgress?: number;
   localPath?: string;
+  s3Key?: string;
   s3Url?: string;
+  uploadedAt?: string;
   metadata: {
     resolution: string;
     fps: number;
@@ -51,7 +55,8 @@ const RecordingPlayer: React.FC<RecordingPlayerProps> = ({
       console.log('🎬 RecordingPlayer aberto para gravação:', {
         recordingId: recording.id,
         filename: recording.filename,
-        cameraName: recording.cameraName
+        cameraName: recording.cameraName,
+        uploadStatus: recording.status
       });
       loadPlaybackUrl();
     }
@@ -62,15 +67,15 @@ const RecordingPlayer: React.FC<RecordingPlayerProps> = ({
     setError(null);
     
     try {
-      // Usar URLs relativas para aproveitar o proxy do Vite
-      const streamEndpoint = `/api/recordings/${recording.id}/stream`;
-      const downloadEndpoint = `/api/recordings/${recording.id}/download`;
+      // Use unified endpoints that handle S3/local fallback automatically
+      const streamEndpoint = `/api/recording-files/${recording.id}/stream`;
+      const downloadEndpoint = `/api/recording-files/${recording.id}/download`;
       
       setPlaybackUrl(streamEndpoint);
       setDownloadUrl(downloadEndpoint);
       
-      console.log('🎥 URL de streaming configurada (via proxy):', streamEndpoint);
-      console.log('📥 URL de download configurada (via proxy):', downloadEndpoint);
+      console.log('🎥 Unified streaming URL configured:', streamEndpoint);
+      console.log('📥 Unified download URL configured:', downloadEndpoint);
       
     } catch (err) {
       console.error('Erro ao carregar URL de reprodução:', err);
@@ -128,6 +133,49 @@ const RecordingPlayer: React.FC<RecordingPlayerProps> = ({
     );
   };
 
+  const getStorageBadge = () => {
+    if (recording.uploadStatus === 'uploaded' && recording.s3Key) {
+      return (
+        <Badge className="bg-blue-100 text-blue-800 ml-2">
+          <Monitor className="w-3 h-3 mr-1" />
+          Cloud
+        </Badge>
+      );
+    } else {
+      return (
+        <Badge className="bg-gray-100 text-gray-800 ml-2">
+          <HardDrive className="w-3 h-3 mr-1" />
+          Local
+        </Badge>
+      );
+    }
+  };
+
+  const getUploadStatusBadge = () => {
+    if (!recording.uploadStatus || recording.uploadStatus === 'pending') {
+      return null;
+    }
+
+    const uploadStatusConfig = {
+      queued: { color: 'bg-blue-100 text-blue-800', label: 'Na fila' },
+      uploading: { color: 'bg-yellow-100 text-yellow-800', label: `Enviando ${recording.uploadProgress || 0}%` },
+      uploaded: { color: 'bg-green-100 text-green-800', label: 'Enviado' },
+      failed: { color: 'bg-red-100 text-red-800', label: 'Falha no envio' },
+      retrying: { color: 'bg-orange-100 text-orange-800', label: 'Tentando novamente' },
+      cancelled: { color: 'bg-gray-100 text-gray-800', label: 'Cancelado' }
+    };
+
+    const config = uploadStatusConfig[recording.uploadStatus as keyof typeof uploadStatusConfig];
+    
+    if (!config) return null;
+
+    return (
+      <Badge className={`${config.color} ml-2`}>
+        {config.label}
+      </Badge>
+    );
+  };
+
   return (
     <Modal
       isOpen={isOpen}
@@ -146,7 +194,11 @@ const RecordingPlayer: React.FC<RecordingPlayerProps> = ({
                 <span>•</span>
                 <span>{new Date(recording.startTime).toLocaleString('pt-BR')}</span>
                 <span>•</span>
-                {getStatusBadge(recording.status)}
+                <div className="flex items-center">
+                  {getStatusBadge(recording.status)}
+                  {getStorageBadge()}
+                  {getUploadStatusBadge()}
+                </div>
               </div>
             </div>
             <div className="flex items-center space-x-2">

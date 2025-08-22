@@ -25,7 +25,9 @@ const authenticateToken = async (req, res, next) => {
     });
     
     const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+    const headerToken = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+    const queryToken = req.query.token; // Token from query parameter
+    const token = headerToken || queryToken;
     
     if (!token) {
       logger.warn(`[${requestId}] ❌ Missing token: ${req.method} ${req.path}`, {
@@ -292,7 +294,9 @@ const requireCameraAccess = async (req, res, next) => {
 const optionalAuth = async (req, res, next) => {
   try {
     const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
+    const headerToken = authHeader && authHeader.split(' ')[1];
+    const queryToken = req.query.token;
+    const token = headerToken || queryToken;
     
     if (!token) {
       return next();
@@ -328,11 +332,12 @@ const optionalAuth = async (req, res, next) => {
 };
 
 // Função para gerar token JWT
-const generateToken = (userId, email, role) => {
+const generateToken = (userId, email, role, userType = null) => {
   const payload = {
     userId,
     email,
     role,
+    userType: userType || (role === 'admin' ? 'ADMIN' : role === 'integrator' ? 'INTEGRATOR' : 'CLIENT'),
     iat: Math.floor(Date.now() / 1000)
   };
   

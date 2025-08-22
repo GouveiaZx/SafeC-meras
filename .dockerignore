@@ -1,0 +1,193 @@
+# ========================================
+# NEWCAM PROJECT - .dockerignore
+# ========================================
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+.npm
+.yarn-integrity
+
+# Environment variables (keep only production)
+.env.local
+.env.development.local
+.env.test.local
+
+# Logs
+logs/
+*.log
+lerna-debug.log*
+.pnpm-debug.log*
+
+# Coverage and test files
+coverage/
+*.lcov
+.nyc_output
+test_*.js
+test_*.cjs
+test_*.ts
+test_*.cpp
+debug_*.js
+check_*.js
+clean_*.js
+cleanup_*.js
+fix_*.js
+monitor_*.js
+*.test.js
+*.spec.js
+
+# Development tools
+.dev-config
+.local-settings
+sonar-project.properties
+.scannerwork/
+profile-*.json
+*.prof
+benchmark-results/
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# macOS
+.AppleDouble
+.LSOverride
+Icon
+.DocumentRevisions-V100
+.fseventsd
+.TemporaryItems
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Git
+.git/
+.gitignore
+.gitattributes
+.gitmodules
+
+# Documentation
+README.md
+README_*.md
+docs/
+*.md
+
+# Build outputs (exclude from image)
+build/
+dist/
+out/
+
+# Temporary folders
+tmp/
+temp/
+storage/temp/
+
+# Uploads and cache (runtime data)
+uploads/
+storage/uploads/
+storage/cache/
+storage/sessions/
+thumbnails/cache/
+
+# Recordings (runtime data)
+storage/www/record/
+recordings/
+*.mp4
+*.avi
+*.mkv
+*.flv
+*.webm
+*.mov
+
+# Configuration backups
+*.backup
+*.bak
+*.old
+config.ini.backup
+
+# Development Docker files
+docker-compose.yml
+docker-compose.*.yml
+Dockerfile.dev
+.docker-compose-state
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.gitlab-ci-local.yml
+
+# Scripts (development only)
+scripts/
+
+# ZLMediaKit development files
+backend/zlmediakit/ZLMediaKit/.git/
+backend/zlmediakit/ZLMediaKit/tests/
+backend/zlmediakit/ZLMediaKit/Android/
+backend/zlmediakit/ZLMediaKit/golang/
+backend/zlmediakit/ZLMediaKit/postman/
+backend/zlmediakit/ZLMediaKit/docker/
+backend/zlmediakit/ZLMediaKit/player/
+
+# Services data (runtime)
+postgresql/data/
+mysql/data/
+rabbitmq/data/
+kafka/data/
+elasticsearch/data/
+memcached/data/
+sessions/
+queues/data/
+
+# Monitoring data (runtime)
+prometheus/data/
+grafana/data/
+analytics/data/
+
+# Generated files
+docs/api/generated/
+email-templates/compiled/
+notifications/templates/compiled/
+reports/generated/
+
+# Machine Learning (large files)
+ml-models/trained/
+ml-data/processed/
+ai-models/
+ai-training-data/
+
+# Load balancer logs
+nginx/logs/
+nginx/cache/
+
+# ========================================
+# END OF .dockerignore
+# ========================================

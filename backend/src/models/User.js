@@ -27,18 +27,31 @@ class User {
   constructor(data = {}) {
     this.id = data.id;
     this.email = data.email;
-    this.name = data.name;
+    this.username = data.username;
+    this.full_name = data.full_name || data.name; // Suporte a ambos os campos
     this.password = data.password;
     this.role = data.role || 'viewer';
     this.permissions = data.permissions || [];
     this.camera_access = data.camera_access || [];
-    this.active = data.active !== undefined ? data.active : true;
+    
+    // Status: usar valor do banco se existir, senão usar 'active' se active=true
+    this.status = data.status || (data.active === true ? 'active' : 'pending');
+    this.active = data.active !== undefined ? data.active : true; // Mantido para compatibilidade
+    
+    // UserType: mapear role para userType compatível com frontend
+    this.userType = this.mapRoleToUserType(this.role);
+    
     this.created_at = data.created_at;
     this.updated_at = data.updated_at;
     this.last_login_at = data.last_login_at;
     this.blocked_at = data.blocked_at;
+    this.approved_at = data.approved_at;
+    this.approved_by = data.approved_by;
+    this.suspended_at = data.suspended_at;
+    this.suspended_by = data.suspended_by;
     this.profile_image = data.profile_image;
     this.preferences = data.preferences || {};
+    this.two_factor_enabled = data.two_factor_enabled || false;
   }
 
   // Validar dados do usuário
@@ -55,25 +68,39 @@ class User {
       }
     }
 
-    // Validar nome
-    if (!this.name) {
-      errors.push('Nome é obrigatório');
-    } else if (this.name.length < 2 || this.name.length > 100) {
-      errors.push('Nome deve ter entre 2 e 100 caracteres');
+    // Validar nome completo
+    if (!this.full_name) {
+      errors.push('Nome completo é obrigatório');
+    } else if (this.full_name.length < 2 || this.full_name.length > 100) {
+      errors.push('Nome completo deve ter entre 2 e 100 caracteres');
     }
 
-    // Validar senha (apenas para novos usuários)
-    if (this.password && !this.id) {
-      const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z\d@$!%*?&]{8,}$/;
-      if (!passwordRegex.test(this.password)) {
-        errors.push('Senha deve ter pelo menos 8 caracteres, incluindo maiúscula, minúscula e número');
+    // Validar username
+    if (!this.username) {
+      errors.push('Nome de usuário é obrigatório');
+    } else if (this.username.length < 3 || this.username.length > 50) {
+      errors.push('Nome de usuário deve ter entre 3 e 50 caracteres');
+    } else if (!/^[a-zA-Z0-9_.-]+$/.test(this.username)) {
+      errors.push('Nome de usuário deve conter apenas letras, números, pontos, hífens e underscores');
+    }
+
+    // Validar senha (apenas para novos usuários ou quando senha é fornecida)
+    if (this.password && (!this.id || this.password.length > 0)) {
+      if (this.password.length < 6) {
+        errors.push('Senha deve ter pelo menos 6 caracteres');
       }
     }
 
     // Validar role
-    const validRoles = ['admin', 'operator', 'viewer'];
+    const validRoles = ['admin', 'integrator', 'operator', 'client', 'viewer'];
     if (!validRoles.includes(this.role)) {
-      errors.push('Role deve ser admin, operator ou viewer');
+      errors.push('Role deve ser admin, integrator, operator, client ou viewer');
+    }
+
+    // Validar status
+    const validStatuses = ['pending', 'active', 'inactive', 'suspended'];
+    if (!validStatuses.includes(this.status)) {
+      errors.push('Status deve ser pending, active, inactive ou suspended');
     }
 
     // Validar permissions (deve ser array)
@@ -100,8 +127,10 @@ class User {
   // Sanitizar dados
   sanitize() {
     if (this.email) this.email = sanitizeInput(this.email.toLowerCase().trim());
-    if (this.name) this.name = sanitizeInput(this.name.trim());
+    if (this.username) this.username = sanitizeInput(this.username.trim());
+    if (this.full_name) this.full_name = sanitizeInput(this.full_name.trim());
     if (this.role) this.role = sanitizeInput(this.role.toLowerCase());
+    if (this.status) this.status = sanitizeInput(this.status.toLowerCase());
   }
 
   // Hash da senha
@@ -118,6 +147,18 @@ class User {
       return false;
     }
     return await bcrypt.compare(plainPassword, this.password);
+  }
+
+  // Mapear role para userType
+  mapRoleToUserType(role) {
+    const roleMapping = {
+      'admin': 'ADMIN',
+      'integrator': 'INTEGRATOR',
+      'client': 'CLIENT',
+      'viewer': 'CLIENT',
+      'operator': 'CLIENT'
+    };
+    return roleMapping[role] || 'CLIENT';
   }
 
   // Converter para objeto JSON (sem senha)
@@ -146,14 +187,21 @@ class User {
           .from(TABLES.USERS)
           .update({
             email: this.email,
-            name: this.name,
+            username: this.username,
+            full_name: this.full_name,
             role: this.role,
             permissions: this.permissions,
             camera_access: this.camera_access,
+            status: this.status,
             active: this.active,
             updated_at: this.updated_at,
             profile_image: this.profile_image,
             preferences: this.preferences,
+            two_factor_enabled: this.two_factor_enabled,
+            approved_at: this.approved_at,
+            approved_by: this.approved_by,
+            suspended_at: this.suspended_at,
+            suspended_by: this.suspended_by,
             ...(this.password && { password: this.password })
           })
           .eq('id', this.id)
@@ -178,16 +226,23 @@ class User {
           .from(TABLES.USERS)
           .insert({
             email: this.email,
-            name: this.name,
+            username: this.username,
+            full_name: this.full_name,
             password: this.password,
             role: this.role,
             permissions: this.permissions,
             camera_access: this.camera_access,
+            status: this.status,
             active: this.active,
             created_at: this.created_at,
             updated_at: this.updated_at,
             profile_image: this.profile_image,
-            preferences: this.preferences
+            preferences: this.preferences,
+            two_factor_enabled: this.two_factor_enabled,
+            approved_at: this.approved_at,
+            approved_by: this.approved_by,
+            suspended_at: this.suspended_at,
+            suspended_by: this.suspended_by
           })
           .select()
           .single();
@@ -310,6 +365,134 @@ class User {
     }
   }
 
+  // Aprovar usuário
+  async approve(approvedBy) {
+    try {
+      const now = new Date().toISOString();
+      this.status = 'active';
+      this.active = true;
+      this.approved_at = now;
+      this.approved_by = approvedBy;
+      this.updated_at = now;
+      
+      const { error } = await supabaseAdmin
+        .from(TABLES.USERS)
+        .update({
+          status: this.status,
+          active: this.active,
+          approved_at: this.approved_at,
+          approved_by: this.approved_by,
+          updated_at: this.updated_at
+        })
+        .eq('id', this.id);
+
+      if (error) {
+        throw new AppError(`Erro ao aprovar usuário: ${error.message}`);
+      }
+
+      logger.info(`Usuário aprovado: ${this.email} por ${approvedBy}`);
+      return this;
+    } catch (error) {
+      logger.error('Erro ao aprovar usuário:', error);
+      throw error;
+    }
+  }
+
+  // Suspender usuário
+  async suspend(suspendedBy) {
+    try {
+      const now = new Date().toISOString();
+      this.status = 'suspended';
+      this.active = false;
+      this.suspended_at = now;
+      this.suspended_by = suspendedBy;
+      this.updated_at = now;
+      
+      const { error } = await supabaseAdmin
+        .from(TABLES.USERS)
+        .update({
+          status: this.status,
+          active: this.active,
+          suspended_at: this.suspended_at,
+          suspended_by: this.suspended_by,
+          updated_at: this.updated_at
+        })
+        .eq('id', this.id);
+
+      if (error) {
+        throw new AppError(`Erro ao suspender usuário: ${error.message}`);
+      }
+
+      logger.info(`Usuário suspenso: ${this.email} por ${suspendedBy}`);
+      return this;
+    } catch (error) {
+      logger.error('Erro ao suspender usuário:', error);
+      throw error;
+    }
+  }
+
+  // Ativar usuário
+  async activate() {
+    try {
+      const now = new Date().toISOString();
+      this.status = 'active';
+      this.active = true;
+      this.suspended_at = null;
+      this.suspended_by = null;
+      this.updated_at = now;
+      
+      const { error } = await supabaseAdmin
+        .from(TABLES.USERS)
+        .update({
+          status: this.status,
+          active: this.active,
+          suspended_at: null,
+          suspended_by: null,
+          updated_at: this.updated_at
+        })
+        .eq('id', this.id);
+
+      if (error) {
+        throw new AppError(`Erro ao ativar usuário: ${error.message}`);
+      }
+
+      logger.info(`Usuário ativado: ${this.email}`);
+      return this;
+    } catch (error) {
+      logger.error('Erro ao ativar usuário:', error);
+      throw error;
+    }
+  }
+
+  // Desativar usuário
+  async deactivate() {
+    try {
+      const now = new Date().toISOString();
+      this.status = 'inactive';
+      this.active = false;
+      this.updated_at = now;
+      
+      const { error } = await supabaseAdmin
+        .from(TABLES.USERS)
+        .update({
+          status: this.status,
+          active: this.active,
+          updated_at: this.updated_at
+        })
+        .eq('id', this.id);
+
+      if (error) {
+        throw new AppError(`Erro ao desativar usuário: ${error.message}`);
+      }
+
+      logger.info(`Usuário desativado: ${this.email}`);
+      return this;
+    } catch (error) {
+      logger.error('Erro ao desativar usuário:', error);
+      throw error;
+    }
+  }
+
   // Métodos estáticos
 
   // Buscar usuário por ID
@@ -364,6 +547,31 @@ class User {
     }
   }
 
+  // Buscar usuário por username
+  static async findByUsername(username) {
+    try {
+      const sanitizedUsername = sanitizeInput(username.trim());
+
+      const { data, error } = await supabaseAdmin
+        .from(TABLES.USERS)
+        .select('*')
+        .eq('username', sanitizedUsername)
+        .single();
+
+      if (error) {
+        if (error.code === 'PGRST116') {
+          return null;
+        }
+        throw new AppError(`Erro ao buscar usuário: ${error.message}`);
+      }
+
+      return new User(data);
+    } catch (error) {
+      logger.error('Erro ao buscar usuário por username:', error);
+      throw error;
+    }
+  }
+
   // Listar usuários com paginação
   static async findAll(options = {}) {
     try {
@@ -372,6 +580,7 @@ class User {
         limit = 10,
         search = '',
         role = null,
+        status = null,
         active = null,
         sortBy = 'created_at',
         sortOrder = 'desc'
@@ -385,11 +594,15 @@ class User {
 
       // Filtros
       if (search) {
-        query = query.or(`name.ilike.%${search}%,email.ilike.%${search}%`);
+        query = query.or(`full_name.ilike.%${search}%,username.ilike.%${search}%,email.ilike.%${search}%`);
       }
 
       if (role) {
         query = query.eq('role', role);
+      }
+
+      if (status) {
+        query = query.eq('status', status);
       }
 
       if (active !== null) {
@@ -436,6 +649,10 @@ class User {
         query = query.eq('role', filters.role);
       }
 
+      if (filters.status) {
+        query = query.eq('status', filters.status);
+      }
+
       if (filters.active !== undefined) {
         query = query.eq('active', filters.active);
       }
@@ -476,6 +693,33 @@ class User {
       return !!data;
     } catch (error) {
       logger.error('Erro ao verificar se email existe:', error);
+      throw error;
+    }
+  }
+
+  // Verificar se username já existe
+  static async usernameExists(username, excludeId = null) {
+    try {
+      const sanitizedUsername = sanitizeInput(username.trim());
+
+      let query = supabaseAdmin
+        .from(TABLES.USERS)
+        .select('id')
+        .eq('username', sanitizedUsername);
+
+      if (excludeId) {
+        query = query.neq('id', excludeId);
+      }
+
+      const { data, error } = await query.single();
+
+      if (error && error.code !== 'PGRST116') {
+        throw new AppError(`Erro ao verificar username: ${error.message}`);
+      }
+
+      return !!data;
+    } catch (error) {
+      logger.error('Erro ao verificar se username existe:', error);
       throw error;
     }
   }

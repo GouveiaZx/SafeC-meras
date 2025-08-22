@@ -5,6 +5,7 @@
 
 import express from 'express';
 import { User } from '../models/User.js';
+import { supabaseAdmin } from '../config/database.js';
 import { 
   authenticateToken, 
   requireRole, 
@@ -12,9 +13,19 @@ import {
 } from '../middleware/auth.js';
 import { 
   createValidationSchema, 
-  validateParams,
-  validationSchemas 
+  validateParams 
 } from '../middleware/validation.js';
+import {
+  validateUserCreation,
+  validateUserUpdate,
+  validateUserApproval,
+  validateUserStatusChange,
+  validateUserQuery,
+  validatePasswordReset,
+  validateUserId,
+  canEditUser,
+  canDeleteUser
+} from '../middleware/userValidation.js';
 import { 
   asyncHandler, 
   NotFoundError, 
@@ -36,12 +47,14 @@ router.use(authenticateToken);
  */
 router.get('/',
   requireRole(['admin', 'operator']),
+  validateUserQuery,
   asyncHandler(async (req, res) => {
     const {
       page = 1,
       limit = 10,
       search = '',
       role = null,
+      status = null,
       active = null,
       sortBy = 'created_at',
       sortOrder = 'desc'
@@ -64,6 +77,7 @@ router.get('/',
       limit: limitNum,
       search: search.trim(),
       role,
+      status,
       active: active !== null ? active === 'true' : null,
       sortBy,
       sortOrder
@@ -159,24 +173,21 @@ router.get('/:id',
  */
 router.post('/',
   requireRole('admin'),
-  createValidationSchema(validationSchemas.userRegistration),
+  validateUserCreation,
   asyncHandler(async (req, res) => {
-    const { name, email, password, role, permissions, camera_access } = req.validatedData;
-
-    // Verificar se email já existe
-    const existingUser = await User.findByEmail(email);
-    if (existingUser) {
-      throw new ValidationError('Email já está em uso');
-    }
+    const { username, full_name, email, password, role, status, permissions, camera_access, two_factor_enabled } = req.body;
 
     // Criar usuário
     const user = new User({
-      name,
+      username,
+      full_name,
       email,
       password,
       role,
+      status: status || 'pending',
       permissions: permissions || [],
       camera_access: camera_access || [],
+      two_factor_enabled: two_factor_enabled || false,
       created_by: req.user.id
     });
 
@@ -204,10 +215,10 @@ router.put('/:id',
       message: 'ID do usuário deve ser um UUID válido'
     }
   }),
-  createValidationSchema(validationSchemas.userUpdate),
+  validateUserUpdate,
   asyncHandler(async (req, res) => {
     const { id } = req.params;
-    const { name, email, role, active, permissions, camera_access } = req.validatedData;
+    const { username, full_name, email, role, status, permissions, camera_access, two_factor_enabled } = req.body;
 
     // Buscar usuário
     const user = await User.findById(id);
@@ -223,29 +234,27 @@ router.put('/:id',
       throw new AuthorizationError('Você não tem permissão para editar este usuário');
     }
 
-    // Usuários não-admin só podem editar nome e email próprios
-    if (!isAdmin && (role || active !== undefined || permissions || camera_access)) {
-      throw new AuthorizationError('Você só pode editar seu nome e email');
+    // Usuários não-admin só podem editar nome, email e username próprios
+    if (!isOwnProfile && !isAdmin) {
+      throw new AuthorizationError('Você só pode editar seu próprio perfil');
     }
 
-    // Verificar se email já existe (excluindo o próprio usuário)
-    if (email && email !== user.email) {
-      const emailExists = await User.emailExists(email, id);
-      if (emailExists) {
-        throw new ValidationError('Email já está em uso');
-      }
+    if (isOwnProfile && !isAdmin && (role || status || permissions || camera_access)) {
+      throw new AuthorizationError('Você só pode editar seu nome completo, username e email');
     }
 
-    // Atualizar campos
-    if (name) user.name = name;
-    if (email) user.email = email;
+    // Atualizar campos básicos sempre permitidos
+    if (username !== undefined) user.username = username;
+    if (full_name !== undefined) user.full_name = full_name;
+    if (email !== undefined) user.email = email;
     
     // Apenas admins podem alterar estes campos
     if (isAdmin) {
-      if (role) user.role = role;
-      if (active !== undefined) user.active = active;
-      if (permissions) user.permissions = permissions;
-      if (camera_access) user.camera_access = camera_access;
+      if (role !== undefined) user.role = role;
+      if (status !== undefined) user.status = status;
+      if (permissions !== undefined) user.permissions = permissions;
+      if (camera_access !== undefined) user.camera_access = camera_access;
+      if (two_factor_enabled !== undefined) user.two_factor_enabled = two_factor_enabled;
     }
 
     await user.save();
@@ -521,7 +530,7 @@ router.get('/:id/activity',
 
     try {
       // Buscar sessões do usuário
-      const { data: sessions, error: sessionsError } = await supabase
+      const { data: sessions, error: sessionsError } = await supabaseAdmin
         .from('user_sessions')
         .select('*')
         .eq('user_id', id)
@@ -529,7 +538,7 @@ router.get('/:id/activity',
         .range(offset, offset + parseInt(limit) - 1);
 
       // Buscar logs de sistema relacionados ao usuário
-      const { data: systemLogs, error: logsError } = await supabase
+      const { data: systemLogs, error: logsError } = await supabaseAdmin
         .from('system_logs')
         .select('*')
         .eq('user_id', id)
@@ -537,7 +546,7 @@ router.get('/:id/activity',
         .limit(parseInt(limit));
 
       // Buscar acessos a câmeras
-      const { data: cameraAccess, error: accessError } = await supabase
+      const { data: cameraAccess, error: accessError } = await supabaseAdmin
         .from('camera_access_logs')
         .select(`
           *,
@@ -642,6 +651,281 @@ router.get('/:id/activity',
       message: 'Atividade do usuário obtida com sucesso',
       data: activity
     });
+  })
+);
+
+/**
+ * @route PUT /api/users/:id/status
+ * @desc Atualizar status do usuário (pending/active/inactive/suspended)
+ * @access Private (Admin)
+ */
+router.put('/:id/status',
+  requireRole('admin'),
+  validateParams({
+    id: {
+      required: true,
+      type: 'uuid',
+      message: 'ID do usuário deve ser um UUID válido'
+    }
+  }),
+  createValidationSchema({
+    status: {
+      required: true,
+      type: 'string',
+      enum: ['pending', 'active', 'inactive', 'suspended'],
+      message: 'Status deve ser: pending, active, inactive ou suspended'
+    }
+  }),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    // Não permitir que admin suspenda/desative a si mesmo
+    if (req.user.id === id && (status === 'suspended' || status === 'inactive')) {
+      throw new ValidationError('Você não pode suspender ou desativar sua própria conta');
+    }
+
+    const user = await User.findById(id);
+    if (!user) {
+      throw new NotFoundError('Usuário não encontrado');
+    }
+
+    // Validar transições de status
+    const currentStatus = user.status;
+    
+    // pending -> active (aprovação)
+    if (currentStatus === 'pending' && status === 'active') {
+      await user.approve(req.user.id);
+    }
+    // qualquer -> suspended
+    else if (status === 'suspended') {
+      await user.suspend(req.user.id);
+    }
+    // suspended/inactive -> active
+    else if ((currentStatus === 'suspended' || currentStatus === 'inactive') && status === 'active') {
+      await user.activate();
+    }
+    // qualquer -> inactive
+    else if (status === 'inactive') {
+      await user.deactivate();
+    }
+    // pending -> pending (permitido para re-pendente)
+    else if (status === 'pending') {
+      user.status = 'pending';
+      user.approved_at = null;
+      user.approved_by = null;
+      user.suspended_at = null;
+      user.suspended_by = null;
+      await user.save();
+    }
+    else {
+      // Atualização direta para outros casos
+      user.status = status;
+      await user.save();
+    }
+
+    logger.info(`Status do usuário ${id} alterado de ${currentStatus} para ${status} por: ${req.user.email}`);
+
+    res.json({
+      message: 'Status do usuário atualizado com sucesso',
+      data: user.toJSON()
+    });
+  })
+);
+
+/**
+ * @route POST /api/users/:id/reset-password
+ * @desc Resetar senha do usuário
+ * @access Private (Admin)
+ */
+router.post('/:id/reset-password',
+  requireRole('admin'),
+  validateParams({
+    id: {
+      required: true,
+      type: 'uuid',
+      message: 'ID do usuário deve ser um UUID válido'
+    }
+  }),
+  createValidationSchema({
+    new_password: {
+      required: true,
+      type: 'string',
+      minLength: 6,
+      message: 'Nova senha deve ter pelo menos 6 caracteres'
+    }
+  }),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { new_password } = req.validatedData;
+
+    const user = await User.findById(id);
+    if (!user) {
+      throw new NotFoundError('Usuário não encontrado');
+    }
+
+    // Atualizar senha
+    user.password = new_password; // O modelo deve hash a senha automaticamente
+    await user.save();
+
+    logger.info(`Senha resetada para usuário ${id} por: ${req.user.email}`);
+
+    res.json({
+      message: 'Senha resetada com sucesso'
+    });
+  })
+);
+
+/**
+ * @route POST /api/users/:id/approve
+ * @desc Aprovar usuário pendente
+ * @access Private (Admin)
+ */
+router.post('/:id/approve',
+  requireRole('admin'),
+  validateParams({
+    id: {
+      required: true,
+      type: 'uuid',
+      message: 'ID do usuário deve ser um UUID válido'
+    }
+  }),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    const user = await User.findById(id);
+    if (!user) {
+      throw new NotFoundError('Usuário não encontrado');
+    }
+
+    if (user.status !== 'pending') {
+      throw new ValidationError('Apenas usuários pendentes podem ser aprovados');
+    }
+
+    await user.approve(req.user.id);
+
+    logger.info(`Usuário ${id} aprovado por: ${req.user.email}`);
+
+    res.json({
+      message: 'Usuário aprovado com sucesso',
+      data: user.toJSON()
+    });
+  })
+);
+
+/**
+ * @route POST /api/users/:id/suspend
+ * @desc Suspender usuário
+ * @access Private (Admin)
+ */
+router.post('/:id/suspend',
+  requireRole('admin'),
+  validateParams({
+    id: {
+      required: true,
+      type: 'uuid',
+      message: 'ID do usuário deve ser um UUID válido'
+    }
+  }),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    // Não permitir que admin suspenda a si mesmo
+    if (req.user.id === id) {
+      throw new ValidationError('Você não pode suspender sua própria conta');
+    }
+
+    const user = await User.findById(id);
+    if (!user) {
+      throw new NotFoundError('Usuário não encontrado');
+    }
+
+    if (user.status === 'suspended') {
+      throw new ValidationError('Usuário já está suspenso');
+    }
+
+    await user.suspend(req.user.id);
+
+    logger.info(`Usuário ${id} suspenso por: ${req.user.email}`);
+
+    res.json({
+      message: 'Usuário suspenso com sucesso',
+      data: user.toJSON()
+    });
+  })
+);
+
+/**
+ * @route POST /api/users/:id/activate
+ * @desc Reativar usuário suspenso/inativo
+ * @access Private (Admin)
+ */
+router.post('/:id/activate',
+  requireRole('admin'),
+  validateParams({
+    id: {
+      required: true,
+      type: 'uuid',
+      message: 'ID do usuário deve ser um UUID válido'
+    }
+  }),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    const user = await User.findById(id);
+    if (!user) {
+      throw new NotFoundError('Usuário não encontrado');
+    }
+
+    if (user.status === 'active') {
+      throw new ValidationError('Usuário já está ativo');
+    }
+
+    await user.activate();
+
+    logger.info(`Usuário ${id} reativado por: ${req.user.email}`);
+
+    res.json({
+      message: 'Usuário reativado com sucesso',
+      data: user.toJSON()
+    });
+  })
+);
+
+/**
+ * @route GET /api/users/export
+ * @desc Exportar lista de usuários em CSV
+ * @access Private (Admin)
+ */
+router.get('/export',
+  requireRole('admin'),
+  asyncHandler(async (req, res) => {
+    const result = await User.findAll({
+      limit: 1000 // Limite alto para exportar todos
+    });
+
+    const users = result.users;
+
+    // Converter para CSV
+    const csvHeader = 'ID,Username,Email,Nome Completo,Função,Status,Data Criação,Último Login\n';
+    const csvRows = users.map(user => [
+      user.id,
+      user.username || '',
+      user.email,
+      user.full_name || '',
+      user.role,
+      user.status,
+      user.created_at,
+      user.last_login_at || 'Nunca'
+    ].join(',')).join('\n');
+
+    const csvContent = csvHeader + csvRows;
+
+    logger.info(`Exportação de usuários realizada por: ${req.user.email}`);
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="usuarios_${new Date().toISOString().split('T')[0]}.csv"`);
+    res.send(csvContent);
   })
 );
 

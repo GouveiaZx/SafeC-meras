@@ -54,6 +54,14 @@ class MetricsService {
           files: 0
         }
       },
+      uploads: {
+        queue_size: 0,
+        processing: 0,
+        completed: 0,
+        failed: 0,
+        total_uploaded: 0,
+        success_rate: 0
+      },
       network: {
         bandwidth: {
           upload: 0,
@@ -115,6 +123,7 @@ class MetricsService {
         this.collectCameraMetrics(),
         this.collectRecordingMetrics(),
         this.collectStorageMetrics(),
+        this.collectUploadMetrics(),
         this.collectNetworkMetrics()
       ]);
 
@@ -337,6 +346,83 @@ class MetricsService {
   }
 
   // Método removido - usar dados reais das gravações
+
+  /**
+   * Coleta métricas de upload S3
+   */
+  async collectUploadMetrics() {
+    try {
+      // Verificar se Supabase está configurado
+      if (!process.env.SUPABASE_URL || process.env.SUPABASE_URL === 'https://your-project.supabase.co') {
+        logger.info('Supabase não configurado para métricas de upload');
+        this.metrics.uploads = {
+          queue_size: 0,
+          processing: 0,
+          completed: 0,
+          failed: 0,
+          total_uploaded: 0,
+          success_rate: 0
+        };
+        return;
+      }
+
+      // Obter estatísticas de upload
+      const { data: uploadStats, error } = await supabaseAdmin
+        .from('recordings')
+        .select('upload_status')
+        .not('upload_status', 'is', null);
+
+      if (error) {
+        if (error.code === 'PGRST106' || error.message.includes('column "upload_status" does not exist')) {
+          logger.warn('Coluna upload_status não encontrada na tabela recordings');
+          this.metrics.uploads = {
+            queue_size: 0,
+            processing: 0,
+            completed: 0,
+            failed: 0,
+            total_uploaded: 0,
+            success_rate: 0
+          };
+          return;
+        }
+        throw error;
+      }
+
+      // Processar estatísticas
+      const stats = uploadStats?.reduce((acc, record) => {
+        const status = record.upload_status;
+        acc[status] = (acc[status] || 0) + 1;
+        return acc;
+      }, {}) || {};
+
+      const queueSize = (stats.pending || 0) + (stats.queued || 0);
+      const processing = stats.uploading || 0;
+      const completed = stats.uploaded || 0;
+      const failed = stats.failed || 0;
+      const total = uploadStats?.length || 0;
+      const successRate = total > 0 ? ((completed / total) * 100).toFixed(1) : 0;
+
+      this.metrics.uploads = {
+        queue_size: queueSize,
+        processing,
+        completed,
+        failed,
+        total_uploaded: total,
+        success_rate: parseFloat(successRate)
+      };
+
+    } catch (error) {
+      logger.error('Erro ao coletar métricas de upload:', error);
+      this.metrics.uploads = {
+        queue_size: 0,
+        processing: 0,
+        completed: 0,
+        failed: 0,
+        total_uploaded: 0,
+        success_rate: 0
+      };
+    }
+  }
 
   /**
    * Coleta métricas de armazenamento

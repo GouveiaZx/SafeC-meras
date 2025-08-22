@@ -5,6 +5,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { createModuleLogger } from '../config/logger.js';
 import { supabase, supabaseAdmin } from '../config/database.js';
+import pathResolver from '../utils/PathResolver.js';
 
 const logger = createModuleLogger('FileController');
 
@@ -13,8 +14,9 @@ const logger = createModuleLogger('FileController');
  */
 export class FileController {
   constructor() {
+    this.pathResolver = pathResolver;
     this.uploadPath = process.env.UPLOAD_PATH || './uploads';
-    this.recordingsPath = process.env.RECORDINGS_PATH || './storage/recordings';
+    this.recordingsPath = this.pathResolver.recordingsBasePath;
     this.streamsPath = process.env.STREAMS_PATH || './storage/streams';
   }
 

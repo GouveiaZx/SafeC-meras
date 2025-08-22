@@ -8,14 +8,19 @@ interface User {
   username: string;
   email: string;
   full_name: string;
-  role: 'admin' | 'operator' | 'viewer';
-  status: 'active' | 'inactive' | 'suspended';
+  role: 'admin' | 'integrator' | 'operator' | 'client' | 'viewer';
+  status: 'pending' | 'active' | 'inactive' | 'suspended';
   last_login?: string;
+  last_login_at?: string;
   created_at: string;
   updated_at: string;
+  approved_at?: string;
+  approved_by?: string;
+  suspended_at?: string;
+  suspended_by?: string;
   permissions: string[];
   camera_access: string[];
-  login_attempts: number;
+  login_attempts?: number;
   last_ip?: string;
   two_factor_enabled: boolean;
 }
@@ -39,8 +44,8 @@ interface UserFormData {
   email: string;
   full_name: string;
   password?: string;
-  role: 'admin' | 'operator' | 'viewer';
-  status: 'active' | 'inactive';
+  role: 'admin' | 'integrator' | 'operator' | 'client' | 'viewer';
+  status: 'pending' | 'active' | 'inactive' | 'suspended';
   permissions: string[];
   camera_access: string[];
   two_factor_enabled: boolean;
@@ -67,7 +72,9 @@ const AVAILABLE_PERMISSIONS = [
 
 const ROLE_PERMISSIONS = {
   admin: AVAILABLE_PERMISSIONS.map(p => p.id),
+  integrator: ['view_cameras', 'manage_cameras', 'view_recordings', 'manage_recordings', 'view_analytics', 'view_logs'],
   operator: ['view_cameras', 'manage_cameras', 'view_recordings', 'manage_recordings', 'view_analytics'],
+  client: ['view_cameras', 'view_recordings', 'view_analytics'],
   viewer: ['view_cameras', 'view_recordings']
 };
 
@@ -96,7 +103,7 @@ const Users: React.FC = () => {
     full_name: '',
     password: '',
     role: 'viewer',
-    status: 'active',
+    status: 'pending',
     permissions: [],
     camera_access: [],
     two_factor_enabled: false
@@ -130,6 +137,23 @@ const Users: React.FC = () => {
     }
   }, [currentPage, searchTerm, roleFilter, statusFilter]);
   
+  // Resetar formulário
+  const resetForm = useCallback(() => {
+    setFormData({
+      username: '',
+      email: '',
+      full_name: '',
+      password: '',
+      role: 'viewer',
+      status: 'pending',
+      permissions: [],
+      camera_access: [],
+      two_factor_enabled: false
+    });
+    setFormErrors({});
+    setEditingUser(null);
+  }, []);
+
   // Carregar câmeras
   const loadCameras = useCallback(async () => {
     try {
@@ -138,7 +162,7 @@ const Users: React.FC = () => {
     } catch (error) {
       console.error('Erro ao carregar câmeras:', error);
     }
-  }, [resetForm]);
+  }, []);
   
 
 
@@ -178,16 +202,23 @@ const Users: React.FC = () => {
     
     try {
       const payload = { ...formData };
-      if (!payload.password) {
+      
+      // Remover senha vazia para edição
+      if (editingUser && !payload.password) {
         delete payload.password;
+      }
+      
+      // Para novos usuários, garantir que status seja 'pending' por padrão
+      if (!editingUser && !payload.status) {
+        payload.status = 'pending';
       }
       
       if (editingUser) {
         await api.put(endpoints.users.update(editingUser.id), payload);
-        toast.success('Usuário atualizado');
+        toast.success('Usuário atualizado com sucesso');
       } else {
         await api.post(endpoints.users.create(), payload);
-        toast.success('Usuário criado');
+        toast.success('Usuário criado com sucesso');
       }
       
       setShowUserModal(false);
@@ -195,26 +226,18 @@ const Users: React.FC = () => {
       loadUsers();
     } catch (error) {
       console.error('Erro ao salvar usuário:', error);
-      toast.error('Erro ao salvar usuário');
+      
+      // Melhor tratamento de erro
+      const errorMessage = error instanceof Error ? error.message : 'Erro desconhecido';
+      if (errorMessage.includes('já está em uso')) {
+        toast.error('Email ou nome de usuário já está em uso');
+      } else if (errorMessage.includes('validação')) {
+        toast.error('Dados inválidos. Verifique os campos preenchidos.');
+      } else {
+        toast.error('Erro ao salvar usuário: ' + errorMessage);
+      }
     }
-  }, [formData, editingUser, loadUsers]);
-  
-  // Resetar formulário
-  const resetForm = useCallback(() => {
-    setFormData({
-      username: '',
-      email: '',
-      full_name: '',
-      password: '',
-      role: 'viewer',
-      status: 'active',
-      permissions: [],
-      camera_access: [],
-      two_factor_enabled: false
-    });
-    setFormErrors({});
-    setEditingUser(null);
-  }, []);
+  }, [formData, editingUser, loadUsers, resetForm]);
   
   // Deletar usuário
   const handleDeleteUser = useCallback(async (userId: string) => {
@@ -264,7 +287,7 @@ const Users: React.FC = () => {
       email: user.email,
       full_name: user.full_name,
       role: user.role,
-      status: user.status === 'suspended' ? 'inactive' : user.status,
+      status: user.status, // Manter status original
       permissions: user.permissions,
       camera_access: user.camera_access,
       two_factor_enabled: user.two_factor_enabled
@@ -273,13 +296,61 @@ const Users: React.FC = () => {
   }, []);
   
   // Atualizar permissões baseado no role
-  const handleRoleChange = useCallback((role: 'admin' | 'operator' | 'viewer') => {
+  const handleRoleChange = useCallback((role: 'admin' | 'integrator' | 'operator' | 'client' | 'viewer') => {
     setFormData(prev => ({
       ...prev,
       role,
       permissions: ROLE_PERMISSIONS[role]
     }));
   }, []);
+
+  // Aprovar usuário
+  const handleApproveUser = useCallback(async (userId: string) => {
+    if (!confirm('Tem certeza que deseja aprovar este usuário?')) {
+      return;
+    }
+    
+    try {
+      await api.post(endpoints.users.approve(userId));
+      toast.success('Usuário aprovado');
+      loadUsers();
+    } catch (error) {
+      console.error('Erro ao aprovar usuário:', error);
+      toast.error('Erro ao aprovar usuário');
+    }
+  }, [loadUsers]);
+
+  // Suspender usuário
+  const handleSuspendUser = useCallback(async (userId: string) => {
+    if (!confirm('Tem certeza que deseja suspender este usuário?')) {
+      return;
+    }
+    
+    try {
+      await api.post(endpoints.users.suspend(userId));
+      toast.success('Usuário suspenso');
+      loadUsers();
+    } catch (error) {
+      console.error('Erro ao suspender usuário:', error);
+      toast.error('Erro ao suspender usuário');
+    }
+  }, [loadUsers]);
+
+  // Reativar usuário
+  const handleActivateUser = useCallback(async (userId: string) => {
+    if (!confirm('Tem certeza que deseja reativar este usuário?')) {
+      return;
+    }
+    
+    try {
+      await api.post(endpoints.users.activate(userId));
+      toast.success('Usuário reativado');
+      loadUsers();
+    } catch (error) {
+      console.error('Erro ao reativar usuário:', error);
+      toast.error('Erro ao reativar usuário');
+    }
+  }, [loadUsers]);
   
   // Exportar usuários
   const handleExportUsers = useCallback(async () => {
@@ -392,7 +463,9 @@ const Users: React.FC = () => {
                 >
                   <option value="">Todas as funções</option>
                   <option value="admin">Administrador</option>
+                  <option value="integrator">Integrador</option>
                   <option value="operator">Operador</option>
+                  <option value="client">Cliente</option>
                   <option value="viewer">Visualizador</option>
                 </select>
               </div>
@@ -405,6 +478,7 @@ const Users: React.FC = () => {
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                 >
                   <option value="">Todos os status</option>
+                  <option value="pending">Pendente</option>
                   <option value="active">Ativo</option>
                   <option value="inactive">Inativo</option>
                   <option value="suspended">Suspenso</option>
@@ -479,20 +553,27 @@ const Users: React.FC = () => {
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
                           user.role === 'admin' ? 'bg-purple-100 text-purple-800' :
+                          user.role === 'integrator' ? 'bg-blue-100 text-blue-800' :
                           user.role === 'operator' ? 'bg-primary-100 text-primary-800' :
+                          user.role === 'client' ? 'bg-yellow-100 text-yellow-800' :
                           'bg-gray-100 text-gray-800'
                         }`}>
                           {user.role === 'admin' ? 'Administrador' :
-                           user.role === 'operator' ? 'Operador' : 'Visualizador'}
+                           user.role === 'integrator' ? 'Integrador' :
+                           user.role === 'operator' ? 'Operador' :
+                           user.role === 'client' ? 'Cliente' :
+                           'Visualizador'}
                         </span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
                           user.status === 'active' ? 'bg-green-100 text-green-800' :
+                          user.status === 'pending' ? 'bg-orange-100 text-orange-800' :
                           user.status === 'suspended' ? 'bg-red-100 text-red-800' :
                           'bg-gray-100 text-gray-800'
                         }`}>
                           {user.status === 'active' ? 'Ativo' :
+                           user.status === 'pending' ? 'Pendente' :
                            user.status === 'suspended' ? 'Suspenso' : 'Inativo'}
                         </span>
                       </td>
@@ -508,40 +589,61 @@ const Users: React.FC = () => {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                         <div className="flex items-center justify-end space-x-2">
+                          {user.status === 'pending' && (
+                            <button
+                              onClick={() => handleApproveUser(user.id)}
+                              className="text-green-600 hover:text-green-700 transition-colors"
+                              title="Aprovar usuário"
+                            >
+                              <UserCheck className="w-4 h-4" />
+                            </button>
+                          )}
+                          
+                          {(user.status === 'suspended' || user.status === 'inactive') && (
+                            <button
+                              onClick={() => handleActivateUser(user.id)}
+                              className="text-green-600 hover:text-green-700 transition-colors"
+                              title="Reativar usuário"
+                            >
+                              <UserCheck className="w-4 h-4" />
+                            </button>
+                          )}
+                          
+                          {user.status === 'active' && (
+                            <button
+                              onClick={() => handleSuspendUser(user.id)}
+                              className="text-red-600 hover:text-red-700 transition-colors"
+                              title="Suspender usuário"
+                            >
+                              <UserX className="w-4 h-4" />
+                            </button>
+                          )}
+                          
                           <button
                             onClick={() => handleEditUser(user)}
                             className="text-primary-600 hover:text-primary-700 transition-colors"
+                            title="Editar usuário"
                           >
                             <Edit className="w-4 h-4" />
                           </button>
                           
-                          <button
-                            onClick={() => {
-                              setSelectedUserId(user.id);
-                              setShowPasswordModal(true);
-                            }}
-                            className="text-yellow-600 hover:text-yellow-700 transition-colors"
-                          >
-                            <Settings className="w-4 h-4" />
-                          </button>
-                          
-                          <button
-                            onClick={() => handleToggleUserStatus(
-                              user.id, 
-                              user.status === 'active' ? 'suspended' : 'active'
-                            )}
-                            className={`transition-colors ${
-                              user.status === 'active' 
-                                ? 'text-red-600 hover:text-red-700' 
-                                : 'text-green-600 hover:text-green-700'
-                            }`}
-                          >
-                            {user.status === 'active' ? <UserX className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}
-                          </button>
+                          {user.status !== 'pending' && (
+                            <button
+                              onClick={() => {
+                                setSelectedUserId(user.id);
+                                setShowPasswordModal(true);
+                              }}
+                              className="text-yellow-600 hover:text-yellow-700 transition-colors"
+                              title="Resetar senha"
+                            >
+                              <Settings className="w-4 h-4" />
+                            </button>
+                          )}
                           
                           <button
                             onClick={() => handleDeleteUser(user.id)}
                             className="text-red-600 hover:text-red-700 transition-colors"
+                            title="Excluir usuário"
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
@@ -692,11 +794,13 @@ const Users: React.FC = () => {
                     </label>
                     <select
                       value={formData.role}
-                      onChange={(e) => handleRoleChange(e.target.value as 'admin' | 'operator' | 'viewer')}
+                      onChange={(e) => handleRoleChange(e.target.value as 'admin' | 'integrator' | 'operator' | 'client' | 'viewer')}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                     >
                       <option value="viewer">Visualizador</option>
+                      <option value="client">Cliente</option>
                       <option value="operator">Operador</option>
+                      <option value="integrator">Integrador</option>
                       <option value="admin">Administrador</option>
                     </select>
                   </div>
@@ -707,11 +811,13 @@ const Users: React.FC = () => {
                     </label>
                     <select
                       value={formData.status}
-                      onChange={(e) => setFormData(prev => ({ ...prev, status: e.target.value as 'active' | 'inactive' }))}
+                      onChange={(e) => setFormData(prev => ({ ...prev, status: e.target.value as 'pending' | 'active' | 'inactive' | 'suspended' }))}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                     >
+                      <option value="pending">Pendente</option>
                       <option value="active">Ativo</option>
                       <option value="inactive">Inativo</option>
+                      <option value="suspended">Suspenso</option>
                     </select>
                   </div>
                 </div>

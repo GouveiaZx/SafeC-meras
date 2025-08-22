@@ -6,8 +6,43 @@
 import streamingService from '../services/StreamingService.js';
 import { createModuleLogger } from '../config/logger.js';
 import { supabase, supabaseAdmin } from '../config/database.js';
+import axios from 'axios';
 
 const logger = createModuleLogger('StartCameraStreaming');
+
+// Configurações do ZLMediaKit
+const ZLM_API_URL = process.env.ZLM_API_URL || 'http://localhost:8000/index/api';
+const ZLM_SECRET = process.env.ZLM_SECRET || '9QqL3M2K7vHQexkbfp6RvbCUB3GkV4MK';
+
+// Função para forçar início de gravação
+async function forceStartRecording(streamId) {
+  try {
+    console.log(`    🎬 Forçando início de gravação para stream ${streamId}`);
+    
+    const response = await axios.post(`${ZLM_API_URL}/startRecord`, null, {
+      params: {
+        secret: ZLM_SECRET,
+        type: 1, // MP4
+        vhost: '__defaultVhost__',
+        app: 'live',
+        stream: streamId
+      },
+      timeout: 10000
+    });
+
+    if (response.data.code === 0) {
+      console.log(`    ✅ Gravação forçada iniciada para ${streamId}`);
+      return true;
+    } else {
+      console.log(`    ❌ Falha ao forçar gravação para ${streamId}:`, response.data);
+      return false;
+    }
+
+  } catch (error) {
+    console.log(`    ❌ Erro ao forçar gravação para ${streamId}:`, error.message);
+    return false;
+  }
+}
 
 async function startCameraStreaming() {
   try {
@@ -82,6 +117,40 @@ async function startCameraStreaming() {
             .eq('id', camera.id);
           
           console.log(`  ✅ Câmera ${camera.name} está ONLINE e transmitindo!`);
+          
+          // FORÇAR GRAVAÇÃO AUTOMATICAMENTE SE HABILITADA
+          if (camera.recording_enabled) {
+            console.log(`  🎬 Forçando gravação para câmera ${camera.name}...`);
+            
+            try {
+              // Chamar função interna de força de gravação
+              const recordingStarted = await forceStartRecording(camera.id);
+              
+              if (recordingStarted) {
+                // Criar entrada no banco de dados
+                const now = new Date().toISOString();
+                await supabaseAdmin.from('recordings').insert([{
+                  camera_id: camera.id,
+                  status: 'recording',
+                  start_time: now,
+                  started_at: now,
+                  created_at: now,
+                  updated_at: now,
+                  metadata: { 
+                    started_by: 'startCameraStreaming',
+                    auto_started: true,
+                    forced: true
+                  }
+                }]);
+                
+                console.log(`  ✅ Gravação iniciada automaticamente para ${camera.name}`);
+              } else {
+                console.log(`  ⚠️  Falha ao iniciar gravação para ${camera.name}`);
+              }
+            } catch (recordingError) {
+              console.log(`  ❌ Erro ao forçar gravação: ${recordingError.message}`);
+            }
+          }
           
         } catch (streamError) {
           console.log(`  ⚠️  Erro ao iniciar stream: ${streamError.message}`);

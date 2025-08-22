@@ -1060,25 +1060,19 @@ const Cameras = ({ token }) => {
                           )}
                         </div>
                         
-                        {/* Stream Status */}
+                        {/* Stream Status - Simplified */}
                         <div className="mb-4 p-3 bg-gray-50 rounded-lg">
                           <div className="flex items-center justify-between">
                             <div>
-                              <p className="text-sm font-medium text-gray-700">Status do Stream</p>
+                              <p className="text-sm font-medium text-gray-700">Status</p>
                               <p className={`text-sm ${
                                 status?.status === 'active' ? 'text-green-600' :
                                 status?.status === 'error' ? 'text-red-600' : 'text-gray-500'
                               }`}>
-                                {status?.status === 'active' ? 'Ativo' :
-                                 status?.status === 'error' ? 'Erro' : 'Inativo'}
+                                {status?.status === 'active' ? '🟢 Online e Gravando' :
+                                 status?.status === 'error' ? '🔴 Erro' : '⚪ Offline'}
                               </p>
                             </div>
-                            {status?.status === 'active' && status.bitrate && (
-                              <div className="text-right">
-                                <p className="text-sm text-gray-500">Bitrate</p>
-                                <p className="text-sm font-medium">{status.bitrate} kbps</p>
-                              </div>
-                            )}
                           </div>
                         </div>
                         
@@ -1119,8 +1113,8 @@ const Cameras = ({ token }) => {
                           </button>
                         </div>
                         
-                        {/* Informações Adicionais */}
-                        <div className="grid grid-cols-2 gap-4 text-sm">
+                        {/* Informações Essenciais */}
+                        <div className="space-y-3 text-sm">
                           <div>
                             <p className="text-gray-500">Localização</p>
                             <p className="font-medium">{camera?.location || 'Não informado'}</p>

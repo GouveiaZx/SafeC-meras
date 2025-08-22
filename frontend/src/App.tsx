@@ -9,12 +9,10 @@ import Logs from "@/pages/Logs";
 import Reports from "@/pages/Reports";
 import Home from "@/pages/Home";
 import Cameras from "@/pages/Cameras";
-import Recordings from "@/pages/Recordings";
 import RecordingsPage from "@/pages/RecordingsPage";
 import Users from "@/pages/Users";
 import Settings from "@/pages/Settings";
 import Profile from "@/pages/Profile";
-import Archive from "@/pages/Archive";
 import Security from "@/pages/Security";
 import StreamViewPage from "@/pages/StreamViewPage";
 
@@ -71,21 +69,6 @@ export default function App() {
             <Route index element={<RecordingsPage />} />
           </Route>
           
-          <Route path="/recordings-old" element={
-            <ProtectedRoute>
-              <MainLayout />
-            </ProtectedRoute>
-          }>
-            <Route index element={<Recordings />} />
-          </Route>
-          
-          <Route path="/archive" element={
-            <ProtectedRoute allowedUserTypes={['ADMIN', 'INTEGRATOR']}>
-              <MainLayout />
-            </ProtectedRoute>
-          }>
-            <Route index element={<Archive />} />
-          </Route>
           
           <Route path="/users" element={
             <ProtectedRoute requiredUserType="ADMIN">

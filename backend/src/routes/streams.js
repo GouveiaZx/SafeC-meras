@@ -316,6 +316,92 @@ router.get('/:stream_id/hls/*', authenticateHLS, asyncHandler(async (req, res) =
   }
 }));
 
+/**
+ * @route GET /api/streams/:stream_id/hls_h264/*
+ * @desc Rota para streams HLS transcodificados para H264 (solução para codec H265)
+ * @access Public (com autenticação HLS)
+ */
+router.get('/:stream_id/hls_h264/*', authenticateHLS, asyncHandler(async (req, res) => {
+  const { stream_id } = req.params;
+  const file = req.params[0] || 'hls.m3u8';
+  const token = req.query.token;
+
+  if (!file.endsWith('.m3u8') && !file.endsWith('.ts')) {
+    return res.status(400).send('Tipo de arquivo não suportado para streaming H264.');
+  }
+
+  try {
+    // URL do ZLMediaKit com parâmetros de transcodificação forçada para H264
+    const proxyUrl = `http://localhost:8000/live/${stream_id}/${file}?vcodec=h264&acodec=aac`;
+    logger.debug(`🎥 Proxy H264 para: ${proxyUrl}`);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    const response = await fetch(proxyUrl, {
+      method: req.method,
+      headers: {
+        'User-Agent': 'NewCAM-HLS-H264-Proxy/1.0',
+        'Accept': file.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp2t'
+      },
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        logger.warn(`Stream H264 não encontrado: ${proxyUrl}`);
+        return res.status(404).send('Stream transcodificado não encontrado. Tentando ativar transcodificação...');
+      }
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    if (file.endsWith('.m3u8')) {
+      let manifest = await response.text();
+      const baseUrl = `/api/streams/${stream_id}/hls_h264`;
+      
+      if (token) {
+        manifest = manifest.replace(/^([^#\n\r]*\.m3u8)$/gm, `${baseUrl}/$1?token=${token}`)
+                           .replace(/^([^#\n\r]*(?<!e[+-]\d*)\.ts)$/gm, `${baseUrl}/$1?token=${token}`);
+      }
+
+      res.set('Content-Type', 'application/vnd.apple.mpegurl');
+      res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.send(manifest);
+    } else {
+      res.set('Content-Type', 'video/mp2t');
+      if (req.method === 'HEAD') {
+        res.set('Content-Length', response.headers.get('content-length') || '0');
+        res.end();
+      } else {
+        const reader = response.body.getReader();
+        const pump = () => {
+          return reader.read().then(({ done, value }) => {
+            if (done) {
+              res.end();
+              return;
+            }
+            res.write(value);
+            return pump();
+          });
+        };
+        pump().catch(err => {
+          logger.error('Erro ao fazer stream do segmento H264:', err);
+          res.end();
+        });
+      }
+    }
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      logger.error(`Timeout no proxy H264 para stream ${stream_id}`);
+      return res.status(504).send('Timeout ao acessar stream transcodificado.');
+    }
+    logger.error(`Erro no proxy H264 para stream ${stream_id}:`, error);
+    res.status(500).send('Erro interno no proxy de transcodificação.');
+  }
+}));
+
 // Aplicar autenticação a todas as outras rotas
 router.use(authenticateToken);
 
@@ -538,11 +624,16 @@ router.post('/:cameraId/start',
       
       console.log('✅ [STREAM START DEBUG] Stream iniciado com sucesso:', streamConfig);
 
+      // ✅ Gravação será iniciada automaticamente pelo webhook on_stream_changed
+      logger.info(`📝 Gravação automática será iniciada pelo webhook on_stream_changed para ${cameraId}`);
+
       logger.info(`Stream iniciado para câmera ${cameraId} por: ${req.user.email}`);
 
       res.status(201).json({
         message: 'Stream iniciado com sucesso',
-        data: streamConfig
+        data: streamConfig,
+        recording_enabled: camera.recording_enabled,
+        recording_will_start: camera.recording_enabled
       });
     } catch (error) {
       console.log('❌ [STREAM START DEBUG] Erro ao iniciar stream:', {
@@ -589,10 +680,71 @@ router.post('/:stream_id/stop',
     // Parar stream usando o serviço
     const stoppedStream = await streamingService.stopStream(stream_id, req.user.id);
 
+    // 🛑 FINALIZAR GRAVAÇÃO SE ESTIVER ATIVA
+    try {
+      logger.info(`🎬 Finalizando gravações ativas para stream ${stream_id}`);
+      
+      // Obter camera_id do stream
+      const cameraId = stream.camera_id;
+      
+      if (cameraId) {
+        // Importar serviços necessários
+        const { supabaseAdmin } = await import('../config/database.js');
+        const recordingService = (await import('../services/RecordingService.js')).default;
+        
+        // Buscar gravações ativas para esta câmera
+        const { data: activeRecordings, error } = await supabaseAdmin
+          .from('recordings')
+          .select('id, camera_id, status, created_at')
+          .eq('camera_id', cameraId)
+          .eq('status', 'recording');
+
+        if (!error && activeRecordings && activeRecordings.length > 0) {
+          logger.info(`🎬 Finalizando ${activeRecordings.length} gravação(ões) ativa(s) via botão stop`);
+          
+          for (const recording of activeRecordings) {
+            try {
+              await recordingService.stopRecording(cameraId);
+              logger.info(`✅ Gravação ${recording.id} finalizada via botão stop`);
+            } catch (recordingError) {
+              logger.error(`❌ Erro ao finalizar gravação ${recording.id}:`, recordingError);
+              
+              // Fallback: marcar como completed
+              await supabaseAdmin
+                .from('recordings')
+                .update({
+                  status: 'completed',
+                  ended_at: new Date().toISOString(),
+                  updated_at: new Date().toISOString()
+                })
+                .eq('id', recording.id);
+            }
+          }
+        } else if (error) {
+          logger.error(`❌ Erro ao buscar gravações ativas:`, error);
+        }
+        
+        // Processar arquivos temporários
+        setTimeout(async () => {
+          try {
+            const hookModule = await import('./hooks.js');
+            // A função processTemporaryFilesForCamera não está exportada, mas podemos chamar o serviço de finalização
+            const finalizationService = (await import('../services/RecordingFinalizationService.js')).default;
+            await finalizationService.finalizeActiveRecordingForCamera(cameraId);
+          } catch (tempError) {
+            logger.error(`⚠️ Erro ao processar arquivos temporários:`, tempError);
+          }
+        }, 3000);
+      }
+    } catch (recordingError) {
+      logger.error(`❌ Erro ao finalizar gravações:`, recordingError);
+    }
+
     logger.info(`Stream ${stream_id} parado por: ${req.user.email}`);
 
     res.json({
       message: 'Stream parado com sucesso',
+      recording_finalized: true,
       data: stoppedStream
     });
   })

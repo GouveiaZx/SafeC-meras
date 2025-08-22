@@ -76,10 +76,21 @@ router.post('/login',
       throw new AuthenticationError('Credenciais inválidas');
     }
 
-    // Verificar se usuário está ativo
-    if (!user.active) {
+    // Verificar status do usuário
+    if (user.status === 'pending') {
+      logger.warn(`Tentativa de login com usuário pendente: ${email}`);
+      authHealthService.recordLoginAttempt(false);
+      throw new AuthenticationError('Conta pendente de aprovação. Entre em contato com o administrador.');
+    }
+
+    if (user.status === 'suspended') {
+      logger.warn(`Tentativa de login com usuário suspenso: ${email}`);
+      authHealthService.recordLoginAttempt(false);
+      throw new AuthenticationError('Conta suspensa. Entre em contato com o administrador.');
+    }
+
+    if (user.status === 'inactive' || !user.active) {
       logger.warn(`Tentativa de login com usuário inativo: ${email}`);
-      // Registrar falha no monitoramento de saúde
       authHealthService.recordLoginAttempt(false);
       throw new AuthenticationError('Conta desativada');
     }
@@ -104,8 +115,8 @@ router.post('/login',
     // Atualizar último login
     await user.updateLastLogin();
 
-    // Gerar tokens
-    const accessToken = generateToken(user.id, user.email, user.role);
+    // Gerar tokens (incluindo userType)
+    const accessToken = generateToken(user.id, user.email, user.role, user.userType);
     const refreshToken = generateRefreshToken(user.id);
 
     // Salvar refresh token no banco (opcional - para invalidação)
@@ -152,12 +163,14 @@ router.post('/register',
       throw new ConflictError('Email já está em uso');
     }
 
-    // Criar novo usuário
+    // Criar novo usuário (admin criando, fica ativo)
     const user = new User({
-      name,
+      username: name.toLowerCase().replace(/\s+/g, ''),
+      full_name: name,
       email,
       password,
       role,
+      status: 'active', // Admin criando usuário = aprovado automaticamente
       created_by: req.user.id
     });
 
@@ -249,12 +262,14 @@ router.post('/register-public',
       }
     }
 
-    // Criar novo usuário
+    // Criar novo usuário (registro público = pendente)
     const user = new User({
-      name,
+      username: email.split('@')[0], // Usar parte do email como username inicial
+      full_name: name,
       email,
       password,
-      role
+      role,
+      status: 'pending' // Registro público requer aprovação
     });
 
     await user.save();
@@ -351,7 +366,7 @@ router.post('/refresh',
       }
 
       // Gerar novo access token
-      const accessToken = generateToken(user.id, user.email, user.role);
+      const accessToken = generateToken(user.id, user.email, user.role, user.userType);
       const duration = Date.now() - startTime;
 
       logger.info(`[${requestId}] ✅ Token refresh successful (${duration}ms)`, {

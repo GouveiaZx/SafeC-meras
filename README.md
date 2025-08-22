@@ -1,6 +1,6 @@
-# NewCAM - Sistema de Vigilância por Câmeras IP
+# NewCAM - Sistema de Vigilância IP Profissional
 
-Sistema completo de monitoramento de câmeras IP com streaming em tempo real, interface web moderna e backend robusto para vigilância profissional.
+Sistema completo de monitoramento de câmeras IP com streaming em tempo real, interface web moderna, backend robusto e sistema de upload S3 assíncrono para vigilância profissional.
 
 ## 🌐 Acesso à Aplicação
 
@@ -19,12 +19,13 @@ Sistema completo de monitoramento de câmeras IP com streaming em tempo real, in
 ```
 NewCAM/
 ├── frontend/          # Interface web (React + TypeScript + Vite)
-├── backend/           # API REST e WebSocket (Node.js + Express)
-├── worker/            # Monitoramento de câmeras
+├── backend/           # API REST, WebSocket e Upload S3 (Node.js + Express)
+├── worker/            # Processamento background e upload queue
 ├── docker/            # Configurações Docker e serviços
-├── docs/              # Documentação essencial
-├── scripts/           # Scripts de instalação e migração
-└── nginx.conf         # Configuração Nginx
+├── docs/              # Documentação completa e organizada
+├── scripts/           # Scripts de deployment e manutenção
+├── storage/           # Armazenamento local (gravações e logs)
+└── docker-compose.yml # Orquestração de containers
 ```
 
 ## 🌐 Mapeamento de Portas
@@ -55,31 +56,39 @@ NewCAM/
 - **React 18** com TypeScript
 - **Vite** para build otimizado
 - **Tailwind CSS** para estilização
-- **Zustand** para gerenciamento de estado
 - **React Router** para navegação
 - **Lucide React** para ícones
 - **HLS.js** para streaming de vídeo
+- **Upload status indicators** e **storage badges**
 
 ### Backend
 - **Node.js** com Express
-- **Socket.IO** para WebSockets
+- **Socket.IO** para WebSockets em tempo real
 - **Supabase** (PostgreSQL) como banco principal
-- **JWT** para autenticação
-- **Winston** para logs
-- **Axios** para requisições HTTP
+- **JWT** + **Supabase Auth** para autenticação
+- **Winston** para logs estruturados
+- **Upload Queue System** para S3 assíncrono
 
-### Streaming
+### Upload & Storage
+- **S3Service** com upload multipart
+- **UploadQueueService** com retry inteligente
+- **PathResolver** para normalização de caminhos
+- **Feature Flags** para rollout gradual
+- **Wasabi S3** como storage de produção
+
+### Streaming & Recording
 - **ZLMediaKit** servidor de mídia principal
-- **SRS** servidor de mídia alternativo
 - **RTSP/RTMP** protocolos de entrada
 - **HLS** streaming adaptativo para web
-- **HTTP-FLV** streaming de baixa latência
+- **H264 Transcoding** em tempo real para compatibilidade
+- **Sistema de gravação** com upload automático
 
 ### Infraestrutura
-- **Docker** containerização
-- **Nginx** proxy reverso
-- **Ubuntu 20.04** sistema operacional
-- **Wasabi S3** armazenamento de gravações
+- **Docker** containerização completa
+- **Nginx** proxy reverso otimizado
+- **PM2** gerenciamento de processos
+- **Redis** cache e sessões
+- **Database migrations** automáticas
 
 ## 📦 Instalação
 
@@ -126,6 +135,10 @@ npm run dev
 - ✅ ZLMediaKit funcionando
 - ✅ Sistema de streaming operacional
 - ✅ Configurações padronizadas
+- ✅ Sistema de usuários funcional (login, gestão, permissões)
+- ✅ Página de Arquivo completamente funcional (filtros, player, listagem)
+- ✅ RecordingService refatorado e otimizado
+- ✅ Integração completa frontend-backend-worker testada
 
 ### 🚀 Desenvolvimento Local
 
@@ -406,20 +419,49 @@ docker-compose restart worker
 
 ## 📚 Documentação
 
-### 📋 Documentos Essenciais
-- [Desenvolvimento Local](docs/DESENVOLVIMENTO-LOCAL.md) - Guia completo para desenvolvimento
-- [Credenciais e Login](docs/CREDENCIAIS-LOGIN.md) - Informações de acesso
-- [Configuração do Supabase](docs/configuracao-supabase.md) - Setup do banco de dados
-- [Deploy em Produção](docs/PRODUCTION-README.md) - Configuração para produção
+### 📋 Documentação Completa
+- **[Installation Guide](docs/INSTALLATION.md)** - Guia completo de instalação (Windows/Linux/Docker)
+- **[Architecture Overview](docs/ARCHITECTURE.md)** - Arquitetura detalhada do sistema
+- **[API Reference](docs/API_REFERENCE.md)** - Documentação completa da API REST
+- **[Troubleshooting](docs/TROUBLESHOOTING.md)** - Soluções para problemas comuns
+- **[Deploy Guide](docs/DEPLOY_GUIDE.md)** - Guia de deploy em produção
+- **[CLAUDE.md](CLAUDE.md)** - Instruções técnicas para desenvolvimento com IA
+
+### 🚀 Quick Start
+```bash
+# 1. Clone e instale dependências
+git clone <repository-url> && cd NewCAM
+npm install && cd backend && npm install && cd ../frontend && npm install && cd ..
+
+# 2. Configure environment
+cp backend/.env.example backend/.env  # Edite com suas configurações
+
+# 3. Inicie todos os serviços
+npm run dev
+```
+
+### 🔧 Principais Funcionalidades
+- ✅ **Streaming em tempo real** com HLS e transcodificação H264
+- ✅ **Sistema de gravação** com upload S3 assíncrono
+- ✅ **Interface moderna** com React 18 + TypeScript
+- ✅ **API REST completa** com autenticação JWT
+- ✅ **Upload queue** com retry automático e métricas
+- ✅ **Feature flags** para rollout controlado
+- ✅ **Sistema de usuários** com roles (admin, integrator, client, viewer)
+- ✅ **Gestão de arquivos** com arquivo de gravações avançado
+- ✅ **Documentação completa** e troubleshooting
 
 ## 📞 Suporte
 
-### Informações do Sistema
-- **Versão**: 2.0.0
-- **Node.js**: 18+
-- **Banco**: Supabase (PostgreSQL)
-- **Streaming**: ZLMediaKit + SRS
-- **Armazenamento**: Wasabi S3
+### 🗂️ Informações do Sistema
+- **Versão**: 2.2.0 (Janeiro 2025)
+- **Node.js**: 18+ LTS
+- **Banco**: Supabase (PostgreSQL) + Redis
+- **Streaming**: ZLMediaKit com H264 transcoding
+- **Storage**: Local primary + Wasabi S3 backup
+- **Upload System**: Queue-based async upload com retry
+- **Usuários**: Sistema completo de gestão com roles e permissões
+- **Status**: ✅ Funcional e atualizado (usuários e arquivo implementados)
 
 ### Comandos de Diagnóstico
 ```bash

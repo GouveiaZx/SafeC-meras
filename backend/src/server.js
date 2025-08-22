@@ -32,12 +32,13 @@ import userRoutes from './routes/users.js';
 import cameraRoutes from './routes/cameras.js';
 import streamRoutes from './routes/streams.js';
 import recordingRoutes from './routes/recordings.js';
+import recordingFilesRoutes from './routes/recordingFiles.js';
 import dashboardRoutes from './routes/dashboard.js';
 import metricsRoutes from './routes/metrics.js';
 import logsRoutes from './routes/logs.js';
 import discoveryRoutes from './routes/discovery.js';
 import workerRoutes from './routes/worker.js';
-import hookRoutes from './routes/hooks_improved.js';
+import hookRoutes from './routes/hooks.js';
 import healthRoutes from './routes/health.js';
 import segmentationRoutes, { injectSegmentationService } from './routes/segmentation.js';
 
@@ -46,6 +47,8 @@ import streamingService from './services/StreamingService.js';
 import cameraMonitoringService from './services/CameraMonitoringService.js';
 import MetricsService from './services/MetricsService.js';
 import SegmentationService from './services/SegmentationService.js';
+import RecordingMonitorService from './services/RecordingMonitorService.js';
+import recordingFinalizationService from './services/RecordingFinalizationService.js';
 import { initializeSocket } from './controllers/socketController.js';
 
 // Configurações
@@ -138,7 +141,7 @@ app.use('/api/dashboard', authenticateToken);
 app.use('/api/metrics', authenticateToken);
 app.use('/api/logs', authenticateToken);
 app.use('/api/discovery', authenticateToken);
-app.use('/api/worker', authenticateToken);
+// app.use('/api/worker', authenticateToken); // REMOVIDO: Worker usa seu próprio sistema de autenticação
 app.use('/api/segmentation', authenticateToken);
 
 // Rota de health check (sem autenticação)
@@ -156,6 +159,7 @@ app.get('/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/recordings', recordingRoutes); // Movido para antes de cameras para evitar conflito de rotas
+app.use('/api/recording-files', recordingFilesRoutes); // Rota para servir arquivos MP4 diretamente
 app.use('/api/cameras', cameraRoutes);
 app.use('/api/streams', streamRoutes);
 app.use('/api/dashboard', dashboardRoutes);
@@ -165,41 +169,16 @@ app.use('/api/discovery', discoveryRoutes);
 // PRODUÇÃO: Rotas de simulação removidas
 // app.use('/api/simulation', simulationRoutes);
 app.use('/api/worker', workerRoutes);
-app.use('/api/webhooks', hookRoutes);
+app.use('/api/hook', hookRoutes);
 app.use('/api/health', healthRoutes);
 app.use('/api/segmentation', segmentationRoutes);
 
-// Servir arquivos estáticos de stream (APÓS as rotas da API)
-const streamStoragePath = join(__dirname, '../../worker/storage/streams');
-app.use('/streams', express.static(streamStoragePath, {
-  setHeaders: (res, path) => {
-    if (path.endsWith('.m3u8')) {
-      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-      res.setHeader('Cache-Control', 'no-cache');
-    } else if (path.endsWith('.ts')) {
-      res.setHeader('Content-Type', 'video/mp2t');
-      res.setHeader('Cache-Control', 'public, max-age=3600');
-    }
-  }
-}));
+// REMOVIDO POR SEGURANÇA: Exposição estática de streams sem autenticação
+// Streams devem ser servidos através da API com autenticação adequada
+// Use /api/streams/:id para acessar streams com segurança
 
-// Servir arquivos de gravação com CORS adequado
-const recordingsStoragePath = process.env.RECORDINGS_PATH || join(__dirname, '../recordings');
-app.use('/recordings', cors(corsConfig), express.static(recordingsStoragePath, {
-  setHeaders: (res, path, stat) => {
-    // Headers CORS específicos para vídeos
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Range, Accept-Ranges, Content-Range, Content-Length, Content-Type');
-    res.setHeader('Access-Control-Expose-Headers', 'Accept-Ranges, Content-Range, Content-Length, Content-Type');
-    
-    if (path.endsWith('.mp4')) {
-      res.setHeader('Content-Type', 'video/mp4');
-      res.setHeader('Accept-Ranges', 'bytes');
-      res.setHeader('Cache-Control', 'public, max-age=3600');
-    }
-  }
-}));
+// REMOVIDO: Rota estática /recordings removida por segurança
+// Todo acesso a gravações deve ser feito via /api/recording-files com autenticação
 
 // Middleware de tratamento de erros
 app.use(notFoundHandler);
@@ -220,8 +199,9 @@ async function initializeServices() {
   
   // Aguardar inicialização do StreamingService
   try {
-    await streamingService.init();
-    console.log('✅ StreamingService inicializado');
+    console.log('⚠️ StreamingService temporariamente desabilitado (Docker não disponível)');
+    // await streamingService.init();
+    // console.log('✅ StreamingService inicializado');
   } catch (error) {
     console.error('❌ Erro ao inicializar StreamingService:', error);
     throw error;
@@ -229,11 +209,36 @@ async function initializeServices() {
 
   // Inicializar serviço de monitoramento de câmeras
   try {
-    await cameraMonitoringService.initialize(streamingService);
-    cameraMonitoringService.startMonitoring();
-    console.log('✅ CameraMonitoringService inicializado');
+    console.log('⚠️ CameraMonitoringService temporariamente desabilitado (Docker não disponível)');
+    // await cameraMonitoringService.initialize(streamingService);
+    // cameraMonitoringService.startMonitoring();
+    // console.log('✅ CameraMonitoringService inicializado');
   } catch (error) {
     console.error('❌ Erro ao inicializar CameraMonitoringService:', error);
+  }
+
+  // DESABILITADO: RecordingMonitorService (serviço redundante)
+  try {
+    console.log('⚠️ RecordingMonitorService DESABILITADO - usando apenas RecordingService');
+    // await RecordingMonitorService.start();
+    // console.log('✅ RecordingMonitorService inicializado (automação de 30s ativa)');
+    
+    // Adicionar ao contexto global para uso em rotas se necessário
+    // app.locals.recordingMonitor = RecordingMonitorService;
+  } catch (error) {
+    console.error('❌ Erro ao inicializar RecordingMonitorService:', error);
+  }
+
+  // DESABILITADO: RecordingFinalizationService (serviço redundante)
+  try {
+    console.log('⚠️ RecordingFinalizationService DESABILITADO - usando apenas RecordingService');
+    // recordingFinalizationService.start();
+    // console.log('✅ RecordingFinalizationService inicializado');
+    
+    // Adicionar ao contexto global para uso em rotas se necessário
+    // app.locals.recordingFinalizationService = recordingFinalizationService;
+  } catch (error) {
+    console.error('❌ Erro ao inicializar RecordingFinalizationService:', error);
   }
 
   // Iniciar coleta de métricas
@@ -244,13 +249,27 @@ async function initializeServices() {
     console.error('Erro ao iniciar coleta de métricas:', error);
   }
 
-  // Inicializar serviço de segmentação
+  // Iniciar job de sincronização de gravações
   try {
-    globalSegmentationService = new SegmentationService();
-    globalSegmentationService.start();
+    const { default: recordingSyncJob } = await import('./jobs/recordingSyncJob.js');
+    await recordingSyncJob.initialize();
+    recordingSyncJob.start();
+    console.log('🔄 Recording Sync Job iniciado');
+    
+    // Adicionar ao contexto global para monitoramento
+    app.locals.recordingSyncJob = recordingSyncJob;
+  } catch (error) {
+    console.error('❌ Erro ao inicializar Recording Sync Job:', error);
+  }
+
+  // DESABILITADO: SegmentationService (serviço redundante)
+  try {
+    console.log('⚠️ SegmentationService DESABILITADO - gravação será controlada manualmente');
+    // globalSegmentationService = new SegmentationService();
+    // globalSegmentationService.start();
     // Injetar o serviço nas rotas
-    injectSegmentationService(globalSegmentationService);
-    console.log('✅ SegmentationService inicializado e iniciado');
+    // injectSegmentationService(globalSegmentationService);
+    // console.log('✅ SegmentationService inicializado e iniciado');
   } catch (error) {
     console.error('❌ Erro ao inicializar SegmentationService:', error);
   }
@@ -347,16 +366,17 @@ async function initializeServices() {
   }
 
   // Inicializar câmeras automaticamente após 10 segundos
-  setTimeout(async () => {
-    try {
-      console.log('🎬 Iniciando processo automático de ativação das câmeras...');
-      const { default: startCameraStreaming } = await import('./scripts/startCameraStreaming.js');
-      await startCameraStreaming();
-      console.log('✅ Processo de ativação das câmeras concluído');
-    } catch (error) {
-      console.error('❌ Erro na inicialização automática das câmeras:', error);
-    }
-  }, 10000); // Aguardar 10 segundos para todos os serviços estarem prontos
+  // setTimeout(async () => {
+  //   try {
+  //     console.log('🎬 Iniciando processo automático de ativação das câmeras...');
+  //     const { default: startCameraStreaming } = await import('./scripts/startCameraStreaming.js');
+  //     await startCameraStreaming();
+  //     console.log('✅ Processo de ativação das câmeras concluído');
+  //   } catch (error) {
+  //     console.error('❌ Erro na inicialização automática das câmeras:', error);
+  //   }
+  // }, 10000); // Aguardar 10 segundos para todos os serviços estarem prontos
+  console.log('⚠️ Ativação automática de câmeras desabilitada (Docker não disponível)');
 }
 
 // Iniciar servidor

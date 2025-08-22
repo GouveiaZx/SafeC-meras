@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { Play, Pause, Volume2, VolumeX, Maximize, RotateCcw, AlertCircle, Wifi, WifiOff } from 'lucide-react';
 import { toast } from 'sonner';
 import Hls from 'hls.js';
@@ -40,6 +40,33 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
     stringValue: String(token),
     rawValue: token
   });
+
+  // Validação extra do token no VideoPlayer
+  const validatedToken = useMemo(() => {
+    if (!token) {
+      console.warn('🔍 VideoPlayer - Token não fornecido');
+      return undefined;
+    }
+    
+    if (typeof token !== 'string') {
+      console.error('🔍 VideoPlayer - Token não é string:', typeof token, token);
+      return undefined;
+    }
+    
+    if (token.length < 10) {
+      console.error('🔍 VideoPlayer - Token muito curto:', token.length);
+      return undefined;
+    }
+    
+    // Verificar se parece um JWT (tem 3 partes separadas por ponto)
+    const parts = token.split('.');
+    if (parts.length !== 3) {
+      console.warn('🔍 VideoPlayer - Token não parece ser JWT (não tem 3 partes):', parts.length);
+    }
+    
+    console.log('🔍 VideoPlayer - Token validado:', token.substring(0, 50) + '...');
+    return token;
+  }, [token]);
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -65,7 +92,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
   // Verificar suporte ao HLS e se é transmissão ao vivo
   useEffect(() => {
     setHlsSupported(Hls.isSupported());
-    setIsLive(src ? (src.includes('.m3u8') || src.includes('/hls')) : false);
+    // Detectar se é stream ao vivo (HLS) ou gravação (MP4)
+    setIsLive(src ? (src.includes('.m3u8') || src.includes('/hls') || src.includes('/live/')) : false);
   }, [src]);
 
   const cleanupHLS = useCallback(() => {
@@ -165,45 +193,37 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
     // Limpar instância anterior
     cleanupHLS();
 
-    // Verificar se é stream HLS
+    // Verificar se é stream HLS ou MP4
     const isHLS = src.includes('.m3u8') || src.includes('/hls');
+    const isMP4 = src.includes('.mp4') || src.includes('/stream') || src.includes('/recordings/') || src.includes('/play-web');
     
     if (isHLS && hlsSupported) {
       console.log('🚀 Inicializando HLS.js para:', src);
       
-      // Validação robusta do token
-      const isValidToken = (
-        token && 
-        typeof token === 'string' && 
-        token.trim() !== '' &&
-        token !== 'null' && 
-        token !== 'undefined' &&
-        token !== 'false' &&
-        !token.includes('undefined') &&
-        token.length > 10 // Token JWT mínimo
-      );
+      // Usar token validado em vez de validação redundante
+      const isValidToken = !!validatedToken;
       
-      console.log('🔐 Análise do token:', {
-        received: token ? `${token.substring(0, 20)}...` : 'NULO',
-        type: typeof token,
-        length: token?.length || 0,
+      console.log('🔐 Análise do token validado:', {
+        received: validatedToken ? `${validatedToken.substring(0, 20)}...` : 'NULO',
+        type: typeof validatedToken,
+        length: validatedToken?.length || 0,
         isValid: isValidToken
       });
       
       // Verificar se a URL já contém token antes de adicionar
       let urlWithToken = src;
-      if (isValidToken) {
+      if (isValidToken && validatedToken) {
         // Verificar se o token já está presente na URL
         const urlObj = new URL(src, window.location.origin);
         const existingToken = urlObj.searchParams.get('token');
         
         if (existingToken) {
-          console.log('🔗 URL já contém token, usando URL original:', src.replace(existingToken, 'TOKEN_HIDDEN'));
+          console.log('🔗 URL já contém token, usando URL original');
           urlWithToken = src;
         } else {
           const separator = src.includes('?') ? '&' : '?';
-          urlWithToken = `${src}${separator}token=${encodeURIComponent(token)}`;
-          console.log('🔗 Token adicionado à URL:', urlWithToken.replace(token, 'TOKEN_HIDDEN'));
+          urlWithToken = `${src}${separator}token=${encodeURIComponent(validatedToken)}`;
+          console.log('🔗 Token adicionado à URL de HLS');
         }
       }
       
@@ -236,14 +256,14 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
         maxStarvationDelay: 2, // Reduzir delay de starvation
         maxLoadingDelay: 2, // Reduzir delay de carregamento
         xhrSetup: (xhr, url) => {
-          console.log('⚙️ Configurando XHR para:', url.replace(token || '', 'TOKEN_HIDDEN'));
+          console.log('⚙️ Configurando XHR para:', url.replace(validatedToken || '', 'TOKEN_HIDDEN'));
           
           // Tentar header Authorization primeiro
-          if (isValidToken) {
-            xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-            console.log('✅ Token adicionado ao header Authorization');
+          if (isValidToken && validatedToken) {
+            xhr.setRequestHeader('Authorization', `Bearer ${validatedToken}`);
+            console.log('✅ Token validado adicionado ao header Authorization');
           } else {
-            console.warn('⚠️ Token inválido - usando apenas query parameter');
+            console.warn('⚠️ Token validado não disponível - usando apenas query parameter');
           }
           
           // Headers CORS otimizados
@@ -259,15 +279,15 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
           
           // Event listeners para debug
           xhr.addEventListener('loadstart', () => {
-            console.log('📡 XHR iniciado para:', url.replace(token || '', 'TOKEN_HIDDEN'));
+            console.log('📡 XHR iniciado para:', url.replace(validatedToken || '', 'TOKEN_HIDDEN'));
           });
           
           xhr.addEventListener('error', (e) => {
-            console.error('❌ XHR erro para:', url.replace(token || '', 'TOKEN_HIDDEN'), e);
+            console.error('❌ XHR erro para:', url.replace(validatedToken || '', 'TOKEN_HIDDEN'), e);
           });
           
           xhr.addEventListener('timeout', () => {
-            console.error('⏰ XHR timeout para:', url.replace(token || '', 'TOKEN_HIDDEN'));
+            console.error('⏰ XHR timeout para:', url.replace(validatedToken || '', 'TOKEN_HIDDEN'));
           });
         }
       });
@@ -376,6 +396,48 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
         
         setLastErrorTime(currentTime);
         
+        // Tratar erro de codec específico primeiro (pode ser fatal)
+        if (data.details === 'bufferAddCodecError') {
+          console.warn('🔄 Codec não suportado (provável H265), tentando alternativas...');
+          console.log('🐞 DEBUG bufferAddCodecError: retryCount =', retryCount);
+          if (retryCount < 3) {
+            let fallbackUrl = urlWithToken;
+            
+            // Tentar diferentes alternativas baseadas no retry count
+            if (retryCount === 0) {
+              // Primeira tentativa: Stream direto do ZLMediaKit (bypass proxy)
+              const streamId = urlWithToken.match(/streams\/([^\/]+)\/hls/)?.[1];
+              if (streamId) {
+                fallbackUrl = `http://localhost:8000/live/${streamId}/hls.m3u8${urlWithToken.includes('?') ? '&' + urlWithToken.split('?')[1] : ''}`;
+                console.log('🎥 Tentativa 1: Stream direto ZLMediaKit:', fallbackUrl);
+              }
+            } else if (retryCount === 1) {
+              // Segunda tentativa: FMP4 format
+              const streamId = urlWithToken.match(/streams\/([^\/]+)\/hls/)?.[1];
+              if (streamId) {
+                fallbackUrl = `http://localhost:8000/${streamId}.live.m3u8${urlWithToken.includes('?') ? '?' + urlWithToken.split('?')[1] : ''}`;
+                console.log('🎥 Tentativa 2: Formato FMP4:', fallbackUrl);
+              }
+            } else {
+              // Terceira tentativa: Stream com parâmetros de qualidade reduzida
+              fallbackUrl = urlWithToken + (urlWithToken.includes('?') ? '&' : '?') + 'vcodec=h264&acodec=aac';
+              console.log('🎥 Tentativa 3: Codec forçado H264:', fallbackUrl);
+            }
+            
+            setTimeout(() => {
+              try {
+                hlsRef.current?.loadSource(fallbackUrl);
+                setRetryCount(prev => prev + 1);
+              } catch (e) {
+                console.warn(`Falha na tentativa ${retryCount + 1}:`, e);
+              }
+            }, 1000);
+          } else {
+            console.error('❌ Todas as tentativas de fallback falharam - codec H265 não suportado');
+          }
+          return;
+        }
+        
         // Tratar erros não fatais primeiro
         if (!data.fatal) {
           switch (data.details) {
@@ -412,7 +474,6 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
               }
               return;
             case 'bufferAppendError':
-            case 'bufferAddCodecError':
             case 'bufferSeekOverHole':
             case 'bufferNudgeOnStall':
               // Erros de buffer não fatais - ignorar silenciosamente
@@ -538,6 +599,42 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       // Para Safari, não adicionar token na URL, usar apenas headers quando possível
       video.src = src;
       video.load();
+    } else if (isMP4) {
+      // Arquivo MP4 - reprodução nativa com token de autenticação
+      console.log('🎬 Configurando reprodução de MP4:', src);
+      
+      // Adicionar token para MP4 se disponível
+      let urlWithToken = src;
+      if (validatedToken) {
+        // Verificar se o token já está presente na URL
+        const urlObj = new URL(src, window.location.origin);
+        const existingToken = urlObj.searchParams.get('token');
+        
+        if (existingToken) {
+          console.log('🔐 URL do MP4 já contém token, usando URL original');
+          urlWithToken = src;
+        } else {
+          const separator = src.includes('?') ? '&' : '?';
+          urlWithToken = `${src}${separator}token=${encodeURIComponent(validatedToken)}`;
+          console.log('🔐 Token adicionado à URL do MP4');
+        }
+      }
+      
+      video.src = urlWithToken;
+      video.load();
+      
+      // Configurações específicas para MP4 streaming
+      if (src.includes('/play-web')) {
+        // Stream de transcodificação em tempo real - configurações otimizadas
+        video.preload = 'auto';
+        video.crossOrigin = 'anonymous';
+        console.log('🎥 Configurado para stream MP4 em tempo real (H264 transcoding)');
+      } else {
+        // Arquivo MP4 estático - configurações padrão
+        video.preload = 'metadata';
+        video.crossOrigin = 'anonymous';
+      }
+      
     } else {
       // Stream não-HLS ou fallback
       console.log('Usando video nativo para:', src);
@@ -589,13 +686,25 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       if (target?.error) {
         switch (target.error.code) {
           case MediaError.MEDIA_ERR_NETWORK:
-            errorMessage = 'Erro de rede ao carregar stream';
+            if (src?.includes('/play-web')) {
+              errorMessage = 'Erro de rede durante transcodificação H264';
+            } else {
+              errorMessage = 'Erro de rede ao carregar stream';
+            }
             break;
           case MediaError.MEDIA_ERR_DECODE:
-            errorMessage = 'Erro ao decodificar stream';
+            if (src?.includes('/play-web')) {
+              errorMessage = 'Erro ao decodificar stream H264 transcodificado';
+            } else {
+              errorMessage = 'Erro ao decodificar stream';
+            }
             break;
           case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
-            errorMessage = 'Formato de stream não suportado';
+            if (src?.includes('/play-web')) {
+              errorMessage = 'Transcodificação H264 não suportada pelo navegador';
+            } else {
+              errorMessage = 'Formato de stream não suportado';
+            }
             break;
           default:
             errorMessage = 'Erro desconhecido no stream';
@@ -603,6 +712,19 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       }
       
       console.error('Erro no video:', errorMessage, target?.error);
+      
+      // Para streams /play-web, tentar recarregar uma vez automaticamente
+      if (src?.includes('/play-web') && retryCount === 0) {
+        console.log('🔄 Tentando recarregar stream de transcodificação...');
+        setRetryCount(1);
+        setTimeout(() => {
+          if (videoRef.current) {
+            videoRef.current.load();
+          }
+        }, 2000);
+        return;
+      }
+      
       setError(errorMessage);
       setIsLoading(false);
       onError?.(errorMessage);

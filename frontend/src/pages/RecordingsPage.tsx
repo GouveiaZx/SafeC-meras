@@ -43,6 +43,7 @@ interface TrendsResponse {
 interface RecordingApiResponse {
   id: string;
   camera_id: string;
+  camera_name?: string;
   cameras?: {name: string};
   filename: string;
   start_time: string;
@@ -178,7 +179,7 @@ const RecordingsPage: React.FC = () => {
         const mappedRecordings = data.data.map((recording: RecordingApiResponse) => ({
           id: recording.id,
           cameraId: recording.camera_id,
-          cameraName: recording.cameras?.name || 'Câmera desconhecida',
+          cameraName: recording.camera_name || 'Câmera desconhecida',
           filename: recording.filename,
           startTime: recording.start_time,
           endTime: recording.end_time,
@@ -457,7 +458,7 @@ const RecordingsPage: React.FC = () => {
 
       {/* Filtros */}
       <Card className="p-4">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
           <div className="relative">
             <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
             <input
@@ -493,20 +494,21 @@ const RecordingsPage: React.FC = () => {
             <option value="failed">Falhou</option>
           </select>
           
-          <div className="flex space-x-2">
-            <input
-              type="date"
-              value={dateRange.start}
-              onChange={(e) => setDateRange(prev => ({ ...prev, start: e.target.value }))}
-              className="px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-            />
-            <input
-              type="date"
-              value={dateRange.end}
-              onChange={(e) => setDateRange(prev => ({ ...prev, end: e.target.value }))}
-              className="px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-            />
-          </div>
+          <input
+            type="date"
+            value={dateRange.start}
+            onChange={(e) => setDateRange(prev => ({ ...prev, start: e.target.value }))}
+            placeholder="Data inicial"
+            className="px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+          />
+          
+          <input
+            type="date"
+            value={dateRange.end}
+            onChange={(e) => setDateRange(prev => ({ ...prev, end: e.target.value }))}
+            placeholder="Data final"
+            className="px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+          />
         </div>
       </Card>
 
@@ -549,7 +551,7 @@ const RecordingsPage: React.FC = () => {
                       </div>
                       <div className="flex space-x-1">
                         {/* Botão de reprodução destacado */}
-                        {(recording.status === 'completed' || recording.status === 'uploaded') && (
+                        {(recording.localPath || recording.s3Url || (recording.status === 'completed' && recording.size > 0)) && (
                           <Button
                             size="sm"
                             variant="default"
@@ -604,7 +606,14 @@ const RecordingsPage: React.FC = () => {
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                     <div>
                       <span className="text-gray-600">Duração:</span>
-                      <p className="font-medium">{formatDuration(recording.duration)}</p>
+                      <p className="font-medium">
+                        {recording.duration && recording.duration > 0 
+                          ? formatDuration(recording.duration) 
+                          : recording.startTime && recording.endTime 
+                            ? formatDuration(Math.round((new Date(recording.endTime).getTime() - new Date(recording.startTime).getTime()) / 1000))
+                            : 'Calculando...'
+                        }
+                      </p>
                     </div>
                     <div>
                       <span className="text-gray-600">Tamanho:</span>

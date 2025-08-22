@@ -175,7 +175,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
               id: response.user.id,
               name: response.user.name,
               email: response.user.email,
-              userType: response.user.role?.toUpperCase() || 'CLIENT',
+              userType: response.user.userType || response.user.role?.toUpperCase() || 'CLIENT',
               isActive: response.user.active,
               createdAt: response.user.created_at
             };
@@ -216,19 +216,39 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       setIsLoading(true);
       const response = await api.post<{ tokens: { accessToken: string; refreshToken: string }, user: any }>(endpoints.auth.login(), { email, password });
       
+      console.log('🔍 [AuthContext] Login response completa:', response);
+      
       const { tokens, user: userData } = response;
       const newToken = tokens.accessToken;
       const newRefreshToken = tokens.refreshToken;
+      
+      console.log('🔍 [AuthContext] Tokens extraídos:', {
+        newToken: typeof newToken === 'string' ? newToken.substring(0, 50) + '...' : newToken,
+        newRefreshToken: typeof newRefreshToken === 'string' ? newRefreshToken.substring(0, 50) + '...' : newRefreshToken,
+        tokenType: typeof newToken,
+        refreshTokenType: typeof newRefreshToken
+      });
+      
+      // Validar que o token é realmente uma string
+      if (typeof newToken !== 'string' || !newToken) {
+        throw new Error(`Token inválido recebido do servidor. Tipo: ${typeof newToken}, Valor: ${newToken}`);
+      }
+      
+      if (typeof newRefreshToken !== 'string' || !newRefreshToken) {
+        throw new Error(`Refresh token inválido recebido do servidor. Tipo: ${typeof newRefreshToken}, Valor: ${newRefreshToken}`);
+      }
       
       // Map backend user data to frontend format
       const mappedUser = {
         id: userData.id,
         name: userData.name,
         email: userData.email,
-        userType: userData.role?.toUpperCase() || 'CLIENT',
+        userType: userData.userType || userData.role?.toUpperCase() || 'CLIENT',
         isActive: userData.active,
         createdAt: userData.created_at
       };
+      
+      console.log('🔍 [AuthContext] Usuário mapeado:', mappedUser);
       
       // Store in state
       setToken(newToken);
@@ -240,6 +260,12 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       localStorage.setItem('refreshToken', newRefreshToken);
       localStorage.setItem('user', JSON.stringify(mappedUser));
       
+      console.log('🔍 [AuthContext] Dados salvos no localStorage:', {
+        tokenSaved: localStorage.getItem('token')?.substring(0, 50) + '...',
+        refreshTokenSaved: localStorage.getItem('refreshToken')?.substring(0, 50) + '...',
+        userSaved: localStorage.getItem('user')
+      });
+      
       // Show success notification
       authNotifications.showLoginSuccess(mappedUser.name);
       
@@ -247,6 +273,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       scheduleTokenRefresh(newToken);
       
     } catch (error: any) {
+      console.error('🔍 [AuthContext] Erro no login:', error);
       const message = error.response?.data?.message || 'Erro ao fazer login';
       authNotifications.showLoginError(message);
       throw new Error(message);

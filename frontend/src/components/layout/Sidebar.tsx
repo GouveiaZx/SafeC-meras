@@ -6,13 +6,14 @@ import {
   Users, 
   Settings, 
   Monitor, 
-  Archive, 
+ 
   Shield, 
   BarChart3,
   X,
   Video,
   FileText,
-  TrendingUp
+  TrendingUp,
+  UserCircle
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -46,12 +47,6 @@ const navigation: NavItem[] = [
     href: '/recordings',
     icon: Video,
     userTypes: ['ADMIN', 'INTEGRATOR', 'CLIENT']
-  },
-  {
-    name: 'Arquivo',
-    href: '/archive',
-    icon: Archive,
-    userTypes: ['ADMIN', 'INTEGRATOR']
   },
   {
     name: 'Usuários',
@@ -148,16 +143,26 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
           {/* User info */}
           <div className="border-t border-gray-200 p-4">
             <div className="flex items-center space-x-3">
-              <div className="h-8 w-8 bg-gray-300 rounded-full flex items-center justify-center">
-                <span className="text-sm font-medium text-gray-700">
-                  {user?.name?.charAt(0).toUpperCase()}
-                </span>
+              <div className="relative">
+                <div className="h-10 w-10 bg-gradient-to-br from-primary-500 to-primary-700 rounded-full flex items-center justify-center ring-2 ring-primary-100 shadow-lg">
+                  <UserCircle className="h-6 w-6 text-white" />
+                </div>
+                {user?.userType === 'ADMIN' && (
+                  <div className="absolute -top-1 -right-1 h-4 w-4 bg-yellow-400 rounded-full flex items-center justify-center shadow-sm">
+                    <Shield className="h-2.5 w-2.5 text-yellow-800" />
+                  </div>
+                )}
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-gray-900 truncate">
+                <p className="text-sm font-semibold text-gray-900 truncate">
                   {user?.name}
                 </p>
-                <p className="text-xs text-gray-500 capitalize">
+                <p className="text-xs text-gray-500 capitalize flex items-center gap-1">
+                  <span className={`inline-block w-2 h-2 rounded-full ${
+                    user?.userType === 'ADMIN' ? 'bg-yellow-400' :
+                    user?.userType === 'INTEGRATOR' ? 'bg-blue-400' :
+                    'bg-green-400'
+                  }`}></span>
                   {user?.userType?.toLowerCase()}
                 </p>
               </div>

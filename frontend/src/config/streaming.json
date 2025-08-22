@@ -5,14 +5,15 @@
     "apiUrl": "http://localhost:8000/index/api",
     "disableSimulation": true,
     "forceZLM": true,
-    "hlsUrl": "http://localhost:8000/live/{id}/playlist.m3u8",
+    "hlsUrl": "http://localhost:8000/live/{id}.live.m3u8",
     "flvUrl": "http://localhost:8000/live/{id}.live.flv",
     "wsUrl": "ws://localhost:8000/live/{id}.live.flv",
     "thumbnailUrl": "http://localhost:8000/live/{id}.live.jpg",
-    "directHlsUrl": "http://localhost:8000/live/{id}/hls.m3u8"
+    "directHlsUrl": "http://localhost:8000/live/{id}.live.m3u8",
+    "proxyHlsUrl": "http://localhost:3002/api/streams/{id}/hls"
   },
   "backend": {
     "baseUrl": "http://localhost:3002/api"
   },
-  "timestamp": "2025-07-28T23:30:00.000Z"
+  "timestamp": "2025-08-19T22:00:00.000Z"
 }

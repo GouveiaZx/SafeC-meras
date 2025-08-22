@@ -1,9 +1,13 @@
-import { v4 as uuidv4 } from 'uuid';
-import fs from 'fs';
+/**
+ * RecordingService Simplificado - Sistema de Gravações NewCAM
+ * Versão otimizada com apenas funcionalidades essenciais
+ * Foca em: buscar arquivos, iniciar/parar gravações, normalizar paths
+ */
+
+import { promises as fs } from 'fs';
+import * as fsSync from 'fs';
 import path from 'path';
-import archiver from 'archiver';
-import S3Service from '../services/S3Service.js';
-import VideoMetadataExtractor from '../utils/videoMetadata.js';
+import axios from 'axios';
 import { createModuleLogger } from '../config/logger.js';
 import { supabaseAdmin } from '../config/database.js';
 
@@ -13,1381 +17,214 @@ class RecordingService {
   constructor() {
     this.supabase = supabaseAdmin;
     this.logger = logger;
+    
+    // Configuração ZLMediaKit
+    this.zlmApiUrl = process.env.ZLM_API_URL || 'http://localhost:8000/index/api';
+    this.zlmSecret = process.env.ZLM_SECRET || '9QqL3M2K7vHQexkbfp6RvbCUB3GkV4MK';
+    
+    // Caminhos simplificados
+    this.recordingsBasePath = path.join(process.cwd(), '..', 'storage', 'www', 'record', 'live');
+    
+    // Timeout automático para gravações (30 minutos)
+    this.recordingTimeout = 30 * 60 * 1000; // 30 minutos em ms
+    
+    this.logger.info(`[RecordingService] Serviço simplificado inicializado`);
+    this.ensureDirectories();
+    this.startTimeoutChecker();
   }
 
-  exportJobs = new Map();
+  /**
+   * Garantir que diretórios necessários existem
+   */
+  async ensureDirectories() {
+    try {
+      await fs.mkdir(this.recordingsBasePath, { recursive: true });
+      this.logger.info('[RecordingService] Diretórios verificados');
+    } catch (error) {
+      this.logger.error('[RecordingService] Erro ao criar diretórios:', error);
+    }
+  }
 
   /**
-   * Obter gravação por ID
+   * Normalizar path para formato consistente (relativo)
+   */
+  normalizePath(filePath) {
+    if (!filePath) return null;
+    
+    // Converter separadores para Unix
+    const normalized = filePath.replace(/\\/g, '/');
+    
+    // Remover prefixos absolutos e manter apenas relativo
+    if (normalized.includes('storage/www/record/live')) {
+      const index = normalized.indexOf('storage/www/record/live');
+      return normalized.substring(index);
+    }
+    
+    // Se já é relativo, manter
+    if (normalized.startsWith('storage/')) {
+      return normalized;
+    }
+    
+    return normalized;
+  }
+
+  /**
+   * Resolver path absoluto a partir do relativo
+   */
+  resolveAbsolutePath(relativePath) {
+    if (!relativePath) return null;
+    
+    // Se já é absoluto, retornar
+    if (path.isAbsolute(relativePath)) {
+      return relativePath;
+    }
+    
+    // Definir raiz do projeto
+    const projectRoot = process.cwd().includes('backend') 
+      ? path.join(process.cwd(), '..')
+      : process.cwd();
+    
+    // Construir path absoluto
+    if (relativePath.startsWith('storage/')) {
+      return path.join(projectRoot, relativePath);
+    }
+    
+    // Default: assumir que está no diretório base
+    return path.join(this.recordingsBasePath, relativePath);
+  }
+
+  /**
+   * Buscar arquivo de gravação - SIMPLIFICADO
+   */
+  async findRecordingFile(recording) {
+    this.logger.info(`🔍 Buscando arquivo para gravação: ${recording.id}`);
+    
+    // Paths de busca simplificados
+    const searchPaths = [];
+    
+    // 1. Usar file_path e local_path se existir
+    if (recording.file_path) {
+      const absolutePath = this.resolveAbsolutePath(recording.file_path);
+      if (absolutePath) searchPaths.push(absolutePath);
+    }
+    
+    if (recording.local_path && recording.local_path !== recording.file_path) {
+      const absolutePath = this.resolveAbsolutePath(recording.local_path);
+      if (absolutePath) searchPaths.push(absolutePath);
+    }
+    
+    // 2. Buscar por estrutura padrão se tiver camera_id
+    if (recording.camera_id) {
+      const date = recording.created_at?.split('T')[0] || new Date().toISOString().split('T')[0];
+      const filename = recording.filename || '*.mp4';
+      
+      const basePath = path.join(process.cwd(), 'storage', 'www', 'record', 'live');
+      searchPaths.push(
+        path.join(basePath, recording.camera_id, date, filename),
+        path.join(basePath, recording.camera_id, filename)
+      );
+    }
+    
+    // 3. Buscar no diretório processed (onde arquivos são salvos atualmente)
+    const filename = recording.filename || (recording.file_path ? path.basename(recording.file_path) : null);
+    this.logger.info(`📁 [FIND] Filename extraído: ${filename}`);
+    if (filename) {
+      // Buscar tanto na raiz quanto em diretórios processados
+      const projectRoot = path.join(process.cwd(), '..');
+      const processedPath = path.join(projectRoot, 'storage', 'www', 'record', 'live', 'processed', filename);
+      this.logger.info(`📁 [FIND] Adicionado path processed: ${processedPath}`);
+      searchPaths.push(processedPath);
+      
+      // Também buscar em storage/www/record/live/ direto
+      const directPath = path.join(projectRoot, 'storage', 'www', 'record', 'live', filename);
+      searchPaths.push(directPath);
+    }
+    
+    // 4. Buscar usando estrutura por data se temos camera_id
+    if (recording.camera_id && !filename) {
+      const today = new Date().toISOString().split('T')[0];
+      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      const projectRoot = path.join(process.cwd(), '..');
+      
+      // Buscar arquivos MP4 recentes para esta câmera
+      const cameraPaths = [
+        path.join(projectRoot, 'storage', 'www', 'record', 'live', recording.camera_id, today),
+        path.join(projectRoot, 'storage', 'www', 'record', 'live', recording.camera_id, yesterday),
+        path.join(projectRoot, 'storage', 'www', 'record', 'live', 'processed'),
+      ];
+      
+      for (const cameraPath of cameraPaths) {
+        try {
+          const files = await fs.readdir(cameraPath);
+          const mp4Files = files.filter(f => f.endsWith('.mp4') && f.includes(recording.camera_id));
+          if (mp4Files.length > 0) {
+            // Pegar o arquivo mais recente
+            const latestFile = mp4Files[mp4Files.length - 1];
+            searchPaths.push(path.join(cameraPath, latestFile));
+          }
+        } catch (error) {
+          // Diretório não existe, continuar
+        }
+      }
+    }
+    
+    // Testar cada path
+    for (const testPath of searchPaths) {
+      try {
+        const stats = await fs.stat(testPath);
+        if (stats.isFile()) {
+          this.logger.info(`✅ Arquivo encontrado: ${testPath}`);
+          return testPath;
+        }
+      } catch (error) {
+        // Arquivo não encontrado, continuar
+      }
+    }
+    
+    this.logger.warn(`❌ Arquivo não encontrado para gravação: ${recording.id}`);
+    return null;
+  }
+
+  /**
+   * Buscar gravação por ID
    */
   async getRecordingById(recordingId, userId = null) {
     try {
-      const { data: recording, error } = await this.supabase
-        .from('recordings')
-        .select('*')
-        .eq('id', recordingId)
-        .single();
-
-      if (error) {
-        throw error;
-      }
-
-      return { data: recording || [] };
-
-    } catch (error) {
-      this.logger.error('Erro ao buscar gravação:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Verificar acesso em lote
-   */
-  async checkAccess(recordingIds, userId) {
-    try {
-      const accessibleIds = [];
-      const inaccessibleIds = [];
-      
-      for (const recordingId of recordingIds) {
-        try {
-          const recording = await this.getRecordingById(recordingId, userId);
-          if (recording) {
-            accessibleIds.push(recordingId);
-          } else {
-            inaccessibleIds.push(recordingId);
-          }
-        } catch (error) {
-          inaccessibleIds.push(recordingId);
-        }
-      }
-      
-      return {
-        allAccessible: inaccessibleIds.length === 0,
-        accessibleIds,
-        inaccessibleIds
-      };
-      
-    } catch (error) {
-      logger.error('[RecordingService] Erro ao verificar acesso em lote:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Exportar gravação
-   */
-  async exportRecording(recordingId, format = 'zip', userId = null) {
-    try {
-      const recording = await this.getRecordingById(recordingId, userId);
-      
-      if (!recording) {
-        throw new Error('Gravação não encontrada');
-      }
-      
-      const exportId = uuidv4();
-      const exportPath = path.join(this.exportsPath, `${exportId}.${format}`);
-      
-      // Adicionar job ao mapa de exportações
-      this.exportJobs.set(exportId, {
-        status: 'processing',
-        progress: 0,
-        recordingId,
-        format,
-        exportPath
-      });
-      
-      // Processar exportação em background
-      this.processExport(exportId, recording, format);
-      
-      return {
-        exportId,
-        status: 'processing',
-        message: 'Exportação iniciada'
-      };
-    } catch (error) {
-      logger.error('Erro ao exportar gravação:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Processar exportação em background
-   */
-  async processExport(exportId, recording, format) {
-    try {
-      const job = this.exportJobs.get(exportId);
-      if (!job) return;
-      
-      job.progress = 10;
-      
-      // Verificar se o arquivo existe
-      const sourcePath = path.join(this.recordingsPath, recording.file_path);
-      
-      if (!await this.fileExists(sourcePath)) {
-        throw new Error('Arquivo de gravação não encontrado');
-      }
-      
-      job.progress = 30;
-      
-      if (format === 'zip') {
-        await this.createZipExport(sourcePath, job.exportPath);
-      } else {
-        throw new Error(`Formato de exportação não suportado: ${format}`);
-      }
-      
-      job.progress = 100;
-      job.status = 'completed';
-      
-      logger.info(`[RecordingService] Exportação ${exportId} concluída`);
-      
-    } catch (error) {
-      const job = this.exportJobs.get(exportId);
-      if (job) {
-        job.status = 'failed';
-        job.error = error.message;
-      }
-      
-      logger.error(`[RecordingService] Erro na exportação ${exportId}:`, error);
-    }
-  }
-
-  /**
-   * Criar exportação ZIP
-   */
-  async createZipExport(sourcePath, exportPath) {
-    return new Promise((resolve, reject) => {
-      const output = fs.createWriteStream(exportPath);
-      const archive = archiver('zip', { zlib: { level: 9 } });
-      
-      output.on('close', resolve);
-      archive.on('error', reject);
-      
-      archive.pipe(output);
-      archive.file(sourcePath, { name: path.basename(sourcePath) });
-      archive.finalize();
-    });
-  }
-
-  /**
-   * Verificar se arquivo existe
-   */
-  async fileExists(filePath) {
-    try {
-      await fs.access(filePath);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Buscar status de exportação
-   */
-  getExportStatus(exportId) {
-    const job = this.exportJobs.get(exportId);
-    if (!job) {
-      return { status: 'not_found', message: 'Exportação não encontrada' };
-    }
-    
-    return {
-      exportId,
-      status: job.status,
-      progress: job.progress,
-      error: job.error,
-      downloadUrl: job.status === 'completed' ? `/api/recordings/export/${exportId}/download` : null
-    };
-  }
-
-  /**
-   * Baixar arquivo exportado
-   */
-  async downloadExport(exportId) {
-    const job = this.exportJobs.get(exportId);
-    if (!job || job.status !== 'completed') {
-      throw new Error('Exportação não encontrada ou não concluída');
-    }
-    
-    const exists = await this.fileExists(job.exportPath);
-    if (!exists) {
-      throw new Error('Arquivo de exportação não encontrado');
-    }
-    
-    return {
-      filePath: job.exportPath,
-      fileName: `recording_${job.recordingId}.${job.format}`,
-      mimeType: job.format === 'zip' ? 'application/zip' : 'application/octet-stream'
-    };
-  }
-
-  /**
-   * Limpar exportações antigas
-   */
-  async cleanupOldExports() {
-    try {
-      const files = await fs.readdir(this.exportsPath);
-      const now = Date.now();
-      const maxAge = 24 * 60 * 60 * 1000; // 24 horas
-      
-      for (const file of files) {
-        const filePath = path.join(this.exportsPath, file);
-        const stats = await fs.stat(filePath);
-        
-        if (now - stats.mtime.getTime() > maxAge) {
-          await fs.unlink(filePath);
-          logger.info(`[RecordingService] Exportação antiga deletada: ${file}`);
-        }
-      }
-    } catch (error) {
-      logger.error('Erro ao limpar exportações antigas:', error);
-    }
-  }
-
-  /**
-   * Limpar gravações antigas baseado na configuração de retenção
-   */
-  async cleanupOldRecordings(daysToKeep = null) {
-    try {
-      // Usar configuração padrão se não especificado
-      const retentionDays = daysToKeep || parseInt(process.env.RECORDING_RETENTION_DAYS) || 30;
-      
-      // Calcular data de corte
-      const cutoffDate = new Date();
-      cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
-      
-      logger.info(`[RecordingService] Iniciando limpeza de gravações anteriores a ${cutoffDate.toISOString()}`);
-      
-      // Buscar gravações antigas
-      const { data: oldRecordings, error } = await this.supabase
-        .from('recordings')
-        .select('id, file_path, camera_id, created_at')
-        .lt('created_at', cutoffDate.toISOString())
-        .eq('status', 'completed');
-      
-      if (error) {
-        throw error;
-      }
-      
-      if (!oldRecordings || oldRecordings.length === 0) {
-        logger.info('[RecordingService] Nenhuma gravação antiga encontrada para limpeza');
-        return {
-          deletedCount: 0,
-          spaceFree: 0,
-          message: 'Nenhuma gravação antiga encontrada'
-        };
-      }
-      
-      let deletedCount = 0;
-      let spaceFree = 0;
-      
-      // Deletar cada gravação
-      for (const recording of oldRecordings) {
-        try {
-          // Deletar arquivo físico se existir
-          if (recording.file_path) {
-            const filePath = path.join(this.recordingsPath, recording.file_path);
-            try {
-              const stats = await fs.stat(filePath);
-              spaceFree += stats.size;
-              await fs.unlink(filePath);
-              logger.info(`[RecordingService] Arquivo deletado: ${filePath}`);
-            } catch (fileError) {
-              logger.warn(`[RecordingService] Erro ao deletar arquivo ${filePath}: ${fileError.message}`);
-            }
-          }
-          
-          // Deletar registro do banco
-          const { error: deleteError } = await this.supabase
-            .from('recordings')
-            .delete()
-            .eq('id', recording.id);
-          
-          if (deleteError) {
-            logger.error(`[RecordingService] Erro ao deletar registro ${recording.id}:`, deleteError);
-          } else {
-            deletedCount++;
-            logger.info(`[RecordingService] Gravação ${recording.id} deletada com sucesso`);
-          }
-          
-        } catch (recordingError) {
-          logger.error(`[RecordingService] Erro ao processar gravação ${recording.id}:`, recordingError);
-        }
-      }
-      
-      const spaceFreeMB = (spaceFree / (1024 * 1024)).toFixed(2);
-      
-      logger.info(`[RecordingService] Limpeza concluída: ${deletedCount} gravações deletadas, ${spaceFreeMB} MB liberados`);
-      
-      return {
-        deletedCount,
-        spaceFree: spaceFree,
-        spaceFreeMB: parseFloat(spaceFreeMB),
-        message: `${deletedCount} gravações antigas deletadas, ${spaceFreeMB} MB liberados`
-      };
-      
-    } catch (error) {
-      logger.error('[RecordingService] Erro na limpeza de gravações antigas:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Buscar gravações com filtros
-   */
-  async searchRecordings({ camera_id, start_date, end_date, duration_min, duration_max, file_size_min, file_size_max, quality, event_type, status, upload_status, page = 1, limit = 20, sort_by = 'created_at', sort_order = 'desc', user_id }) {
-    try {
-      // Montar query base
       let query = this.supabase
         .from('recordings')
-        .select('*', { count: 'exact' });
-
-      const appliedFilters = {};
-
-      if (camera_id) {
-        query = query.eq('camera_id', camera_id);
-        appliedFilters.camera_id = camera_id;
-      }
-      if (start_date) {
-        query = query.gte('created_at', new Date(start_date).toISOString());
-        appliedFilters.start_date = start_date;
-      }
-      if (end_date) {
-        query = query.lte('created_at', new Date(end_date).toISOString());
-        appliedFilters.end_date = end_date;
-      }
-      if (duration_min != null) {
-        query = query.gte('duration', duration_min);
-        appliedFilters.duration_min = duration_min;
-      }
-      if (duration_max != null) {
-        query = query.lte('duration', duration_max);
-        appliedFilters.duration_max = duration_max;
-      }
-      if (file_size_min != null) {
-        query = query.gte('file_size', file_size_min);
-        appliedFilters.file_size_min = file_size_min;
-      }
-      if (file_size_max != null) {
-        query = query.lte('file_size', file_size_max);
-        appliedFilters.file_size_max = file_size_max;
-      }
-      if (quality) {
-        query = query.eq('quality', quality);
-        appliedFilters.quality = quality;
-      }
-      if (event_type) {
-        query = query.eq('event_type', event_type);
-        appliedFilters.event_type = event_type;
-      }
-      if (status) {
-        query = query.eq('status', status);
-        appliedFilters.status = status;
-      }
-      if (upload_status) {
-        query = query.eq('upload_status', upload_status);
-        appliedFilters.upload_status = upload_status;
-      }
-
-      // Ordenação e paginação
-      const offset = (page - 1) * limit;
-      query = query.order(sort_by, { ascending: sort_order === 'asc' }).range(offset, offset + limit - 1);
-
-      const { data, error, count } = await query;
-      if (error) {
-        this.logger.error('Erro ao buscar gravações:', error);
-        throw error;
-      }
-
-      return {
-        data: data || [],
-        pagination: {
-          page,
-          limit,
-          total: count || 0,
-          totalPages: count ? Math.ceil(count / limit) : 0
-        },
-        appliedFilters
-      };
-
-    } catch (error) {
-      this.logger.error('[RecordingService] Erro na busca de gravações:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Obter estatísticas de gravações
-   */
-  async getRecordingStats(userId, period = '7d') {
-    try {
-      // Calcular data de início baseado no período
-      const startDate = new Date();
-      switch (period) {
-        case '24h':
-          startDate.setHours(startDate.getHours() - 24);
-          break;
-        case '7d':
-          startDate.setDate(startDate.getDate() - 7);
-          break;
-        case '30d':
-          startDate.setDate(startDate.getDate() - 30);
-          break;
-        default:
-          startDate.setDate(startDate.getDate() - 7);
-      }
-
-      // Buscar câmeras do usuário usando o modelo Camera
-      const { Camera } = await import('../models/Camera.js');
-      const cameras = await Camera.findByUserId(userId);
-
-      if (!cameras || cameras.length === 0) {
-        return {
-          totalRecordings: 0,
-          activeRecordings: 0,
-          totalDuration: 0,
-          totalSize: 0,
-          averageDuration: 0,
-          recordingsByStatus: {},
-          recordingsByDay: [],
-          totalSegments: 0,
-          uploadedSize: 0,
-          pendingUploads: 0,
-          failedUploads: 0,
-          storageUsed: {
-            local: 0,
-            s3: 0
-          },
-          uploadQueue: {
-            pending: 0,
-            processing: 0,
-            failed: 0
-          }
-        };
-      }
-
-      const cameraIds = cameras.map(cam => cam.id);
-
-      // Buscar gravações do período
-      const { data: recordings, error: recordingsError } = await this.supabase
-        .from('recordings')
-        .select('*')
-        .in('camera_id', cameraIds)
-        .gte('created_at', startDate.toISOString());
-
-      if (recordingsError) {
-        throw recordingsError;
-      }
-
-      // Buscar gravações ativas (status = 'recording')
-      const { data: activeRecordings, error: activeError } = await this.supabase
-        .from('recordings')
-        .select('*')
-        .in('camera_id', cameraIds)
-        .eq('status', 'recording');
-
-      if (activeError) {
-        this.logger.warn('Erro ao buscar gravações ativas:', activeError);
-      }
-
-      // Calcular estatísticas
-      const totalRecordings = recordings.length;
-      const activeRecordingsCount = activeRecordings?.length || 0;
-      const totalDuration = recordings.reduce((sum, rec) => sum + (rec.duration || 0), 0);
-      const totalSize = recordings.reduce((sum, rec) => sum + (rec.file_size || 0), 0);
-      const averageDuration = totalRecordings > 0 ? totalDuration / totalRecordings : 0;
-
-      // Agrupar por status
-      const recordingsByStatus = recordings.reduce((acc, rec) => {
-        acc[rec.status] = (acc[rec.status] || 0) + 1;
-        return acc;
-      }, {});
-
-      // Agrupar por dia
-      const recordingsByDay = recordings.reduce((acc, rec) => {
-        const day = rec.created_at.split('T')[0];
-        const existing = acc.find(item => item.date === day);
-        if (existing) {
-          existing.count++;
-          existing.duration += rec.duration || 0;
-        } else {
-          acc.push({
-            date: day,
-            count: 1,
-            duration: rec.duration || 0
-          });
-        }
-        return acc;
-      }, []);
-
-      // Calcular estatísticas de upload
-      const uploadedRecordings = recordings.filter(rec => rec.upload_status === 'uploaded');
-      const pendingUploads = recordings.filter(rec => rec.upload_status === 'pending' || rec.upload_status === 'uploading').length;
-      const failedUploads = recordings.filter(rec => rec.upload_status === 'failed').length;
-      const uploadedSize = uploadedRecordings.reduce((sum, rec) => sum + (rec.file_size || 0), 0);
-      const localSize = recordings.filter(rec => rec.local_path).reduce((sum, rec) => sum + (rec.file_size || 0), 0);
-      const s3Size = recordings.filter(rec => rec.s3_url).reduce((sum, rec) => sum + (rec.file_size || 0), 0);
-
-      return {
-        totalRecordings,
-        activeRecordings: activeRecordingsCount,
-        totalDuration,
-        totalSize,
-        averageDuration,
-        recordingsByStatus,
-        recordingsByDay: recordingsByDay.sort((a, b) => a.date.localeCompare(b.date)),
-        totalSegments: totalRecordings, // Por enquanto, cada gravação é um segmento
-        uploadedSize,
-        pendingUploads,
-        failedUploads,
-        storageUsed: {
-          local: localSize,
-          s3: s3Size
-        },
-        uploadQueue: {
-          pending: pendingUploads,
-          processing: recordings.filter(rec => rec.upload_status === 'uploading').length,
-          failed: failedUploads
-        }
-      };
-
-    } catch (error) {
-      logger.error('[RecordingService] Erro ao obter estatísticas:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Obter gravações ativas
-   */
-  async getActiveRecordings(userId) {
-    try {
-      // Buscar câmeras do usuário usando o modelo Camera
-      const { Camera } = await import('../models/Camera.js');
-      const cameras = await Camera.findByUserId(userId);
-
-      if (!cameras || cameras.length === 0) {
-        return { data: [] };
-      }
-
-      const cameraIds = cameras.map(cam => cam.id);
-
-      // Buscar gravações ativas
-      const { data: activeRecordings, error: recordingsError } = await this.supabase
-        .from('recordings')
-        .select('*')
-        .in('camera_id', cameraIds)
-        .eq('status', 'recording');
-
-      if (recordingsError) {
-        throw new Error(`Erro ao buscar gravações ativas: ${recordingsError.message}`);
-      }
-
-      return { data: activeRecordings || [] };
-
-    } catch (error) {
-      this.logger.error('Erro ao obter gravações ativas:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Obter tendências de gravações
-   */
-  async getTrends(userId, period = '24h') {
-    try {
-      // Calcular data de início baseado no período
-      const startDate = new Date();
-      let intervalHours = 1;
-      
-      switch (period) {
-        case '24h':
-          startDate.setHours(startDate.getHours() - 24);
-          intervalHours = 1;
-          break;
-        case '7d':
-          startDate.setDate(startDate.getDate() - 7);
-          intervalHours = 24;
-          break;
-        case '30d':
-          startDate.setDate(startDate.getDate() - 30);
-          intervalHours = 24;
-          break;
-        default:
-          startDate.setHours(startDate.getHours() - 24);
-          intervalHours = 1;
-      }
-
-      // Buscar câmeras do usuário usando o modelo Camera
-      const { Camera } = await import('../models/Camera.js');
-      const cameras = await Camera.findByUserId(userId);
-
-      if (!cameras || cameras.length === 0) {
-        return { trends: [] };
-      }
-
-      const cameraIds = cameras.map(cam => cam.id);
-
-      // Buscar gravações do período
-      const { data: recordings, error: recordingsError } = await this.supabase
-        .from('recordings')
-        .select('created_at, duration, file_size')
-        .in('camera_id', cameraIds)
-        .gte('created_at', startDate.toISOString())
-        .order('created_at', { ascending: true });
-
-      if (recordingsError) {
-        throw recordingsError;
-      }
-
-      // Agrupar por intervalo de tempo
-      const trends = [];
-      const now = new Date();
-      
-      for (let i = 0; i < (period === '24h' ? 24 : period === '7d' ? 7 : 30); i++) {
-        const intervalStart = new Date(startDate);
-        intervalStart.setHours(intervalStart.getHours() + (i * intervalHours));
-        
-        const intervalEnd = new Date(intervalStart);
-        intervalEnd.setHours(intervalEnd.getHours() + intervalHours);
-        
-        const intervalRecordings = recordings.filter(rec => {
-          const recDate = new Date(rec.created_at);
-          return recDate >= intervalStart && recDate < intervalEnd;
-        });
-        
-        trends.push({
-          timestamp: intervalStart.toISOString(),
-          count: intervalRecordings.length,
-          totalDuration: intervalRecordings.reduce((sum, rec) => sum + (rec.duration || 0), 0),
-          totalSize: intervalRecordings.reduce((sum, rec) => sum + (rec.file_size || 0), 0)
-        });
-      }
-
-      return { trends };
-
-    } catch (error) {
-      logger.error('[RecordingService] Erro ao obter tendências:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Preparar download de uma gravação
-   */
-  async prepareDownload(recordingId, userId) {
-    try {
-      // 🔍 [DEBUG] Log inicial do prepareDownload
-      logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] Iniciando prepareDownload:`, {
-        recordingId,
-        userId,
-        recordingsPath: this.recordingsPath,
-        timestamp: new Date().toISOString()
-      });
-      
-      // Buscar gravação com verificação de permissão
-      const recording = await this.getRecordingById(recordingId, userId);
-      
-      // 🔍 [DEBUG] Log da gravação encontrada
-      logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] Gravação encontrada:`, {
-        recordingId,
-        recording: recording ? {
-          id: recording.id,
-          filename: recording.filename,
-          file_path: recording.file_path,
-          file_size: recording.file_size,
-          s3_url: recording.s3_url ? '[S3_URL_PRESENTE]' : null,
-          camera_id: recording.camera_id,
-          created_at: recording.created_at
-        } : null
-      });
-      
-      if (!recording) {
-        logger.warn(`📁 [PREPARE_DOWNLOAD DEBUG] Gravação não encontrada: ${recordingId}`);
-        return { exists: false, message: 'Gravação não encontrada' };
-      }
-
-      // Verificar se arquivo existe localmente
-      let filePath = null;
-      let fileSize = 0;
-      
-      // 🔍 [DEBUG] Log do início das estratégias de busca
-      logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] Iniciando estratégias de busca de arquivo:`, {
-        recordingId,
-        hasFilename: !!recording.filename,
-        hasFilePath: !!recording.file_path,
-        hasLocalPath: !!recording.local_path,
-        hasS3Url: !!recording.s3_url
-      });
-      
-      // Estratégia 0: Procurar por local_path (prioridade máxima)
-      if (recording.local_path) {
-        const localFilePath = path.resolve(this.recordingsPath, recording.local_path);
-        
-        // 🔍 [DEBUG] Log da estratégia 0
-        logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] ESTRATÉGIA 0 - Busca por local_path:`, {
-          recordingId,
-          localPath: recording.local_path,
-          localFilePath,
-          recordingsPath: this.recordingsPath
-        });
-        
-        try {
-          const stats = await fs.stat(localFilePath);
-          if (stats.isFile()) {
-            filePath = localFilePath;
-            fileSize = stats.size;
-            logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] ✅ ESTRATÉGIA 0 SUCESSO - Arquivo encontrado via local_path:`, {
-              recordingId,
-              filePath: localFilePath,
-              fileSize: stats.size
-            });
-          }
-        } catch (err) {
-          logger.debug(`📁 [PREPARE_DOWNLOAD DEBUG] ❌ ESTRATÉGIA 0 FALHOU - Arquivo local_path não encontrado:`, {
-            recordingId,
-            localFilePath,
-            error: err.message
-          });
-        }
-      }
-      
-      // Estratégia 1: Procurar por filename específico
-      if (!filePath && recording.filename) {
-        const directFilePath = path.resolve(this.recordingsPath, `${recording.filename}.mp4`);
-        
-        // 🔍 [DEBUG] Log da estratégia 1
-        logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] ESTRATÉGIA 1 - Busca por filename:`, {
-          recordingId,
-          filename: recording.filename,
-          directFilePath,
-          recordingsPath: this.recordingsPath
-        });
-        
-        try {
-          const stats = await fs.stat(directFilePath);
-          if (stats.isFile()) {
-            filePath = directFilePath;
-            fileSize = stats.size;
-            logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] ✅ ESTRATÉGIA 1 SUCESSO - Arquivo encontrado:`, {
-              recordingId,
-              filePath: directFilePath,
-              fileSize: stats.size
-            });
-          }
-        } catch (err) {
-          logger.debug(`📁 [PREPARE_DOWNLOAD DEBUG] ❌ ESTRATÉGIA 1 FALHOU - Arquivo não encontrado:`, {
-            recordingId,
-            directFilePath,
-            error: err.message
-          });
-        }
-      }
-      
-      // Estratégia 2: Procurar por padrão de nome baseado no timestamp
-      if (!filePath && recording.filename) {
-        // 🔍 [DEBUG] Log da estratégia 2
-        logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] ESTRATÉGIA 2 - Busca por timestamp:`, {
-          recordingId,
-          filename: recording.filename,
-          recordingsPath: this.recordingsPath
-        });
-        
-        try {
-          const files = await fs.readdir(this.recordingsPath);
-          
-          // 🔍 [DEBUG] Log dos arquivos encontrados no diretório
-          logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] Arquivos no diretório de gravações:`, {
-            recordingId,
-            totalFiles: files.length,
-            files: files.slice(0, 10) // Mostrar apenas os primeiros 10 para não poluir o log
-          });
-          
-          // Procurar arquivos que contenham o timestamp do filename
-          const timestampMatch = recording.filename.match(/recording_(\d+)/);
-          if (timestampMatch) {
-            const timestamp = timestampMatch[1];
-            const matchingFiles = files.filter(file => 
-              file.includes(timestamp) && (file.endsWith('.mp4') || file.endsWith('.mkv') || file.endsWith('.avi'))
-            );
-            
-            // 🔍 [DEBUG] Log dos arquivos que correspondem ao timestamp
-            logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] Busca por timestamp:`, {
-              recordingId,
-              timestamp,
-              matchingFiles,
-              totalMatches: matchingFiles.length
-            });
-            
-            if (matchingFiles.length > 0) {
-              const matchedFile = matchingFiles[0];
-              const matchedPath = path.resolve(this.recordingsPath, matchedFile);
-              const stats = await fs.stat(matchedPath);
-              
-              filePath = matchedPath;
-              fileSize = stats.size;
-              logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] ✅ ESTRATÉGIA 2 SUCESSO - Arquivo encontrado:`, {
-                recordingId,
-                matchedFile,
-                filePath: matchedPath,
-                fileSize: stats.size
-              });
-            } else {
-              logger.debug(`📁 [PREPARE_DOWNLOAD DEBUG] ❌ ESTRATÉGIA 2 FALHOU - Nenhum arquivo correspondente ao timestamp`);
-            }
-          } else {
-            logger.debug(`📁 [PREPARE_DOWNLOAD DEBUG] ❌ ESTRATÉGIA 2 FALHOU - Timestamp não encontrado no filename`);
-          }
-        } catch (err) {
-          logger.debug(`📁 [PREPARE_DOWNLOAD DEBUG] ❌ ESTRATÉGIA 2 ERRO:`, {
-            recordingId,
-            error: err.message
-          });
-        }
-      }
-      
-      // Estratégia 3: Procurar por file_path (método original)
-      if (!filePath && recording.file_path) {
-        let correctedFilePath = recording.file_path;
-        
-        // 🔍 [DEBUG] Log da estratégia 3
-        logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] ESTRATÉGIA 3 - Busca por file_path:`, {
-          recordingId,
-          originalFilePath: recording.file_path,
-          recordingsPath: this.recordingsPath
-        });
-        
-        // Se o caminho começa com 'record/live/', mapear para 'recordings/'
-        if (correctedFilePath.startsWith('record/live/')) {
-          correctedFilePath = correctedFilePath.replace('record/live/', 'recordings/');
-          logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] Mapeamento record/live/ -> recordings/:`, {
-            recordingId,
-            original: recording.file_path,
-            corrected: correctedFilePath
-          });
-        }
-        // Se começa apenas com 'record/', remover
-        else if (correctedFilePath.startsWith('record/')) {
-          correctedFilePath = correctedFilePath.substring(7);
-          logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] Removendo prefixo record/:`, {
-            recordingId,
-            original: recording.file_path,
-            corrected: correctedFilePath
-          });
-        }
-        
-        const localPath = path.resolve(this.recordingsPath, correctedFilePath);
-        
-        // 🔍 [DEBUG] Log do caminho final calculado
-        logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] Caminho final calculado:`, {
-          recordingId,
-          originalFilePath: recording.file_path,
-          correctedFilePath,
-          localPath,
-          recordingsPath: this.recordingsPath
-        });
-        
-        try {
-          const stats = await fs.stat(localPath);
-          
-          // 🔍 [DEBUG] Log do resultado da verificação do caminho
-          logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] Verificação do caminho:`, {
-            recordingId,
-            localPath,
-            isDirectory: stats.isDirectory(),
-            isFile: stats.isFile(),
-            size: stats.size
-          });
-          
-          if (stats.isDirectory()) {
-            // Procurar arquivos de vídeo no diretório
-            logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] É diretório - procurando arquivos de vídeo:`, {
-              recordingId,
-              directoryPath: localPath
-            });
-            
-            try {
-              const files = await fs.readdir(localPath);
-              const videoFiles = files.filter(file => 
-                file.endsWith('.mp4') || file.endsWith('.mkv') || file.endsWith('.avi')
-              );
-              
-              // 🔍 [DEBUG] Log dos arquivos encontrados no diretório
-              logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] Arquivos no diretório:`, {
-                recordingId,
-                directoryPath: localPath,
-                totalFiles: files.length,
-                allFiles: files,
-                videoFiles,
-                videoFilesCount: videoFiles.length
-              });
-              
-              if (videoFiles.length > 0) {
-                const videoFile = videoFiles[0];
-                const videoPath = path.join(localPath, videoFile);
-                const videoStats = await fs.stat(videoPath);
-                
-                filePath = videoPath;
-                fileSize = videoStats.size;
-                logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] ✅ ESTRATÉGIA 3 SUCESSO - Arquivo encontrado no diretório:`, {
-                  recordingId,
-                  videoFile,
-                  videoPath,
-                  fileSize: videoStats.size
-                });
-              } else {
-                logger.debug(`📁 [PREPARE_DOWNLOAD DEBUG] ❌ ESTRATÉGIA 3 FALHOU - Nenhum arquivo de vídeo encontrado no diretório`);
-              }
-            } catch (dirError) {
-              logger.debug(`📁 [PREPARE_DOWNLOAD DEBUG] ❌ ESTRATÉGIA 3 ERRO ao ler diretório:`, {
-                recordingId,
-                directoryPath: localPath,
-                error: dirError.message
-              });
-            }
-          } else {
-            filePath = localPath;
-            fileSize = stats.size;
-            logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] ✅ ESTRATÉGIA 3 SUCESSO - Arquivo encontrado diretamente:`, {
-              recordingId,
-              filePath: localPath,
-              fileSize: stats.size
-            });
-          }
-        } catch (err) {
-          logger.debug(`📁 [PREPARE_DOWNLOAD DEBUG] ❌ ESTRATÉGIA 3 FALHOU - Caminho não encontrado:`, {
-            recordingId,
-            localPath,
-            error: err.message
-          });
-        }
-      }
-      
-      // 🔍 [DEBUG] Log do resultado final da busca
-      logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] RESULTADO FINAL da busca:`, {
-        recordingId,
-        filename: recording.filename,
-        file_path: recording.file_path,
-        foundFilePath: filePath,
-        fileSize,
-        hasS3Url: !!recording.s3_url,
-        allStrategiesCompleted: true
-      });
-
-      // Se não há arquivo local, verificar S3
-      if (!filePath && recording.s3_url) {
-        logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] ✅ FALLBACK S3 - Usando URL S3:`, {
-          recordingId,
-          s3Available: true,
-          fileSize: recording.file_size || 0
-        });
-        
-        return {
-          exists: true,
-          isS3: true,
-          s3Url: recording.s3_url,
-          filename: recording.filename || `recording_${recordingId}.mp4`,
-          fileSize: recording.file_size || 0
-        };
-      }
-
-      if (!filePath) {
-        logger.error(`📁 [PREPARE_DOWNLOAD DEBUG] ❌ FALHA TOTAL - Arquivo não encontrado:`, {
-          recordingId,
-          filename: recording.filename,
-          file_path: recording.file_path,
-          hasS3Url: !!recording.s3_url,
-          recordingsPath: this.recordingsPath
-        });
-        
-        return { exists: false, message: 'Arquivo não encontrado no armazenamento' };
-      }
-
-      logger.info(`📁 [PREPARE_DOWNLOAD DEBUG] ✅ SUCESSO TOTAL - Arquivo local encontrado:`, {
-        recordingId,
-        filePath,
-        fileSize,
-        filename: recording.filename || `recording_${recordingId}.mp4`
-      });
-
-      return {
-        exists: true,
-        isS3: false,
-        filePath,
-        filename: recording.filename || `recording_${recordingId}.mp4`,
-        fileSize
-      };
-
-    } catch (error) {
-      logger.error('[RecordingService] Erro ao preparar download:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Obter stream de arquivo para download/reprodução
-   */
-  async getFileStream(filePath) {
-    try {
-      // Verificar se arquivo existe
-      await fs.access(filePath);
-      
-      // Criar stream de leitura
-      const stream = createReadStream(filePath);
-      
-      return stream;
-      
-    } catch (error) {
-      logger.error('[RecordingService] Erro ao criar stream de arquivo:', error);
-      throw new Error('Arquivo não encontrado ou inacessível');
-    }
-  }
-
-  /**
-   * Obter URL de download temporária (para S3 ou local)
-   */
-  async getDownloadUrl(recordingId, expiresIn = 3600) {
-    try {
-      const recording = await this.getRecordingById(recordingId);
-      
-      if (!recording) {
-        return null;
-      }
-
-      // Se está no S3, retornar URL direta
-      if (recording.s3_url) {
-        return recording.s3_url;
-      }
-
-      // Se é local, retornar endpoint de download
-      return `/api/recordings/${recordingId}/download`;
-
-    } catch (error) {
-      logger.error('[RecordingService] Erro ao obter URL de download:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Upload automático de gravação para S3/Wasabi
-   */
-  async uploadRecordingToS3(recordingId) {
-    try {
-      const recording = await this.getRecordingById(recordingId);
-      
-      if (!recording) {
-        throw new Error('Gravação não encontrada');
-      }
-
-      if (recording.s3_url) {
-        logger.info(`[RecordingService] Gravação ${recordingId} já está no S3`);
-        return { success: true, alreadyUploaded: true };
-      }
-
-      // Verificar se arquivo local existe
-      const localPath = path.resolve(this.recordingsPath, recording.file_path);
-      
-      try {
-        await fs.access(localPath);
-      } catch (err) {
-        const errorMsg = 'Arquivo local não encontrado';
-        await this.updateUploadError(recordingId, errorMsg);
-        throw new Error(errorMsg);
-      }
-
-      // Incrementar tentativas de upload
-      const currentAttempts = (recording.upload_attempts || 0) + 1;
-      
-      // Atualizar status para 'uploading' e incrementar tentativas
-      await this.supabase
-        .from('recordings')
-        .update({
-          status: 'uploading',
-          upload_status: 'uploading',
-          upload_attempts: currentAttempts,
-          local_path: localPath,
-          error_message: null,
-          updated_at: new Date().toISOString()
-        })
+        .select(`
+          *,
+          cameras (
+            id,
+            name
+          )
+        `)
         .eq('id', recordingId);
 
-      // Gerar chave S3
-      const s3Key = S3Service.generateRecordingKey(
-        recording.camera_id,
-        recordingId,
-        new Date(recording.created_at)
-      );
+      // Note: cameras table doesn't have user_id column, skipping user filter
 
-      // Fazer upload
-      const uploadResult = await S3Service.uploadWithRetry(
-        localPath,
-        s3Key,
-        {
-          'camera-id': recording.camera_id,
-          'recording-id': recordingId,
-          'upload-date': new Date().toISOString()
-        }
-      );
-
-      if (uploadResult.success) {
-        // Atualizar registro no banco com sucesso
-        const { error } = await this.supabase
-          .from('recordings')
-          .update({
-            s3_url: uploadResult.url,
-            s3_key: uploadResult.key,
-            upload_status: 'uploaded',
-            status: 'completed',
-            file_size: uploadResult.size,
-            uploaded_at: new Date().toISOString(),
-            error_message: null,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', recordingId);
-
-        if (error) {
-          throw error;
-        }
-
-        logger.info(`[RecordingService] Upload concluído para gravação ${recordingId}`);
-        
-        return {
-          success: true,
-          s3Url: uploadResult.url,
-          s3Key: uploadResult.key,
-          size: uploadResult.size
-        };
-      } else {
-        throw new Error('Falha no upload para S3');
-      }
-
-    } catch (error) {
-      logger.error(`[RecordingService] Erro no upload da gravação ${recordingId}:`, error);
-      
-      // Atualizar status para 'failed' com mensagem de erro
-      await this.updateUploadError(recordingId, error.message);
-      
-      throw error;
-    }
-  }
-
-  /**
-   * Tentar novamente o upload de uma gravação
-   */
-  async retryUpload(recordingId) {
-    try {
-      logger.info(`[RecordingService] Iniciando retry de upload para gravação ${recordingId}`);
-      
-      const result = await this.uploadRecordingToS3(recordingId);
-      
-      return {
-        success: true,
-        message: 'Upload reiniciado com sucesso',
-        uploadResult: result
-      };
-      
-    } catch (error) {
-      logger.error(`[RecordingService] Erro no retry de upload:`, error);
-      throw error;
-    }
-  }
-
-  /**
-   * Tentar novamente o upload de um segmento específico
-   */
-  async retrySegmentUpload(recordingId, segmentId) {
-    try {
-      logger.info(`[RecordingService] Iniciando retry de upload para segmento ${segmentId}`);
-      
-      // Por enquanto, tratar como upload da gravação completa
-      // Em implementações futuras, pode ser expandido para segmentos específicos
-      const result = await this.uploadRecordingToS3(recordingId);
-      
-      return {
-        success: true,
-        message: 'Upload do segmento reiniciado com sucesso',
-        uploadResult: result
-      };
-      
-    } catch (error) {
-      logger.error(`[RecordingService] Erro no retry de upload do segmento:`, error);
-      throw error;
-    }
-  }
-
-  /**
-   * Obter fila de upload
-   */
-  async getUploadQueue() {
-    try {
-      const { data: pendingUploads, error } = await this.supabase
-        .from('recordings')
-        .select(`
-          id,
-          filename,
-          file_path,
-          file_size,
-          status,
-          upload_status,
-          created_at,
-          cameras:camera_id (id, name)
-        `)
-        .eq('status', 'completed')
-        .or('upload_status.is.null,upload_status.eq.failed')
-        .order('created_at', { ascending: true });
+      const { data: recording, error } = await query.single();
 
       if (error) {
+        this.logger.error('Erro ao buscar gravação:', error);
         throw error;
       }
 
-      return {
-        pending: pendingUploads || [],
-        total: pendingUploads?.length || 0
-      };
-      
+      return recording;
     } catch (error) {
-      logger.error('[RecordingService] Erro ao obter fila de upload:', error);
+      this.logger.error(`Erro ao buscar gravação ${recordingId}:`, error);
       throw error;
     }
   }
 
   /**
-   * Pausar/Retomar fila de upload
+   * Iniciar gravação (via ZLMediaKit API)
    */
-  async toggleUploadQueue(action) {
+  async startRecording(cameraId, options = {}) {
     try {
-      // Esta funcionalidade pode ser expandida com um sistema de fila mais robusto
-      logger.info(`[RecordingService] Fila de upload ${action === 'pause' ? 'pausada' : 'retomada'}`);
-      
-      return {
-        success: true,
-        action,
-        message: `Fila de upload ${action === 'pause' ? 'pausada' : 'retomada'} com sucesso`
-      };
-      
-    } catch (error) {
-      logger.error('[RecordingService] Erro ao alterar estado da fila:', error);
-      throw error;
-    }
-  }
+      this.logger.info(`🎬 Iniciando gravação para câmera: ${cameraId}`);
 
-  /**
-   * Processar uploads pendentes automaticamente
-   */
-  async processUploadQueue() {
-    try {
-      const queue = await this.getUploadQueue();
-      
-      if (queue.total === 0) {
-        logger.debug('[RecordingService] Nenhum upload pendente na fila');
-        return { processed: 0, success: 0, failed: 0 };
-      }
-
-      let processed = 0;
-      let success = 0;
-      let failed = 0;
-
-      for (const recording of queue.pending) {
-        try {
-          // Processar gravações que não foram enviadas para S3 ou falharam
-          if (recording.upload_status === null || recording.upload_status === 'failed') {
-            logger.info(`[RecordingService] Processando upload da gravação ${recording.id}`);
-            await this.uploadRecordingToS3(recording.id);
-            success++;
-          }
-          processed++;
-        } catch (error) {
-          logger.error(`[RecordingService] Falha no upload automático da gravação ${recording.id}:`, error);
-          failed++;
-          processed++;
-        }
-      }
-
-      logger.info(`[RecordingService] Processamento da fila concluído: ${processed} processados, ${success} sucessos, ${failed} falhas`);
-      
-      return { processed, success, failed };
-      
-    } catch (error) {
-      logger.error('[RecordingService] Erro ao processar fila de upload:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Processar gravação concluída (MELHORADO)
-   * Versão aprimorada com validação robusta e múltiplas estratégias de localização
-   */
-  async processCompletedRecording(recordingData) {
-    try {
-      const {
-        cameraId,
-        fileName,
-        filePath,
-        fileSize,
-        duration,
-        startTime,
-        streamName,
-        format = 'mp4',
-        hookId
-      } = recordingData;
-
-      logger.info(`🎬 [RecordingService] MELHORADO - Processando gravação concluída:`, {
-        hookId,
-        cameraId,
-        fileName,
-        fileSize,
-        duration,
-        filePath,
-        startTime,
-        streamName,
-        format,
-        timestamp: new Date().toISOString()
-      });
-
-      // VALIDAÇÃO ROBUSTA DE DADOS DE ENTRADA
-      const validationResult = await this.validateRecordingData(recordingData);
-      if (!validationResult.isValid) {
-        logger.error(`❌ [RecordingService] Dados de gravação inválidos:`, validationResult.errors);
-        throw new Error(`Dados inválidos: ${validationResult.errors.join(', ')}`);
-      }
-
-      // LOCALIZAÇÃO ROBUSTA DO ARQUIVO FÍSICO
-      const fileLocationResult = await this.locateRecordingFileRobust({
-        fileName,
-        filePath,
-        cameraId,
-        startTime
-      });
-
-      if (!fileLocationResult.found) {
-        logger.error(`❌ [RecordingService] Arquivo físico não encontrado:`, {
-          fileName,
-          filePath,
-          searchedPaths: fileLocationResult.searchedPaths,
-          reason: fileLocationResult.reason
-        });
-        throw new Error(`Arquivo físico não encontrado: ${fileLocationResult.reason}`);
-      }
-
-      logger.info(`✅ [RecordingService] Arquivo localizado com sucesso:`, {
-        strategy: fileLocationResult.strategy,
-        finalPath: fileLocationResult.finalPath,
-        actualSize: fileLocationResult.actualSize
-      });
-
-      // Usar dados validados do arquivo físico
-      const validatedFileSize = fileLocationResult.actualSize || fileSize;
-      const validatedFilePath = fileLocationResult.finalPath;
-      
-      // Verificar se é uma gravação muito pequena
-      if (duration && duration < 5) {
-        logger.warn(`⚠️ [RecordingService] Gravação com duração muito pequena:`, {
-          cameraId,
-          fileName,
-          duration,
-          possivel_problema: 'Segmentação muito frequente ou erro de configuração'
-        });
-      }
-
-      // Verificar se a câmera existe
+      // Verificar se câmera existe
       const { data: camera, error: cameraError } = await this.supabase
         .from('cameras')
         .select('*')
@@ -1395,545 +232,783 @@ class RecordingService {
         .single();
 
       if (cameraError || !camera) {
-        logger.warn(`[RecordingService] Câmera ${cameraId} não encontrada, criando entrada temporária`);
-        
-        // Criar entrada temporária para câmera
-        await this.supabase
-          .from('cameras')
-          .upsert({
-            id: cameraId,
-            name: `Câmera ${cameraId.substring(0, 8)}`,
-            status: 'offline',
-            rtsp_url: null,
-            user_id: null,
-            created_at: new Date().toISOString()
-          });
+        throw new Error(`Câmera ${cameraId} não encontrada`);
       }
 
-      // CORREÇÃO: Verificar se existe uma gravação ativa para esta câmera
-      // Se existir, significa que esta é uma segmentação automática
-      const { data: activeRecording, error: activeError } = await this.supabase
+      // Verificar se já existe gravação ativa
+      const { data: activeRecording } = await this.supabase
         .from('recordings')
-        .select('*')
+        .select('id')
         .eq('camera_id', cameraId)
         .eq('status', 'recording')
-        .order('created_at', { ascending: false })
-        .limit(1)
         .single();
 
-      let isSegmentation = false;
-      if (!activeError && activeRecording) {
-        // Esta é uma segmentação automática - atualizar a gravação anterior para 'completed'
-        logger.info(`[RecordingService] Detectada segmentação automática para câmera ${cameraId}. Finalizando gravação anterior: ${activeRecording.id}`);
-        
-        await this.supabase
-          .from('recordings')
-          .update({
-            status: 'completed',
-            end_time: startTime, // O fim da gravação anterior é o início da nova
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', activeRecording.id);
-        
-        isSegmentation = true;
+      if (activeRecording) {
+        this.logger.warn(`⚠️ Gravação já ativa para câmera ${cameraId}: ${activeRecording.id}`);
+        return { success: false, message: 'Recording already active', recordingId: activeRecording.id };
       }
 
-      // Criar registro de gravação no banco
-      const recordingId = uuidv4();
+      // Iniciar gravação via ZLMediaKit
+      const startResult = await this.startZLMRecording(cameraId);
       
-      // Usar caminho validado do arquivo físico
-      const localPath = validatedFilePath;
-      
-      // Determinar o status inicial:
-      // - Se é segmentação, a nova gravação continua 'recording'
-      // - Se não é segmentação, a gravação está 'completed'
-      const initialStatus = isSegmentation ? 'recording' : 'completed';
-      
-      logger.info(`[RecordingService] 🔍 TENTANDO INSERIR GRAVAÇÃO NO BANCO (MELHORADO):`, {
-        recordingId,
-        cameraId,
-        fileName,
-        originalFilePath: filePath,
-        validatedFilePath,
-        localPath,
-        originalFileSize: fileSize,
-        validatedFileSize,
-        fileLocationStrategy: fileLocationResult.strategy,
-        duration: duration ? Math.round(parseFloat(duration)) : null,
-        status: initialStatus,
-        startTime
-      });
+      if (!startResult.success) {
+        throw new Error(`Falha ao iniciar gravação no ZLM: ${startResult.message}`);
+      }
 
-      const { data: insertData, error: insertError } = await this.supabase
+      // Criar registro no banco
+      const now = new Date().toISOString();
+      const { data: recording, error: insertError } = await this.supabase
         .from('recordings')
-        .insert({
-          id: recordingId,
+        .insert([{
           camera_id: cameraId,
-          filename: fileName,
-          file_path: validatedFilePath, // Usar caminho validado
-          local_path: localPath,
-          file_size: validatedFileSize, // Usar tamanho validado
-          duration: duration ? Math.round(parseFloat(duration)) : null,
-          status: initialStatus,
-          upload_status: null,
-          start_time: startTime,
-          created_at: startTime,
-          updated_at: new Date().toISOString(),
+          status: 'recording',
+          start_time: now,
+          started_at: now,
+          created_at: now,
+          updated_at: now,
           metadata: {
-            stream_name: streamName,
-            format: format,
-            processed_by_hook: true,
-            is_segmentation: isSegmentation,
-            segment_number: isSegmentation ? (activeRecording?.metadata?.segment_number || 0) + 1 : 1,
-            file_location_strategy: fileLocationResult.strategy,
-            original_file_path: filePath,
-            validated_at: new Date().toISOString()
+            started_by: 'api',
+            options: options
           }
-        })
-        .select();
+        }])
+        .select()
+        .single();
 
       if (insertError) {
-        logger.error(`[RecordingService] ❌ ERRO CRÍTICO AO INSERIR NO BANCO:`, {
-          error: insertError,
-          code: insertError.code,
-          message: insertError.message,
-          details: insertError.details,
-          hint: insertError.hint
-        });
+        this.logger.error('Erro ao criar registro de gravação:', insertError);
         throw insertError;
       }
 
-      if (!insertData || insertData.length === 0) {
-        logger.error(`[RecordingService] ❌ INSERÇÃO RETORNOU VAZIA - DADOS NÃO FORAM SALVOS`);
-        throw new Error('Inserção no banco retornou vazia');
-      }
+      // Atualizar status da câmera
+      await this.supabase
+        .from('cameras')
+        .update({
+          is_recording: true,
+          updated_at: now
+        })
+        .eq('id', cameraId);
 
-      logger.info(`[RecordingService] ✅ GRAVAÇÃO INSERIDA COM SUCESSO NO BANCO:`, {
-        recordingId,
-        insertedData: insertData[0]
-      });
-
-      logger.info(`[RecordingService] Registro de gravação criado: ${recordingId} (status: ${initialStatus}, segmentação: ${isSegmentation})`);
-
-      // Verificar se upload automático está habilitado (apenas para gravações completas)
-      const autoUpload = process.env.AUTO_UPLOAD_WASABI === 'true' || process.env.ENABLE_S3_UPLOAD === 'true';
-      
-      if (autoUpload && initialStatus === 'completed') {
-        logger.info(`[RecordingService] Upload automático habilitado, iniciando upload para Wasabi`);
-        
-        try {
-          // Fazer upload para Wasabi em background
-          setTimeout(async () => {
-            try {
-              await this.uploadRecordingToS3(recordingId);
-              logger.info(`[RecordingService] Upload automático concluído para gravação ${recordingId}`);
-            } catch (uploadError) {
-              logger.error(`[RecordingService] Erro no upload automático da gravação ${recordingId}:`, uploadError);
-            }
-          }, 5000); // Aguardar 5 segundos para garantir que o arquivo foi completamente escrito
-          
-        } catch (uploadError) {
-          logger.error(`[RecordingService] Erro ao iniciar upload automático:`, uploadError);
-        }
-      } else if (initialStatus === 'recording') {
-        logger.info(`[RecordingService] Gravação continua ativa (segmentação), upload será feito quando finalizada`);
-      } else {
-        logger.info(`[RecordingService] Upload automático desabilitado`);
-      }
-
-      return {
-        success: true,
-        recordingId,
-        isSegmentation,
-        status: initialStatus,
-        message: isSegmentation ? 'Segmento de gravação processado com sucesso' : 'Gravação processada com sucesso'
-      };
+      this.logger.info(`✅ Gravação iniciada com sucesso: ${recording.id}`);
+      return { success: true, recordingId: recording.id };
 
     } catch (error) {
-      logger.error(`[RecordingService] Erro ao processar gravação concluída:`, error);
+      this.logger.error(`Erro ao iniciar gravação para ${cameraId}:`, error);
       throw error;
     }
   }
 
   /**
-   * Atualizar estatísticas de gravações existentes
+   * Parar gravação
    */
-  async updateRecordingStatistics(recordingId = null) {
+  async stopRecording(cameraId, recordingId = null) {
     try {
-      logger.info('[RecordingService] Iniciando atualização de estatísticas de gravações');
-      
-      // Verificar se ffprobe está disponível
-      const ffprobeAvailable = await VideoMetadataExtractor.checkFFProbeAvailability();
-      
-      if (!ffprobeAvailable) {
-        logger.warn('[RecordingService] FFProbe não disponível, usando informações básicas de arquivo');
+      this.logger.info(`🛑 Parando gravação para câmera: ${cameraId}`);
+
+      // Buscar gravação ativa se não fornecida
+      if (!recordingId) {
+        const { data: activeRecording } = await this.supabase
+          .from('recordings')
+          .select('id')
+          .eq('camera_id', cameraId)
+          .eq('status', 'recording')
+          .single();
+
+        if (!activeRecording) {
+          this.logger.warn(`⚠️ Nenhuma gravação ativa encontrada para câmera ${cameraId}`);
+          return { success: false, message: 'No active recording found' };
+        }
+        
+        recordingId = activeRecording.id;
       }
+
+      // Parar gravação via ZLMediaKit
+      await this.stopZLMRecording(cameraId);
+
+      // Atualizar registro no banco
+      const now = new Date().toISOString();
+      const { error: updateError } = await this.supabase
+        .from('recordings')
+        .update({
+          status: 'completed',
+          ended_at: now,
+          updated_at: now
+        })
+        .eq('id', recordingId);
+
+      if (updateError) {
+        this.logger.error('Erro ao atualizar registro de gravação:', updateError);
+        throw updateError;
+      }
+
+      // Atualizar status da câmera
+      await this.supabase
+        .from('cameras')
+        .update({
+          is_recording: false,
+          updated_at: now
+        })
+        .eq('id', cameraId);
+
+
+      this.logger.info(`✅ Gravação parada com sucesso: ${recordingId}`);
+      return { success: true, recordingId };
+
+    } catch (error) {
+      this.logger.error(`Erro ao parar gravação para ${cameraId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Iniciar gravação no ZLMediaKit
+   */
+  async startZLMRecording(streamId, app = 'live', duration = 1800) {
+    try {
+      this.logger.info(`📡 Iniciando gravação ZLM para stream: ${streamId}`);
       
-      // Buscar gravações para atualizar
+      const response = await axios.post(`${this.zlmApiUrl}/startRecord`, null, {
+        params: {
+          secret: this.zlmSecret,
+          type: 1, // MP4
+          vhost: '__defaultVhost__',
+          app: app,
+          stream: streamId
+        },
+        timeout: 10000
+      });
+
+      if (response.data && response.data.code === 0) {
+        this.logger.info(`✅ Gravação ZLM iniciada para ${streamId}`);
+        return { success: true, message: 'Recording started' };
+      } else {
+        this.logger.error(`❌ Falha ao iniciar gravação ZLM:`, response.data);
+        return { success: false, message: response.data?.msg || 'Unknown error' };
+      }
+
+    } catch (error) {
+      this.logger.error(`❌ Erro ao comunicar com ZLMediaKit:`, error);
+      return { success: false, message: error.message };
+    }
+  }
+
+  /**
+   * Parar gravação no ZLMediaKit
+   */
+  async stopZLMRecording(streamId, app = 'live') {
+    try {
+      this.logger.info(`📡 Parando gravação ZLM para stream: ${streamId}`);
+      
+      const response = await axios.post(`${this.zlmApiUrl}/stopRecord`, null, {
+        params: {
+          secret: this.zlmSecret,
+          type: 1, // MP4
+          vhost: '__defaultVhost__',
+          app: app,
+          stream: streamId
+        },
+        timeout: 5000
+      });
+
+      this.logger.info(`✅ Comando stop enviado para ZLM: ${streamId}`);
+      return { success: true };
+
+    } catch (error) {
+      this.logger.error(`❌ Erro ao parar gravação ZLM:`, error);
+      return { success: false, message: error.message };
+    }
+  }
+
+  /**
+   * Buscar gravações com filtros simplificados
+   */
+  async searchRecordings(userId, filters = {}) {
+    try {
+      // Primeiro fazer query de contagem
+      let countQuery = this.supabase
+        .from('recordings')
+        .select('id', { count: 'exact', head: true });
+
+      // Aplicar mesmos filtros na contagem
+      if (filters.camera_id) {
+        countQuery = countQuery.eq('camera_id', filters.camera_id);
+      }
+
+      if (filters.status) {
+        countQuery = countQuery.eq('status', filters.status);
+      }
+
+      if (filters.date_from) {
+        countQuery = countQuery.gte('created_at', filters.date_from);
+      }
+
+      if (filters.date_to) {
+        countQuery = countQuery.lte('created_at', filters.date_to);
+      }
+
+      const { count, error: countError } = await countQuery;
+
+      if (countError) {
+        this.logger.error('Erro ao contar gravações:', countError);
+        throw countError;
+      }
+
+      // Query principal para dados
       let query = this.supabase
         .from('recordings')
-        .select('id, filename, file_path, local_path, file_size, duration, metadata')
-        .eq('status', 'completed');
-      
-      if (recordingId) {
-        query = query.eq('id', recordingId);
-      } else {
-        // Atualizar apenas gravações com estatísticas zeradas ou nulas
-        query = query.or('duration.is.null,duration.eq.0,file_size.is.null,file_size.eq.0');
+        .select(`
+          *,
+          cameras (
+            id,
+            name,
+            location
+          )
+        `);
+
+      // Note: cameras table doesn't have user_id column, skipping user filter
+
+      if (filters.camera_id) {
+        query = query.eq('camera_id', filters.camera_id);
       }
+
+      if (filters.status) {
+        query = query.eq('status', filters.status);
+      }
+
+      if (filters.date_from) {
+        query = query.gte('created_at', filters.date_from);
+      }
+
+      if (filters.date_to) {
+        query = query.lte('created_at', filters.date_to);
+      }
+
+      // Ordenar por data de criação (mais recente primeiro)
+      query = query.order('created_at', { ascending: false });
+
+      // Paginação
+      const page = parseInt(filters.page) || 1;
+      const limit = Math.min(parseInt(filters.limit) || 50, 100);
+      const offset = (page - 1) * limit;
       
+      query = query.range(offset, offset + limit - 1);
+
       const { data: recordings, error } = await query;
+
+      if (error) {
+        this.logger.error('Erro ao buscar gravações:', error);
+        throw error;
+      }
+
+      // Log para debug
+      this.logger.info(`📊 [SEARCH] Encontradas ${recordings?.length || 0} gravações de ${count || 0} total`, {
+        page,
+        limit,
+        offset,
+        count,
+        filters
+      });
+
+      // CORREÇÃO: Formatação melhorada para garantir todos os dados necessários
+      const formattedRecordings = (recordings || []).map(recording => {
+        const camera = recording.cameras || {};
+        
+        // Calcular duração se não existir mas tiver start_time e end_time
+        let duration = recording.duration || 0;
+        if (!duration && recording.start_time && recording.end_time) {
+          const startTime = new Date(recording.start_time);
+          const endTime = new Date(recording.end_time);
+          duration = Math.round((endTime.getTime() - startTime.getTime()) / 1000);
+          
+          // Log para debug quando calculamos duração
+          this.logger.debug(`📊 Duração calculada para gravação ${recording.id}: ${duration}s`);
+        }
+        
+        // Validar se todos os campos críticos estão presentes
+        const hasValidFile = !!(recording.file_path || recording.local_path);
+        const hasValidSize = recording.file_size && recording.file_size > 0;
+        const hasValidCamera = camera.name || camera.id;
+        
+        if (!hasValidCamera) {
+          this.logger.warn(`⚠️ Gravação ${recording.id} sem dados válidos de câmera`);
+        }
+        
+        return {
+          id: recording.id,
+          camera_id: recording.camera_id,
+          camera_name: camera.name || `Câmera ${recording.camera_id?.substring(0, 8) || 'Desconhecida'}`,
+          camera_location: camera.location || 'Localização não definida',
+          filename: recording.filename || `gravacao-${recording.id?.substring(0, 8)}.mp4`,
+          file_path: recording.file_path,
+          local_path: recording.local_path,
+          start_time: recording.start_time,
+          end_time: recording.end_time,
+          started_at: recording.started_at,
+          ended_at: recording.ended_at,
+          created_at: recording.created_at,
+          updated_at: recording.updated_at,
+          status: recording.status || 'unknown',
+          duration: duration,
+          duration_formatted: this.formatDuration(duration),
+          file_size: recording.file_size || 0,
+          file_size_formatted: this.formatFileSize(recording.file_size || 0),
+          quality: recording.quality || 'medium',
+          event_type: recording.event_type || 'automatic',
+          format: recording.format || 'mp4',
+          codec: recording.codec || 'h264',
+          thumbnail_url: recording.thumbnail_url || null,
+          download_url: `http://localhost:3002/api/recording-files/${recording.id}/download`,
+          stream_url: `http://localhost:3002/api/recording-files/${recording.id}/play`,
+          play_web_url: `http://localhost:3002/api/recording-files/${recording.id}/play-web`,
+          file_exists: hasValidFile,
+          file_valid: hasValidFile && hasValidSize,
+          playable: hasValidFile && (recording.status === 'completed' || recording.status === 'uploaded'),
+          cameras: camera, // Manter compatibilidade com frontend
+          metadata: recording.metadata || {}
+        };
+      });
+
+      // Retornar objeto com paginação
+      return {
+        data: formattedRecordings,
+        pagination: {
+          page,
+          limit,
+          total: count || 0,
+          pages: Math.ceil((count || 0) / limit)
+        }
+      };
+
+    } catch (error) {
+      this.logger.error('Erro ao buscar gravações:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Deletar gravação
+   */
+  async deleteRecording(recordingId, userId = null) {
+    try {
+      // Buscar gravação
+      const recording = await this.getRecordingById(recordingId, userId);
       
+      if (!recording) {
+        throw new Error('Gravação não encontrada');
+      }
+
+      // Tentar deletar arquivo físico
+      if (recording.file_path || recording.local_path) {
+        const filePath = recording.file_path || recording.local_path;
+        const absolutePath = this.resolveAbsolutePath(filePath);
+        
+        if (absolutePath) {
+          try {
+            await fs.unlink(absolutePath);
+            this.logger.info(`🗑️ Arquivo deletado: ${absolutePath}`);
+          } catch (error) {
+            this.logger.warn(`⚠️ Erro ao deletar arquivo: ${error.message}`);
+          }
+        }
+      }
+
+      // Deletar registro do banco
+      const { error } = await this.supabase
+        .from('recordings')
+        .delete()
+        .eq('id', recordingId);
+
       if (error) {
         throw error;
       }
-      
-      if (!recordings || recordings.length === 0) {
-        logger.info('[RecordingService] Nenhuma gravação encontrada para atualização');
-        return { updated: 0, errors: 0 };
+
+      this.logger.info(`✅ Gravação deletada: ${recordingId}`);
+      return { success: true };
+
+    } catch (error) {
+      this.logger.error(`Erro ao deletar gravação ${recordingId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Obter gravações ativas
+   */
+  async getActiveRecordings(userId = null) {
+    try {
+      let query = this.supabase
+        .from('recordings')
+        .select(`
+          *,
+          cameras (
+            id,
+            name
+          )
+        `)
+        .eq('status', 'recording');
+
+      // Note: cameras table doesn't have user_id column, skipping user filter
+
+      const { data: recordings, error } = await query;
+
+      if (error) {
+        throw error;
       }
+
+      return recordings || [];
+
+    } catch (error) {
+      this.logger.error('Erro ao buscar gravações ativas:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Preparar arquivo para reprodução
+   * Required by /api/recording-files routes
+   */
+  async preparePlayback(recordingId) {
+    try {
+      console.log(`🎬 [DEBUG] preparePlayback called for: ${recordingId}`);
+      this.logger.info(`🎬 Preparando playback para gravação: ${recordingId}`);
       
-      logger.info(`[RecordingService] Encontradas ${recordings.length} gravações para atualização`);
+      // Buscar gravação
+      const recording = await this.getRecordingById(recordingId);
+      if (!recording) {
+        console.log(`❌ [DEBUG] Recording not found: ${recordingId}`);
+        this.logger.error(`Gravação não encontrada: ${recordingId}`);
+        return null;
+      }
+
+      console.log(`✅ [DEBUG] Recording found:`, { id: recording.id, filename: recording.filename, file_path: recording.file_path, local_path: recording.local_path });
+
+      // Buscar arquivo
+      const filePath = await this.findRecordingFile(recording);
+      if (!filePath) {
+        console.log(`❌ [DEBUG] File not found for recording: ${recordingId}`);
+        this.logger.error(`Arquivo não encontrado para gravação: ${recordingId}`);
+        return null;
+      }
+
+      console.log(`📁 [DEBUG] File path found: ${filePath}`);
+
+      // Verificar se arquivo existe
+      try {
+        const stats = await fs.stat(filePath);
+        console.log(`✅ [DEBUG] File exists, size: ${stats.size} bytes`);
+        
+        return {
+          filePath,
+          fileSize: stats.size,
+          recording
+        };
+      } catch (error) {
+        console.log(`❌ [DEBUG] Error accessing file: ${filePath}`, error.message);
+        this.logger.error(`Erro ao acessar arquivo: ${filePath}`, error);
+        return null;
+      }
+    } catch (error) {
+      console.log(`❌ [DEBUG] Error in preparePlayback: ${recordingId}`, error.message);
+      this.logger.error(`Erro ao preparar playback: ${recordingId}`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Preparar arquivo para download
+   * Similar to preparePlayback but with download headers
+   */
+  async prepareDownload(recordingId) {
+    return this.preparePlayback(recordingId);
+  }
+
+  /**
+   * Criar stream de arquivo para reprodução
+   * Required by /api/recording-files routes for streaming
+   */
+  createFileStream(filePath, range = null) {
+    if (range) {
+      // Parse range header
+      const parts = range.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const fileStats = fsSync.statSync(filePath);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileStats.size - 1;
       
-      let updated = 0;
-      let errors = 0;
+      return fsSync.createReadStream(filePath, { start, end });
+    } else {
+      // Full file stream
+      return fsSync.createReadStream(filePath);
+    }
+  }
+
+  /**
+   * Get recordings (wrapper for searchRecordings)
+   */
+  async getRecordings(filters = {}, userId = null) {
+    try {
+      const result = await this.searchRecordings(userId, filters);
+      // Return just the data array for backward compatibility
+      return result.data || result || [];
+    } catch (error) {
+      this.logger.error('Erro ao obter gravações:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get recording statistics (comprehensive implementation)
+   */
+  async getRecordingStats(userId = null, period = '7d') {
+    try {
+      this.logger.info(`📊 Calculando estatísticas de gravações...`);
       
-      for (const recording of recordings) {
+      // Buscar estatísticas gerais
+      const { data: generalStats, error: generalError } = await this.supabase
+        .from('recordings')
+        .select('id, file_size, duration, status, created_at');
+
+      if (generalError) {
+        this.logger.error('Erro ao buscar estatísticas gerais:', generalError);
+        throw generalError;
+      }
+
+      const recordings = generalStats || [];
+      this.logger.info(`📊 Total de registros encontrados: ${recordings.length}`);
+
+      // Calcular data de hoje
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const todayISO = today.toISOString();
+
+      // Estatísticas básicas
+      const total = recordings.length;
+      const today_count = recordings.filter(r => new Date(r.created_at) >= today).length;
+      const totalSize = recordings.reduce((sum, r) => sum + (r.file_size || 0), 0);
+      
+      // Calcular duração média (apenas de gravações com duração)
+      const recordingsWithDuration = recordings.filter(r => r.duration && r.duration > 0);
+      const avgDuration = recordingsWithDuration.length > 0 
+        ? recordingsWithDuration.reduce((sum, r) => sum + r.duration, 0) / recordingsWithDuration.length 
+        : 0;
+
+      // Buscar gravações ativas
+      const { data: activeRecordings, error: activeError } = await this.supabase
+        .from('recordings')
+        .select('camera_id')
+        .eq('status', 'recording');
+
+      if (activeError) {
+        this.logger.warn('Erro ao buscar gravações ativas:', activeError);
+      }
+
+      const activeRecordingsCount = activeRecordings?.length || 0;
+      const activeCameras = activeRecordings ? [...new Set(activeRecordings.map(r => r.camera_id))] : [];
+
+      const stats = {
+        // Compatibilidade com frontend RecordingsPage.tsx
+        totalRecordings: total,
+        activeRecordings: activeRecordingsCount,
+        pendingUploads: recordings.filter(r => r.status === 'processing' || r.status === 'uploading').length,
+        storageUsed: {
+          s3: 0, // Placeholder - seria calculado do S3
+          local: totalSize
+        },
+        uploadQueue: {
+          pending: recordings.filter(r => r.status === 'processing').length,
+          processing: recordings.filter(r => r.status === 'uploading').length,
+          failed: recordings.filter(r => r.status === 'failed' || r.status === 'error').length
+        },
+        totalSegments: total, // Simplificação - cada gravação é um segmento
+        
+        // Campos originais para compatibilidade com Recordings.tsx
+        total,
+        today: today_count,
+        totalSize,
+        avgDuration: Math.round(avgDuration),
+        activeCameras: activeCameras,
+        completed: recordings.filter(r => r.status === 'completed').length,
+        failed: recordings.filter(r => r.status === 'failed' || r.status === 'error').length,
+        processing: recordings.filter(r => r.status === 'processing').length
+      };
+
+      this.logger.info(`📊 Estatísticas calculadas:`, JSON.stringify(stats, null, 2));
+      return stats;
+
+    } catch (error) {
+      this.logger.error('Erro ao obter estatísticas:', error);
+      return {
+        // Compatibilidade com frontend RecordingsPage.tsx
+        totalRecordings: 0,
+        activeRecordings: 0,
+        pendingUploads: 0,
+        storageUsed: {
+          s3: 0,
+          local: 0
+        },
+        uploadQueue: {
+          pending: 0,
+          processing: 0,
+          failed: 0
+        },
+        totalSegments: 0,
+        
+        // Campos originais para compatibilidade com Recordings.tsx
+        total: 0,
+        today: 0,
+        totalSize: 0,
+        avgDuration: 0,
+        activeCameras: [],
+        completed: 0,
+        failed: 0,
+        processing: 0
+      };
+    }
+  }
+
+  /**
+   * Get recording trends (stub implementation)
+   */
+  async getTrends(userId = null, period = '7d') {
+    try {
+      // Simple trends implementation
+      return {
+        uploads: [],
+        failures: [],
+        period
+      };
+    } catch (error) {
+      this.logger.error('Erro ao obter tendências:', error);
+      return {
+        uploads: [],
+        failures: [],
+        period
+      };
+    }
+  }
+
+  /**
+   * Formatar duração em segundos para formato legível
+   */
+  formatDuration(duration) {
+    if (!duration || duration <= 0) return '0:00';
+    
+    const hours = Math.floor(duration / 3600);
+    const minutes = Math.floor((duration % 3600) / 60);
+    const seconds = Math.floor(duration % 60);
+    
+    if (hours > 0) {
+      return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    } else {
+      return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+    }
+  }
+
+  /**
+   * Formatar tamanho do arquivo em bytes para formato legível
+   */
+  formatFileSize(bytes) {
+    if (!bytes || bytes <= 0) return '0 B';
+    
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const k = 1024;
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + units[i];
+  }
+
+  /**
+   * Processa a fila de uploads para o Wasabi S3 (método stub)
+   * @returns {Promise<Object>} Resultado do processamento
+   */
+  async processUploadQueue() {
+    this.logger.debug('📤 [RecordingService] processUploadQueue chamado (método stub)');
+    return {
+      processed: 0,
+      success: 0,
+      failed: 0,
+      message: 'Upload queue processing not implemented'
+    };
+  }
+
+  /**
+   * Iniciar verificador de timeout para gravações longas
+   */
+  startTimeoutChecker() {
+    // Verificar gravações ativas a cada 5 minutos
+    setInterval(() => {
+      this.checkRecordingTimeouts().catch(error => {
+        this.logger.error('[RecordingService] Erro no verificador de timeout:', error);
+      });
+    }, 5 * 60 * 1000); // 5 minutos
+
+    this.logger.info('[RecordingService] Verificador de timeout iniciado (5min)');
+  }
+
+  /**
+   * Verificar gravações que excedem o timeout e marcar como completed
+   */
+  async checkRecordingTimeouts() {
+    try {
+      const timeoutDate = new Date(Date.now() - this.recordingTimeout).toISOString();
+      
+      const { data: expiredRecordings, error } = await this.supabase
+        .from('recordings')
+        .select('*')
+        .eq('status', 'recording')
+        .lt('start_time', timeoutDate);
+
+      if (error) {
+        this.logger.error('[RecordingService] Erro ao buscar gravações expiradas:', error);
+        return;
+      }
+
+      if (!expiredRecordings || expiredRecordings.length === 0) {
+        return; // Nenhuma gravação expirada
+      }
+
+      this.logger.info(`[RecordingService] Encontradas ${expiredRecordings.length} gravações expiradas por timeout`);
+
+      for (const recording of expiredRecordings) {
         try {
-          // Determinar caminho do arquivo
-          let filePath = recording.local_path;
-          
-          if (!filePath && recording.file_path) {
-            filePath = path.isAbsolute(recording.file_path) 
-              ? recording.file_path 
-              : path.resolve(this.recordingsPath, recording.file_path);
-          }
-          
-          if (!filePath) {
-            logger.warn(`[RecordingService] Caminho do arquivo não encontrado para gravação ${recording.id}`);
-            errors++;
-            continue;
-          }
-          
-          // Verificar se arquivo existe
-          try {
-            await fs.access(filePath);
-          } catch (accessError) {
-            logger.warn(`[RecordingService] Arquivo não encontrado: ${filePath}`);
-            errors++;
-            continue;
-          }
-          
-          // Extrair metadados
-          let metadata;
-          if (ffprobeAvailable) {
-            metadata = await VideoMetadataExtractor.extractMetadata(filePath);
-          } else {
-            metadata = await VideoMetadataExtractor.extractBasicInfo(filePath);
-          }
-          
-          // Preparar dados para atualização
+          const now = new Date().toISOString();
+          const duration = Math.round((Date.now() - new Date(recording.start_time).getTime()) / 1000);
+
           const updateData = {
-            file_size: metadata.fileSize,
-            duration: metadata.duration,
-            updated_at: new Date().toISOString()
-          };
-          
-          // Adicionar metadados estendidos se disponíveis
-          if (ffprobeAvailable && metadata.width && metadata.height) {
-            updateData.metadata = {
+            status: 'completed',
+            ended_at: now,
+            end_time: now,
+            duration: duration,
+            metadata: {
               ...recording.metadata,
-              resolution: metadata.resolution,
-              width: metadata.width,
-              height: metadata.height,
-              video_codec: metadata.videoCodec,
-              audio_codec: metadata.audioCodec,
-              bitrate: metadata.bitrate,
-              frame_rate: metadata.frameRate,
-              segments: metadata.segments,
-              format: metadata.format,
-              duration_formatted: metadata.durationFormatted,
-              updated_metadata_at: new Date().toISOString()
-            };
-          }
-          
-          // Atualizar no banco de dados
+              timeout_stopped: true,
+              timeout_reason: 'automatic_30min_timeout',
+              stopped_at: now
+            },
+            updated_at: now
+          };
+
           const { error: updateError } = await this.supabase
             .from('recordings')
             .update(updateData)
             .eq('id', recording.id);
-          
+
           if (updateError) {
-            logger.error(`[RecordingService] Erro ao atualizar gravação ${recording.id}:`, updateError);
-            errors++;
+            this.logger.error(`[RecordingService] Erro ao atualizar gravação expirada ${recording.id}:`, updateError);
           } else {
-            logger.info(`[RecordingService] Estatísticas atualizadas para gravação ${recording.id}: ${metadata.resolution}, ${metadata.durationFormatted}, ${VideoMetadataExtractor.formatFileSize(metadata.fileSize)}`);
-            updated++;
+            this.logger.info(`⏰ [RecordingService] Gravação ${recording.id} marcada como completed por timeout (${Math.round(duration/60)}min)`);
           }
-          
-        } catch (error) {
-          logger.error(`[RecordingService] Erro ao processar gravação ${recording.id}:`, error);
-          errors++;
+
+        } catch (recordingError) {
+          this.logger.error(`[RecordingService] Erro ao processar gravação expirada ${recording.id}:`, recordingError);
         }
       }
-      
-      logger.info(`[RecordingService] Atualização de estatísticas concluída: ${updated} atualizadas, ${errors} erros`);
-      
-      return { updated, errors, total: recordings.length };
-      
+
     } catch (error) {
-      logger.error('[RecordingService] Erro ao atualizar estatísticas de gravações:', error);
-      throw error;
+      this.logger.error('[RecordingService] Erro geral no verificador de timeout:', error);
     }
-  }
-
-  /**
-   * Atualizar estatísticas de uma gravação específica
-   */
-  async updateSingleRecordingStatistics(recordingId) {
-    return await this.updateRecordingStatistics(recordingId);
-  }
-
-  /**
-   * VALIDAÇÃO ROBUSTA DE DADOS DE GRAVAÇÃO
-   */
-  async validateRecordingData(recordingData) {
-    const errors = [];
-    const {
-      cameraId,
-      fileName,
-      filePath,
-      fileSize,
-      duration,
-      startTime,
-      streamName,
-      format
-    } = recordingData;
-
-    // Validar cameraId
-    if (!cameraId || typeof cameraId !== 'string' || cameraId.trim() === '') {
-      errors.push('cameraId é obrigatório e deve ser uma string não vazia');
-    }
-
-    // Validar fileName
-    if (!fileName || typeof fileName !== 'string' || fileName.trim() === '') {
-      errors.push('fileName é obrigatório e deve ser uma string não vazia');
-    } else {
-      // Verificar extensão do arquivo
-      const validExtensions = ['.mp4', '.ts', '.flv', '.mkv'];
-      const fileExt = path.extname(fileName).toLowerCase();
-      if (!validExtensions.includes(fileExt)) {
-        errors.push(`Extensão de arquivo inválida: ${fileExt}. Extensões válidas: ${validExtensions.join(', ')}`);
-      }
-    }
-
-    // Validar fileSize
-    if (fileSize !== undefined && (typeof fileSize !== 'number' || fileSize < 0)) {
-      errors.push('fileSize deve ser um número positivo');
-    }
-
-    // Validar duration
-    if (duration !== undefined && (typeof duration !== 'number' || duration < 0)) {
-      errors.push('duration deve ser um número positivo');
-    }
-
-    // Validar startTime
-    if (startTime) {
-      const timestamp = new Date(startTime);
-      if (isNaN(timestamp.getTime())) {
-        errors.push('startTime deve ser um timestamp válido');
-      }
-    }
-
-    // Validar format
-    if (format && typeof format !== 'string') {
-      errors.push('format deve ser uma string');
-    }
-
-    // Verificar se a câmera existe no banco de dados
-    if (cameraId && errors.length === 0) {
-      try {
-        const { data: camera, error } = await this.supabase
-          .from('cameras')
-          .select('id, name')
-          .eq('id', cameraId)
-          .single();
-
-        if (error || !camera) {
-          errors.push(`Câmera não encontrada no banco de dados: ${cameraId}`);
-        }
-      } catch (dbError) {
-        logger.error(`❌ [RecordingService] Erro ao verificar câmera no banco:`, dbError);
-        errors.push('Erro ao verificar câmera no banco de dados');
-      }
-    }
-
-    return {
-      isValid: errors.length === 0,
-      errors
-    };
-  }
-
-  /**
-   * LOCALIZAÇÃO ROBUSTA DE ARQUIVO FÍSICO
-   * Usa múltiplas estratégias para encontrar o arquivo
-   */
-  async locateRecordingFileRobust({ fileName, filePath, cameraId, startTime }) {
-    const searchedPaths = [];
-    let finalPath = null;
-    let strategy = null;
-    let actualSize = null;
-
-    logger.info(`🔍 [RecordingService] Iniciando localização robusta do arquivo:`, {
-      fileName,
-      filePath,
-      cameraId,
-      startTime
-    });
-
-    // Estratégia 1: Caminho direto fornecido
-    if (filePath) {
-      try {
-        const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(filePath);
-        searchedPaths.push(absolutePath);
-        
-        if (fs.existsSync(absolutePath)) {
-          const stats = fs.statSync(absolutePath);
-          logger.info(`✅ [RecordingService] Estratégia 1 - Arquivo encontrado no caminho direto: ${absolutePath}`);
-          return {
-            found: true,
-            strategy: 'direct_path',
-            finalPath: absolutePath,
-            actualSize: stats.size,
-            searchedPaths
-          };
-        }
-      } catch (error) {
-        logger.warn(`⚠️ [RecordingService] Erro na estratégia 1:`, error.message);
-      }
-    }
-
-    // Estratégia 2: Busca por nome de arquivo nos diretórios padrão
-    const searchDirs = [
-      path.join(process.cwd(), 'storage', 'recordings'),
-      path.join(process.cwd(), 'storage', 'www', 'record'),
-      path.join(process.cwd(), 'storage', 'files', 'recordings'),
-      'C:\\ZLMediaKit\\www\\record',
-      'C:\\ZLMediaKit\\recordings'
-    ];
-
-    for (const dir of searchDirs) {
-      try {
-        if (!fs.existsSync(dir)) continue;
-        
-        const possiblePath = path.join(dir, fileName);
-        searchedPaths.push(possiblePath);
-        
-        if (fs.existsSync(possiblePath)) {
-          const stats = fs.statSync(possiblePath);
-          logger.info(`✅ [RecordingService] Estratégia 2 - Arquivo encontrado por nome: ${possiblePath}`);
-          return {
-            found: true,
-            strategy: 'filename_search',
-            finalPath: possiblePath,
-            actualSize: stats.size,
-            searchedPaths
-          };
-        }
-      } catch (error) {
-        logger.warn(`⚠️ [RecordingService] Erro na estratégia 2 para ${dir}:`, error.message);
-      }
-    }
-
-    // Estratégia 3: Busca por padrão de timestamp
-    if (startTime && cameraId) {
-      try {
-        const timestamp = new Date(startTime);
-        const timePattern = timestamp.toISOString().replace(/[:.]/g, '-').slice(0, 19);
-        
-        for (const dir of searchDirs) {
-          if (!fs.existsSync(dir)) continue;
-          
-          const files = fs.readdirSync(dir);
-          const matchingFile = files.find(file => 
-            file.includes(cameraId) && file.includes(timePattern.slice(0, 10))
-          );
-          
-          if (matchingFile) {
-            const possiblePath = path.join(dir, matchingFile);
-            searchedPaths.push(possiblePath);
-            
-            if (fs.existsSync(possiblePath)) {
-              const stats = fs.statSync(possiblePath);
-              logger.info(`✅ [RecordingService] Estratégia 3 - Arquivo encontrado por timestamp: ${possiblePath}`);
-              return {
-                found: true,
-                strategy: 'timestamp_pattern',
-                finalPath: possiblePath,
-                actualSize: stats.size,
-                searchedPaths
-              };
-            }
-          }
-        }
-      } catch (error) {
-        logger.warn(`⚠️ [RecordingService] Erro na estratégia 3:`, error.message);
-      }
-    }
-
-    // Estratégia 4: Busca fuzzy por nome similar
-    if (fileName) {
-      try {
-        const baseName = path.parse(fileName).name;
-        
-        for (const dir of searchDirs) {
-          if (!fs.existsSync(dir)) continue;
-          
-          const files = fs.readdirSync(dir);
-          const similarFile = files.find(file => {
-            const fileBaseName = path.parse(file).name;
-            return fileBaseName.includes(baseName) || baseName.includes(fileBaseName);
-          });
-          
-          if (similarFile) {
-            const possiblePath = path.join(dir, similarFile);
-            searchedPaths.push(possiblePath);
-            
-            if (fs.existsSync(possiblePath)) {
-              const stats = fs.statSync(possiblePath);
-              logger.info(`✅ [RecordingService] Estratégia 4 - Arquivo encontrado por nome similar: ${possiblePath}`);
-              return {
-                found: true,
-                strategy: 'fuzzy_search',
-                finalPath: possiblePath,
-                actualSize: stats.size,
-                searchedPaths
-              };
-            }
-          }
-        }
-      } catch (error) {
-        logger.warn(`⚠️ [RecordingService] Erro na estratégia 4:`, error.message);
-      }
-    }
-
-    // Nenhuma estratégia foi bem-sucedida
-    logger.error(`❌ [RecordingService] Arquivo não encontrado após todas as estratégias`, {
-      fileName,
-      filePath,
-      cameraId,
-      startTime,
-      searchedPaths
-    });
-
-    return {
-      found: false,
-      strategy: null,
-      finalPath: null,
-      actualSize: null,
-      searchedPaths
-    };
   }
 }
 
-export default new RecordingService();
+// Singleton
+const recordingService = new RecordingService();
+
+export default recordingService;

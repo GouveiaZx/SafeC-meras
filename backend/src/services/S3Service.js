@@ -1,6 +1,6 @@
 /**
- * Serviço de Upload para Wasabi S3
- * Gerencia uploads, downloads e operações de armazenamento
+ * Enhanced S3Service for Wasabi/MinIO S3 Compatible Storage
+ * Handles uploads, downloads, presigned URLs, and multipart uploads
  */
 
 import AWS from 'aws-sdk';
@@ -8,6 +8,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { createReadStream } from 'fs';
 import { createModuleLogger } from '../config/logger.js';
+import PathResolver from '../utils/PathResolver.js';
 
 const logger = createModuleLogger('S3Service');
 
@@ -17,6 +18,8 @@ class S3Service {
     this.s3 = null;
     this.bucketName = process.env.WASABI_BUCKET || 'newcam-recordings';
     this.region = process.env.WASABI_REGION || 'us-east-1';
+    this.multipartThreshold = parseInt(process.env.S3_MULTIPART_THRESHOLD) || 100 * 1024 * 1024; // 100MB
+    this.presignTtl = parseInt(process.env.S3_PRESIGN_TTL) || 3600; // 1 hour
     
     this.init();
   }
@@ -106,11 +109,11 @@ class S3Service {
   }
 
   /**
-   * Faz upload de um arquivo para o S3
+   * Upload a file to S3 with progress tracking and multipart support
    */
-  async uploadFile(filePath, key, metadata = {}) {
+  async uploadFile(filePath, key, metadata = {}, progressCallback = null) {
     if (!this.isConfigured) {
-      logger.info(`Simulando upload: ${key}`);
+      logger.warn(`S3 not configured, simulating upload: ${key}`);
       return {
         success: true,
         url: `https://simulated-s3.com/${this.bucketName}/${key}`,
@@ -121,39 +124,205 @@ class S3Service {
     }
 
     try {
-      // Verificar se o arquivo existe
+      // Verify file exists and get stats
       const stats = await fs.stat(filePath);
-      const fileStream = createReadStream(filePath);
+      const fileSize = stats.size;
 
+      logger.info(`Starting S3 upload: ${key} (${(fileSize / 1024 / 1024).toFixed(2)} MB)`);
+
+      // Use multipart upload for large files
+      if (fileSize > this.multipartThreshold) {
+        return await this.uploadLargeFile(filePath, key, metadata, progressCallback);
+      }
+
+      // Standard upload for smaller files
+      const fileStream = createReadStream(filePath);
       const uploadParams = {
         Bucket: this.bucketName,
         Key: key,
         Body: fileStream,
         ContentType: this.getContentType(filePath),
+        ContentLength: fileSize,
         Metadata: {
           'original-name': path.basename(filePath),
           'upload-date': new Date().toISOString(),
+          'file-size': fileSize.toString(),
           ...metadata
-        }
+        },
+        ServerSideEncryption: 'AES256' // Enable server-side encryption
       };
 
-      logger.info(`Iniciando upload: ${key} (${(stats.size / 1024 / 1024).toFixed(2)} MB)`);
-      
-      const result = await this.s3.upload(uploadParams).promise();
-      
-      logger.info(`Upload concluído: ${result.Location}`);
-      
+      const upload = this.s3.upload(uploadParams);
+
+      // Track progress if callback provided
+      if (progressCallback) {
+        upload.on('httpUploadProgress', (progress) => {
+          const percent = Math.round((progress.loaded / progress.total) * 100);
+          progressCallback({
+            loaded: progress.loaded,
+            total: progress.total,
+            percentage: percent,
+            key
+          });
+        });
+      }
+
+      const result = await upload.promise();
+
+      logger.info(`Upload completed successfully: ${result.Location}`);
+
       return {
         success: true,
         url: result.Location,
         key: result.Key,
         etag: result.ETag,
-        size: stats.size
+        size: fileSize,
+        uploadId: result.UploadId
       };
+
     } catch (error) {
-      logger.error(`Erro no upload de ${key}:`, error);
+      logger.error(`Upload failed for ${key}:`, {
+        error: error.message,
+        code: error.code,
+        statusCode: error.statusCode
+      });
+      
+      throw new Error(`S3 upload failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Upload large files using multipart upload
+   */
+  async uploadLargeFile(filePath, key, metadata = {}, progressCallback = null) {
+    const stats = await fs.stat(filePath);
+    const fileSize = stats.size;
+    const partSize = 50 * 1024 * 1024; // 50MB parts
+    const totalParts = Math.ceil(fileSize / partSize);
+
+    logger.info(`Starting multipart upload: ${key} (${totalParts} parts, ${partSize / 1024 / 1024}MB each)`);
+
+    try {
+      // Initialize multipart upload
+      const createParams = {
+        Bucket: this.bucketName,
+        Key: key,
+        ContentType: this.getContentType(filePath),
+        Metadata: {
+          'original-name': path.basename(filePath),
+          'upload-date': new Date().toISOString(),
+          'file-size': fileSize.toString(),
+          'upload-type': 'multipart',
+          ...metadata
+        },
+        ServerSideEncryption: 'AES256'
+      };
+
+      const createResult = await this.s3.createMultipartUpload(createParams).promise();
+      const uploadId = createResult.UploadId;
+
+      logger.info(`Multipart upload initialized: ${uploadId}`);
+
+      // Upload parts
+      const uploadPromises = [];
+      const parts = [];
+
+      for (let partNumber = 1; partNumber <= totalParts; partNumber++) {
+        const start = (partNumber - 1) * partSize;
+        const end = Math.min(start + partSize, fileSize);
+        
+        const uploadPromise = this.uploadPart(
+          filePath, key, uploadId, partNumber, start, end, progressCallback
+        );
+        
+        uploadPromises.push(uploadPromise);
+      }
+
+      // Wait for all parts to complete
+      const partResults = await Promise.all(uploadPromises);
+      
+      // Prepare parts list for completion
+      partResults.forEach((result, index) => {
+        parts.push({
+          ETag: result.ETag,
+          PartNumber: index + 1
+        });
+      });
+
+      // Complete multipart upload
+      const completeParams = {
+        Bucket: this.bucketName,
+        Key: key,
+        UploadId: uploadId,
+        MultipartUpload: { Parts: parts }
+      };
+
+      const result = await this.s3.completeMultipartUpload(completeParams).promise();
+
+      logger.info(`Multipart upload completed: ${result.Location}`);
+
+      return {
+        success: true,
+        url: result.Location,
+        key: result.Key,
+        etag: result.ETag,
+        size: fileSize,
+        uploadId: uploadId,
+        multipart: true
+      };
+
+    } catch (error) {
+      logger.error(`Multipart upload failed for ${key}:`, error);
+      
+      // Attempt to abort the multipart upload
+      try {
+        await this.s3.abortMultipartUpload({
+          Bucket: this.bucketName,
+          Key: key,
+          UploadId: uploadId
+        }).promise();
+        logger.info(`Aborted failed multipart upload: ${uploadId}`);
+      } catch (abortError) {
+        logger.error(`Failed to abort multipart upload:`, abortError);
+      }
+
       throw error;
     }
+  }
+
+  /**
+   * Upload a single part for multipart upload
+   */
+  async uploadPart(filePath, key, uploadId, partNumber, start, end, progressCallback) {
+    const partSize = end - start;
+    
+    const stream = createReadStream(filePath, { start, end: end - 1 });
+    
+    const uploadParams = {
+      Bucket: this.bucketName,
+      Key: key,
+      PartNumber: partNumber,
+      UploadId: uploadId,
+      Body: stream,
+      ContentLength: partSize
+    };
+
+    const result = await this.s3.uploadPart(uploadParams).promise();
+
+    if (progressCallback) {
+      progressCallback({
+        loaded: end,
+        total: await fs.stat(filePath).then(s => s.size),
+        percentage: Math.round((end / (await fs.stat(filePath).then(s => s.size))) * 100),
+        key,
+        partNumber,
+        partSize
+      });
+    }
+
+    logger.debug(`Part ${partNumber} uploaded successfully (${partSize} bytes)`);
+    
+    return result;
   }
 
   /**
@@ -264,23 +433,135 @@ class S3Service {
   }
 
   /**
-   * Gera URL pré-assinada para download
+   * Generate presigned URL for download with enhanced options
    */
-  async getSignedUrl(key, expiresIn = 3600) {
+  async getSignedUrl(key, options = {}) {
     if (!this.isConfigured) {
-      throw new Error('S3 não configurado. Configure as credenciais do Wasabi/S3.');
+      throw new Error('S3 not configured. Please configure Wasabi/S3 credentials.');
     }
 
+    const {
+      operation = 'getObject',
+      expiresIn = this.presignTtl,
+      responseHeaders = {},
+      versionId = null
+    } = options;
+
     try {
-      const url = await this.s3.getSignedUrlPromise('getObject', {
+      const params = {
         Bucket: this.bucketName,
         Key: key,
         Expires: expiresIn
+      };
+
+      // Add version ID if specified
+      if (versionId) {
+        params.VersionId = versionId;
+      }
+
+      // Add response headers for content disposition, etc.
+      if (responseHeaders.contentDisposition) {
+        params.ResponseContentDisposition = responseHeaders.contentDisposition;
+      }
+      if (responseHeaders.contentType) {
+        params.ResponseContentType = responseHeaders.contentType;
+      }
+      if (responseHeaders.cacheControl) {
+        params.ResponseCacheControl = responseHeaders.cacheControl;
+      }
+
+      const url = await this.s3.getSignedUrlPromise(operation, params);
+      
+      logger.debug(`Generated presigned URL for ${key}`, {
+        operation,
+        expiresIn,
+        responseHeaders
       });
       
       return url;
     } catch (error) {
-      logger.error(`Erro ao gerar URL assinada para ${key}:`, error);
+      logger.error(`Failed to generate presigned URL for ${key}:`, {
+        error: error.message,
+        operation,
+        expiresIn
+      });
+      throw new Error(`Failed to generate presigned URL: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get presigned URL for upload (for direct client uploads if needed)
+   */
+  async getUploadUrl(key, options = {}) {
+    const {
+      contentType = 'video/mp4',
+      contentLength = null,
+      expiresIn = 3600,
+      metadata = {}
+    } = options;
+
+    if (!this.isConfigured) {
+      throw new Error('S3 not configured');
+    }
+
+    try {
+      const params = {
+        Bucket: this.bucketName,
+        Key: key,
+        Expires: expiresIn,
+        ContentType: contentType
+      };
+
+      if (contentLength) {
+        params.ContentLength = contentLength;
+      }
+
+      // Add metadata
+      Object.keys(metadata).forEach(key => {
+        params[`x-amz-meta-${key}`] = metadata[key];
+      });
+
+      const url = await this.s3.getSignedUrlPromise('putObject', params);
+      
+      logger.debug(`Generated upload URL for ${key}`);
+      
+      return url;
+    } catch (error) {
+      logger.error(`Failed to generate upload URL for ${key}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Check if object exists and get metadata without downloading
+   */
+  async headObject(key) {
+    if (!this.isConfigured) {
+      throw new Error('S3 not configured');
+    }
+
+    try {
+      const result = await this.s3.headObject({
+        Bucket: this.bucketName,
+        Key: key
+      }).promise();
+
+      return {
+        exists: true,
+        size: result.ContentLength,
+        contentType: result.ContentType,
+        lastModified: result.LastModified,
+        etag: result.ETag,
+        metadata: result.Metadata,
+        serverSideEncryption: result.ServerSideEncryption,
+        versionId: result.VersionId
+      };
+    } catch (error) {
+      if (error.statusCode === 404) {
+        return { exists: false };
+      }
+      
+      logger.error(`Failed to get object metadata for ${key}:`, error);
       throw error;
     }
   }
@@ -332,14 +613,65 @@ class S3Service {
   }
 
   /**
-   * Gera chave S3 para gravação
+   * Generate S3 key for recording using PathResolver
    */
-  generateRecordingKey(cameraId, recordingId, date = new Date()) {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    
-    return `recordings/${year}/${month}/${day}/${cameraId}/${recordingId}.mp4`;
+  generateRecordingKey(cameraId, filename, date = new Date()) {
+    return PathResolver.generateS3Key(cameraId, filename, date);
+  }
+
+  /**
+   * Upload recording with standardized key generation
+   */
+  async uploadRecording(recording, progressCallback = null) {
+    if (!recording || !recording.camera_id || !recording.filename) {
+      throw new Error('Invalid recording object: missing camera_id or filename');
+    }
+
+    // Find the local file
+    const fileInfo = await PathResolver.findRecordingFile(recording);
+    if (!fileInfo || !fileInfo.exists) {
+      throw new Error(`Recording file not found: ${recording.filename}`);
+    }
+
+    // Generate S3 key
+    const createdAt = recording.created_at ? new Date(recording.created_at) : new Date();
+    const s3Key = this.generateRecordingKey(recording.camera_id, recording.filename, createdAt);
+
+    // Prepare metadata
+    const metadata = {
+      'recording-id': recording.id,
+      'camera-id': recording.camera_id,
+      'original-filename': recording.filename,
+      'duration': recording.duration?.toString() || '0',
+      'file-size': fileInfo.size.toString(),
+      'upload-source': 'newcam-backend'
+    };
+
+    logger.info(`Uploading recording ${recording.id} to S3`, {
+      localPath: fileInfo.absolutePath,
+      s3Key,
+      fileSize: fileInfo.size
+    });
+
+    try {
+      const result = await this.uploadFile(
+        fileInfo.absolutePath,
+        s3Key,
+        metadata,
+        progressCallback
+      );
+
+      return {
+        ...result,
+        s3Key,
+        localPath: fileInfo.relativePath,
+        originalRecordingId: recording.id
+      };
+
+    } catch (error) {
+      logger.error(`Failed to upload recording ${recording.id}:`, error);
+      throw error;
+    }
   }
 }
 

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Menu, Search, LogOut, User, Settings } from 'lucide-react';
+import { Menu, Search, LogOut, User, Settings, UserCircle, Shield } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 
@@ -82,14 +82,26 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
                 onClick={() => setShowUserMenu(!showUserMenu)}
                 className="flex items-center space-x-3 p-2 rounded-lg hover:bg-gray-100 transition-colors"
               >
-                <div className="h-8 w-8 bg-primary-600 rounded-full flex items-center justify-center">
-                  <span className="text-sm font-medium text-white">
-                    {user?.name?.charAt(0).toUpperCase()}
-                  </span>
+                <div className="relative">
+                  <div className="h-9 w-9 bg-gradient-to-br from-primary-500 to-primary-700 rounded-full flex items-center justify-center ring-2 ring-primary-100 shadow-lg">
+                    <UserCircle className="h-5 w-5 text-white" />
+                  </div>
+                  {user?.userType === 'ADMIN' && (
+                    <div className="absolute -top-1 -right-1 h-3.5 w-3.5 bg-yellow-400 rounded-full flex items-center justify-center shadow-sm">
+                      <Shield className="h-2 w-2 text-yellow-800" />
+                    </div>
+                  )}
                 </div>
                 <div className="hidden md:block text-left">
-                  <p className="text-sm font-medium text-gray-900">{user?.name}</p>
-                  <p className="text-xs text-gray-500">{getUserTypeLabel(user?.userType || '')}</p>
+                  <p className="text-sm font-semibold text-gray-900">{user?.name}</p>
+                  <p className="text-xs text-gray-500 flex items-center gap-1">
+                    <span className={`inline-block w-1.5 h-1.5 rounded-full ${
+                      user?.userType === 'ADMIN' ? 'bg-yellow-400' :
+                      user?.userType === 'INTEGRATOR' ? 'bg-blue-400' :
+                      'bg-green-400'
+                    }`}></span>
+                    {getUserTypeLabel(user?.userType || '')}
+                  </p>
                 </div>
               </button>
 

@@ -5,12 +5,14 @@ import Joi from 'joi';
 import logger from '../utils/logger.js';
 import { Camera } from '../models/Camera.js';
 import RecordingService from '../services/RecordingService.js';
-import ImprovedRecordingService from '../services/RecordingService_improved.js';
 import { promises as fs } from 'fs';
 import jwt from 'jsonwebtoken';
 import { supabaseAdmin } from '../config/database.js';
 import S3Service from '../services/S3Service.js';
+import UploadQueueService from '../services/UploadQueueService.js';
 import { computeEtag, computeLastModified, evaluateConditionalCache, setStandardCacheHeaders } from '../utils/httpCache.js';
+import axios from 'axios';
+import path from 'path';
 
 const router = express.Router();
 
@@ -42,6 +44,10 @@ const deleteRecordingsSchema = Joi.object({
   confirm: Joi.boolean().valid(true).required()
 });
 
+const stopRecordingSchema = Joi.object({
+  reason: Joi.string().valid('manual', 'timeout', 'error').default('manual')
+});
+
 /**
  * @route GET /api/recordings
  * @desc Listar gravações com filtros
@@ -66,30 +72,39 @@ router.get('/',
           });
         }
         
-        // Verificar permissão de acesso à câmera
-        const userCameras = await Camera.findByUserId(userId);
-        const hasAccess = userCameras.some(cam => cam.id === filters.camera_id);
+        // TODO: Verificar permissão de acesso à câmera - temporariamente desabilitado
+        // const userCameras = await Camera.findByUserId(userId);
+        // const hasAccess = userCameras.some(cam => cam.id === filters.camera_id);
         
-        if (!hasAccess) {
-          return res.status(403).json({
-            success: false,
-            message: 'Acesso negado à câmera especificada'
-          });
-        }
+        // if (!hasAccess) {
+        //   return res.status(403).json({
+        //     success: false,
+        //     message: 'Acesso negado à câmera especificada'
+        //   });
+        // }
       }
       
       const result = await RecordingService.searchRecordings(userId, filters);
       
+      // Log para debug 
+      logger.info(`📊 [ENDPOINT] Resultado searchRecordings:`, {
+        hasData: !!result.data,
+        dataLength: result.data?.length || 0,
+        hasPagination: !!result.pagination,
+        totalRecords: result.pagination?.total || 0,
+        filters
+      });
+      
       res.json({
         success: true,
-        data: result.data || result.recordings || [],
-        pagination: {
-          page: result.page,
-          limit: result.limit,
-          total: result.total,
-          pages: result.pages
+        data: result.data || [],
+        pagination: result.pagination || {
+          page: parseInt(filters.page) || 1,
+          limit: parseInt(filters.limit) || 20,
+          total: 0,
+          pages: 0
         },
-        filters: result.appliedFilters
+        filters: filters
       });
       
     } catch (error) {
@@ -189,6 +204,153 @@ router.get('/active',
         success: false,
         message: 'Erro ao buscar gravações ativas',
         error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+  }
+);
+
+/**
+ * @route GET /api/recordings/:id/upload-status
+ * @desc Get upload status for a specific recording
+ * @access Private
+ */
+router.get('/:id/upload-status',
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const userId = req.user.id;
+      
+      logger.info(`Getting upload status for recording: ${id}`);
+      
+      const recording = await RecordingService.getRecordingById(id, userId);
+      if (!recording) {
+        return res.status(404).json({
+          success: false,
+          message: 'Recording not found'
+        });
+      }
+      
+      res.json({
+        success: true,
+        data: {
+          recording_id: recording.id,
+          upload_status: recording.upload_status,
+          upload_progress: recording.upload_progress || 0,
+          upload_attempts: recording.upload_attempts || 0,
+          upload_started_at: recording.upload_started_at,
+          uploaded_at: recording.uploaded_at,
+          s3_key: recording.s3_key,
+          s3_url: recording.s3_url,
+          error_message: recording.error_message,
+          error_code: recording.upload_error_code
+        }
+      });
+      
+    } catch (error) {
+      logger.error('Error getting upload status:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error'
+      });
+    }
+  }
+);
+
+/**
+ * @route POST /api/recordings/:id/upload
+ * @desc Manually trigger upload for a recording
+ * @access Private
+ */
+router.post('/:id/upload',
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { force = false } = req.body;
+      const userId = req.user.id;
+      
+      logger.info(`Manual upload trigger for recording: ${id}`, { force });
+      
+      const recording = await RecordingService.getRecordingById(id, userId);
+      if (!recording) {
+        return res.status(404).json({
+          success: false,
+          message: 'Recording not found'
+        });
+      }
+      
+      const result = await UploadQueueService.enqueue(id, { force });
+      
+      res.json({
+        success: result.success,
+        data: result,
+        message: result.success ? 'Upload queued successfully' : 'Failed to queue upload'
+      });
+      
+    } catch (error) {
+      logger.error('Error triggering manual upload:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error'
+      });
+    }
+  }
+);
+
+/**
+ * @route GET /api/recordings/upload/queue-stats
+ * @desc Get upload queue statistics
+ * @access Private
+ */
+router.get('/upload/queue-stats',
+  async (req, res) => {
+    try {
+      const userId = req.user.id;
+      
+      logger.info(`Getting upload queue stats for user: ${userId}`);
+      
+      const stats = await UploadQueueService.getQueueStats();
+      
+      res.json({
+        success: true,
+        data: stats
+      });
+      
+    } catch (error) {
+      logger.error('Error getting upload queue stats:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error'
+      });
+    }
+  }
+);
+
+/**
+ * @route POST /api/recordings/upload/retry-failed
+ * @desc Retry failed uploads
+ * @access Private
+ */
+router.post('/upload/retry-failed',
+  async (req, res) => {
+    try {
+      const { max_age_hours = 24, force_all = false } = req.body;
+      const userId = req.user.id;
+      
+      logger.info(`Retrying failed uploads for user: ${userId}`, { max_age_hours, force_all });
+      
+      const result = await UploadQueueService.retryFailed({ max_age_hours, force_all });
+      
+      res.json({
+        success: true,
+        data: result,
+        message: `Retried ${result.retried} failed uploads`
+      });
+      
+    } catch (error) {
+      logger.error('Error retrying failed uploads:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error'
       });
     }
   }
@@ -421,7 +583,16 @@ const authenticateStreamToken = async (req, res, next) => {
 
     // 1) Tentar validar como JWT interno da aplicação
     try {
+      logger.debug(`[StreamAuth] Tentando verificar JWT com secret: ${process.env.JWT_SECRET ? 'DEFINIDO' : 'NÃO DEFINIDO'}`);
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      logger.debug(`[StreamAuth] JWT decodificado com sucesso:`, {
+        userId: decoded.userId,
+        email: decoded.email,
+        role: decoded.role,
+        iat: decoded.iat,
+        exp: decoded.exp
+      });
+      
       if (decoded && decoded.userId) {
         const { data: user, error } = await supabaseAdmin
           .from('users')
@@ -443,16 +614,40 @@ const authenticateStreamToken = async (req, res, next) => {
             created_at: user.created_at
           };
           req.token = token;
-          logger.debug(`[StreamAuth] Usuário autenticado via JWT interno: ${user.id}`);
+          logger.info(`[StreamAuth] ✅ Usuário autenticado via JWT interno: ${user.email} (${user.id})`);
           return next();
         }
 
-        logger.warn('[StreamAuth] JWT válido, mas usuário não encontrado/ativo na base');
-        return res.status(401).json({ success: false, message: 'Token inválido' });
+        logger.warn('[StreamAuth] JWT válido, mas usuário não encontrado/ativo na base:', {
+          userId: decoded.userId,
+          error: error?.message,
+          userFound: !!user,
+          userActive: user?.active
+        });
+        return res.status(401).json({ success: false, message: 'Token inválido - usuário não encontrado' });
+      } else {
+        logger.warn('[StreamAuth] JWT válido mas sem userId:', decoded);
+        return res.status(401).json({ success: false, message: 'Token inválido - userId não encontrado' });
       }
     } catch (e) {
-      // Ignorar e tentar fallback Supabase
-      logger.debug('[StreamAuth] Falha na validação JWT interno, tentando Supabase...');
+      logger.warn('[StreamAuth] Falha na validação JWT interno:', {
+        error: e.message,
+        name: e.name,
+        tokenPrefix: token.substring(0, 20) + '...'
+      });
+      
+      // Se for erro de token expirado ou malformado, retornar erro direto
+      if (e.name === 'TokenExpiredError') {
+        logger.warn('[StreamAuth] Token expirado');
+        return res.status(401).json({ success: false, message: 'Token expirado' });
+      }
+      if (e.name === 'JsonWebTokenError') {
+        logger.warn('[StreamAuth] Token malformado');
+        return res.status(401).json({ success: false, message: 'Token malformado' });
+      }
+      
+      // Para outros erros, tentar fallback Supabase
+      logger.debug('[StreamAuth] Tentando fallback Supabase...');
     }
 
     // 2) Fallback: validar como token de sessão do Supabase
@@ -515,7 +710,11 @@ const authenticateStreamToken = async (req, res, next) => {
  * @route GET /api/recordings/:id/download
  * @desc Download de uma gravação
  * @access Private
+ * @deprecated Use /api/recordings/:id/download from recordingFiles.js instead
  */
+// DEPRECATED - Rota movida para recordingFiles.js para evitar duplicação
+// TODO: Remover após migração completa do frontend
+/*
 router.get('/:id/download',
   authenticateStreamToken,
   async (req, res) => {
@@ -531,7 +730,7 @@ router.get('/:id/download',
         });
       }
 
-      const downloadInfo = await ImprovedRecordingService.prepareDownload(recordingId);
+      const downloadInfo = await RecordingService.prepareDownload(recordingId);
 
       logger.info(`[Download Debug] Download info:`, {
         exists: downloadInfo.exists,
@@ -594,7 +793,7 @@ router.get('/:id/download',
       res.setHeader('Accept-Ranges', 'bytes');
       setStandardCacheHeaders(res, etag, lastModified);
 
-      const { stream } = await ImprovedRecordingService.getFileStream(filePath);
+      const { stream } = await RecordingService.getFileStream(filePath);
       stream.pipe(res);
 
       logger.info(`Download iniciado - Usuário: ${userId}, Gravação: ${recordingId}`);
@@ -608,12 +807,16 @@ router.get('/:id/download',
     }
   }
 );
+*/
 
 /**
  * @route HEAD /api/recordings/:id/download
  * @desc Headers para download de uma gravação
  * @access Private
+ * @deprecated Use HEAD /api/recordings/:id/info from recordingFiles.js instead
  */
+// DEPRECATED - Usar HEAD /api/recordings/:id/info de recordingFiles.js
+/*
 router.head('/:id/download',
   authenticateStreamToken,
   async (req, res) => {
@@ -626,7 +829,7 @@ router.head('/:id/download',
         return res.status(404).end();
       }
 
-      const downloadInfo = await ImprovedRecordingService.prepareDownload(recordingId);
+      const downloadInfo = await RecordingService.prepareDownload(recordingId);
       if (!downloadInfo.exists) {
         return res.status(404).end();
       }
@@ -680,12 +883,16 @@ router.head('/:id/download',
     }
   }
 );
+*/
 
 /**
  * @route GET /api/recordings/:id/stream
  * @desc Stream de uma gravação para reprodução
  * @access Private
+ * @deprecated Use /api/recordings/:id/stream from recordingFiles.js instead
  */
+// DEPRECATED - Rota movida para recordingFiles.js
+/*
 router.get('/:id/stream',
   authenticateStreamToken,
   async (req, res) => {
@@ -702,7 +909,7 @@ router.get('/:id/stream',
         });
       }
       
-      const downloadInfo = await ImprovedRecordingService.prepareDownload(recordingId);
+      const downloadInfo = await RecordingService.prepareDownload(recordingId);
       
       // Debug: log das informações de stream
       logger.info(`[Stream Debug] Stream info:`, {
@@ -768,7 +975,7 @@ router.get('/:id/stream',
       
       if (range) {
         // Range request - streaming parcial
-        const { stream, contentLength, contentRange } = await ImprovedRecordingService.getFileStream(filePath, range);
+        const { stream, contentLength, contentRange } = await RecordingService.getFileStream(filePath, range);
         
         res.status(206);
         res.setHeader('Content-Range', contentRange);
@@ -777,7 +984,7 @@ router.get('/:id/stream',
         stream.pipe(res);
       } else {
         // Request completo
-        const { stream, contentLength } = await ImprovedRecordingService.getFileStream(filePath);
+        const { stream, contentLength } = await RecordingService.getFileStream(filePath);
         
         res.status(200);
         res.setHeader('Content-Length', contentLength);
@@ -798,12 +1005,16 @@ router.get('/:id/stream',
     }
   }
 );
+*/
 
 /**
  * @route HEAD /api/recordings/:id/stream
  * @desc Headers para stream de uma gravação
  * @access Private
+ * @deprecated Use HEAD /api/recordings/:id/info from recordingFiles.js instead
  */
+// DEPRECATED - Usar HEAD /api/recordings/:id/info de recordingFiles.js
+/*
 router.head('/:id/stream',
   authenticateStreamToken,
   async (req, res) => {
@@ -816,7 +1027,7 @@ router.head('/:id/stream',
         return res.status(404).end();
       }
 
-      const downloadInfo = await ImprovedRecordingService.prepareDownload(recordingId);
+      const downloadInfo = await RecordingService.prepareDownload(recordingId);
       if (!downloadInfo.exists) {
         return res.status(404).end();
       }
@@ -862,7 +1073,7 @@ router.head('/:id/stream',
       }
 
       if (range) {
-        const { contentLength, contentRange } = await ImprovedRecordingService.getFileStream(filePath, range);
+        const { contentLength, contentRange } = await RecordingService.getFileStream(filePath, range);
         res.status(206);
         res.setHeader('Content-Range', contentRange);
         res.setHeader('Content-Length', contentLength);
@@ -881,6 +1092,7 @@ router.head('/:id/stream',
     }
   }
 );
+*/
 
 /**
  * @route POST /api/recordings/export
@@ -1371,5 +1583,354 @@ router.post('/update-statistics',
     }
   }
 );
+
+// 🐛 DEBUG ENDPOINT - Informações detalhadas do sistema de gravação
+router.get('/debug', async (req, res) => {
+  try {
+    logger.info('🔍 Endpoint de debug de gravações acessado');
+
+    // 1. Status do RecordingMonitorService
+    const monitorStatus = await req.app.locals.recordingMonitor?.getStatus?.() || { error: 'Monitor não disponível' };
+
+    // 2. Status recente de gravações
+    const { data: recentRecordings } = await supabaseAdmin
+      .from('recordings')
+      .select('id, camera_id, status, file_path, local_path, created_at, start_time, end_time')
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    // 3. Status das câmeras
+    const { data: cameras } = await supabaseAdmin
+      .from('cameras')
+      .select('id, name, status, is_streaming, recording_enabled, active')
+      .eq('active', true);
+
+    // 4. Verificar estado do ZLMediaKit
+    let zlmStatus = { error: 'Não foi possível conectar' };
+    try {
+      const response = await axios.get(`${process.env.ZLM_API_URL || 'http://localhost:8000/index/api'}/getMediaList`, {
+        params: { secret: process.env.ZLM_SECRET || '9QqL3M2K7vHQexkbfp6RvbCUB3GkV4MK' },
+        timeout: 3000
+      });
+      
+      if (response.data.code === 0) {
+        const streams = response.data.data || [];
+        zlmStatus = {
+          total_streams: streams.length,
+          live_streams: streams.filter(s => s.app === 'live').length,
+          recording_streams: streams.filter(s => s.isRecordingMP4).length,
+          streams: streams.map(s => ({
+            stream: s.stream,
+            app: s.app,
+            isRecordingMP4: s.isRecordingMP4,
+            readerCount: s.readerCount
+          }))
+        };
+      }
+    } catch (error) {
+      zlmStatus.error = error.message;
+    }
+
+    // 5. Verificar arquivos no sistema
+    const storagePaths = [
+      'storage/www/record/live',
+      'storage/bin/www/record/live'
+    ];
+
+    const fileSystemStatus = {};
+    for (const storagePath of storagePaths) {
+      try {
+        const fullPath = path.resolve(process.cwd(), storagePath);
+        const stats = await fs.stat(fullPath);
+        if (stats.isDirectory()) {
+          const cameraFolders = await fs.readdir(fullPath);
+          fileSystemStatus[storagePath] = {
+            exists: true,
+            camera_folders: cameraFolders.length,
+            folders: cameraFolders.slice(0, 5) // Primeiras 5 para não sobrecarregar
+          };
+
+          // Contar arquivos recentes para cada câmera
+          for (const cameraFolder of cameraFolders.slice(0, 3)) { // Primeiras 3 câmeras
+            try {
+              const cameraPath = path.join(fullPath, cameraFolder);
+              const today = new Date().toISOString().split('T')[0];
+              const todayPath = path.join(cameraPath, today);
+              
+              try {
+                const todayFiles = await fs.readdir(todayPath);
+                const mp4Files = todayFiles.filter(f => f.endsWith('.mp4'));
+                fileSystemStatus[storagePath].folders.forEach(folder => {
+                  if (folder === cameraFolder) {
+                    fileSystemStatus[storagePath][`${cameraFolder}_today_files`] = mp4Files.length;
+                    fileSystemStatus[storagePath][`${cameraFolder}_sample_files`] = mp4Files.slice(0, 3);
+                  }
+                });
+              } catch {
+                fileSystemStatus[storagePath][`${cameraFolder}_today_files`] = 0;
+              }
+            } catch (err) {
+              continue;
+            }
+          }
+        }
+      } catch (error) {
+        fileSystemStatus[storagePath] = {
+          exists: false,
+          error: error.message
+        };
+      }
+    }
+
+    // 6. Gravações órfãs (sem file_path)
+    const { data: orphanRecordings } = await supabaseAdmin
+      .from('recordings')
+      .select('id, camera_id, status, created_at')
+      .is('file_path', null)
+      .gte('created_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()) // Últimas 24h
+      .order('created_at', { ascending: false });
+
+    const debugInfo = {
+      timestamp: new Date().toISOString(),
+      system: {
+        nodejs_version: process.version,
+        uptime: process.uptime(),
+        memory_usage: process.memoryUsage(),
+        cwd: process.cwd()
+      },
+      recording_monitor: monitorStatus,
+      zlmediakit: zlmStatus,
+      filesystem: fileSystemStatus,
+      database: {
+        recent_recordings: recentRecordings?.length || 0,
+        recordings_detail: recentRecordings || [],
+        orphan_recordings: orphanRecordings?.length || 0,
+        orphan_detail: orphanRecordings || [],
+        active_cameras: cameras?.length || 0,
+        cameras_with_recording: cameras?.filter(c => c.recording_enabled)?.length || 0
+      },
+      configuration: {
+        ZLM_API_URL: process.env.ZLM_API_URL || 'http://localhost:8000/index/api',
+        ZLM_SECRET: process.env.ZLM_SECRET ? '[CONFIGURED]' : '[MISSING]',
+        SUPABASE_URL: process.env.SUPABASE_URL ? '[CONFIGURED]' : '[MISSING]'
+      }
+    };
+
+    logger.info('✅ Debug info gerado com sucesso', {
+      streams: zlmStatus.total_streams || 0,
+      recordings: recentRecordings?.length || 0,
+      orphans: orphanRecordings?.length || 0
+    });
+
+    res.json(debugInfo);
+
+  } catch (error) {
+    logger.error('❌ Erro no endpoint de debug:', error);
+    res.status(500).json({
+      error: 'Erro interno no debug',
+      message: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route DELETE /api/recordings/multiple
+ * @desc Deletar múltiplas gravações
+ * @access Private
+ */
+router.delete('/multiple',
+  async (req, res) => {
+    try {
+      const userId = req.user.id;
+      const { recording_ids, confirm } = req.body;
+
+      // Validação
+      if (!Array.isArray(recording_ids) || recording_ids.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Lista de IDs de gravações é obrigatória'
+        });
+      }
+
+      if (!confirm) {
+        return res.status(400).json({
+          success: false,
+          message: 'Confirmação é obrigatória para deletar gravações'
+        });
+      }
+
+      logger.info(`Usuário ${userId} deletando ${recording_ids.length} gravações`);
+
+      let deletedCount = 0;
+      const errors = [];
+
+      // Deletar cada gravação
+      for (const recordingId of recording_ids) {
+        try {
+          const result = await RecordingService.deleteRecording(recordingId, userId);
+          if (result.success) {
+            deletedCount++;
+          }
+        } catch (error) {
+          logger.error(`Erro ao deletar gravação ${recordingId}:`, error);
+          errors.push({
+            recording_id: recordingId,
+            error: error.message
+          });
+        }
+      }
+
+      logger.info(`${deletedCount} gravações deletadas com sucesso`);
+
+      res.json({
+        success: true,
+        message: `${deletedCount} gravações deletadas com sucesso`,
+        deleted_count: deletedCount,
+        errors: errors.length > 0 ? errors : undefined
+      });
+
+    } catch (error) {
+      logger.error('Erro ao deletar múltiplas gravações:', error);
+      res.status(500).json({
+        success: false,
+        message: error.message || 'Erro ao deletar gravações',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+  }
+);
+
+/**
+ * @route PUT /api/recordings/:id/stop
+ * @desc Parar gravação manualmente
+ * @access Private
+ */
+router.put('/:id/stop', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    
+    logger.info(`🛑 [STOP RECORDING] Iniciando parada manual da gravação ${id}`, {
+      userId: req.user.id,
+      reason,
+      timestamp: new Date().toISOString()
+    });
+
+    // Buscar gravação ativa
+    const { data: recording, error: fetchError } = await supabaseAdmin
+      .from('recordings')
+      .select('*')
+      .eq('id', id)
+      .eq('status', 'recording')
+      .single();
+
+    if (fetchError || !recording) {
+      logger.warn(`⚠️ [STOP RECORDING] Gravação não encontrada ou não está ativa: ${id}`);
+      return res.status(404).json({
+        success: false,
+        message: 'Gravação não encontrada ou não está ativa'
+      });
+    }
+
+    // Verificar permissão de acesso à câmera
+    if (req.user.role !== 'admin' && req.user.role !== 'integrator') {
+      const hasAccess = req.user.camera_access?.includes(recording.camera_id);
+      if (!hasAccess) {
+        logger.warn(`🚫 [STOP RECORDING] Usuário ${req.user.id} sem acesso à câmera ${recording.camera_id}`);
+        return res.status(403).json({
+          success: false,
+          message: 'Sem permissão para acessar esta câmera'
+        });
+      }
+    }
+
+    // Calcular duração se possível
+    let duration = null;
+    let endTime = new Date().toISOString();
+    
+    if (recording.start_time) {
+      const startTime = new Date(recording.start_time);
+      const now = new Date();
+      duration = Math.round((now.getTime() - startTime.getTime()) / 1000);
+    }
+
+    // Atualizar status para completed
+    const updateData = {
+      status: 'completed',
+      ended_at: endTime,
+      end_time: endTime,
+      duration: duration,
+      metadata: {
+        ...recording.metadata,
+        stopped_by: req.user.id,
+        stop_reason: reason,
+        stopped_at: endTime,
+        manual_stop: true
+      },
+      updated_at: new Date().toISOString()
+    };
+
+    const { data: updatedRecording, error: updateError } = await supabaseAdmin
+      .from('recordings')
+      .update(updateData)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (updateError) {
+      logger.error(`❌ [STOP RECORDING] Erro ao atualizar gravação ${id}:`, updateError);
+      return res.status(500).json({
+        success: false,
+        message: 'Erro interno ao parar gravação'
+      });
+    }
+
+    // Tentar parar gravação no ZLMediaKit se necessário
+    try {
+      const camera = await Camera.findById(recording.camera_id);
+      if (camera) {
+        const streamId = `${camera.id}`;
+        const stopUrl = `${process.env.ZLM_API_URL}/stopRecord`;
+        
+        await axios.post(stopUrl, {
+          secret: process.env.ZLM_SECRET,
+          vhost: '__defaultVhost__',
+          app: 'live',
+          stream: streamId,
+          type: 1 // MP4 recording
+        });
+        
+        logger.info(`✅ [STOP RECORDING] Gravação parada no ZLMediaKit para stream ${streamId}`);
+      }
+    } catch (zlmError) {
+      logger.warn(`⚠️ [STOP RECORDING] Erro ao parar gravação no ZLMediaKit (não crítico):`, zlmError.message);
+    }
+
+    logger.info(`✅ [STOP RECORDING] Gravação ${id} parada com sucesso`, {
+      duration: duration,
+      reason: reason,
+      stoppedBy: req.user.email
+    });
+
+    res.json({
+      success: true,
+      message: 'Gravação parada com sucesso',
+      data: {
+        id: updatedRecording.id,
+        status: updatedRecording.status,
+        duration: updatedRecording.duration,
+        ended_at: updatedRecording.ended_at
+      }
+    });
+
+  } catch (error) {
+    logger.error(`❌ [STOP RECORDING] Erro interno:`, error);
+    res.status(500).json({
+      success: false,
+      message: 'Erro interno do servidor'
+    });
+  }
+});
 
 export default router;

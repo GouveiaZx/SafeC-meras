@@ -186,6 +186,14 @@ class StreamingService {
         // Não falhar o stream por erro de status
       }
 
+      // REMOVIDO: Gravação automática agora é iniciada pelo webhook on_stream_changed
+      // Isso evita duplicação de gravações
+      // O webhook já cuida de iniciar a gravação quando a stream fica ativa
+      if (camera.recording_enabled) {
+        logger.info(`📝 Gravação automática será iniciada pelo webhook on_stream_changed para ${streamId}`);
+        // Não chamar startAutomaticRecording aqui para evitar duplicatas
+      }
+
       logger.info(`Stream ${streamId} iniciado com sucesso`);
       return streamConfig;
     } catch (error) {
@@ -1370,6 +1378,38 @@ class StreamingService {
       
     } catch (error) {
       logger.error('Erro ao sincronizar streams existentes:', error);
+    }
+  }
+
+  /**
+   * Iniciar gravação automática para um stream
+   */
+  async startAutomaticRecording(streamId, camera) {
+    try {
+      // Verificar se há gravações ativas recentes para evitar duplicatas
+      const { default: recordingService } = await import('./RecordingService.js');
+      
+      // Aguardar um pouco para o stream estabilizar
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      
+      // Iniciar gravação de 30 minutos
+      const recordingResult = await recordingService.startZLMRecording(streamId, 'live', 1800);
+      
+      if (recordingResult.success) {
+        logger.info(`✅ Gravação automática iniciada para ${camera.name} (30 minutos)`);
+        
+        // REMOVIDO: Criação de registro duplicado
+        // O registro já é criado pelo RecordingService.startZLMRecording
+        // Isso estava causando duplicação de registros no banco
+        logger.info(`📝 Gravação iniciada via ZLMediaKit para ${camera.name} - registro criado pelo RecordingService`);
+        
+      } else {
+        logger.warn(`❌ Falha ao iniciar gravação automática para ${camera.name}: ${recordingResult.error || 'Erro desconhecido'}`);
+      }
+      
+    } catch (error) {
+      logger.error(`Erro ao iniciar gravação automática para ${camera.name}:`, error);
+      throw error;
     }
   }
 

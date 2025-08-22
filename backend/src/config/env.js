@@ -47,7 +47,7 @@ console.log('  REDIS_URL:', process.env.REDIS_URL);
 console.log('  REDIS_HOST:', process.env.REDIS_HOST);
 console.log('  ZLM_BASE_URL:', process.env.ZLM_BASE_URL);
 console.log('  ZLM_API_URL:', process.env.ZLM_API_URL);
-console.log('  ZLMEDIAKIT_API_URL:', process.env.ZLMEDIAKIT_API_URL);
+console.log('  ZLM_API_URL:', process.env.ZLM_API_URL);
 console.log('  ZLM_SECRET:', process.env.ZLM_SECRET);
 console.log('  STREAMING_SERVER:', process.env.STREAMING_SERVER);
 console.log('  BACKEND_BASE_URL:', process.env.BACKEND_BASE_URL);
