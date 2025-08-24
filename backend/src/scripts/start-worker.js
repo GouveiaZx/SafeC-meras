@@ -39,6 +39,8 @@ class NewCAMWorker {
     this.setupExpress();
     this.connectToBackend();
     this.startCameraMonitoring();
+    
+    // Start upload worker immediately if enabled
     this.startUploadWorker();
   }
 
@@ -160,6 +162,10 @@ class NewCAMWorker {
     logger.info(`Conectando ao backend em ${BACKEND_URL}...`);
     
     this.backendSocket = io(BACKEND_URL, {
+      auth: {
+        type: 'worker',
+        token: process.env.WORKER_TOKEN || 'newcam-worker-token-2025'
+      },
       reconnection: true,
       reconnectionAttempts: 10,
       reconnectionDelay: 5000,

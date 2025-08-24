@@ -15,7 +15,9 @@ import {
   CheckCircle,
   Upload,
   Database,
-  Play
+  Play,
+  Clock,
+  HardDrive
 } from 'lucide-react';
 import MetricCard from '@/components/dashboard/MetricCard';
 import LineChart from '@/components/charts/LineChart';
@@ -59,8 +61,11 @@ interface RecordingApiResponse {
   duration?: number;
   file_size?: number;
   status: string;
+  upload_status?: string;
+  upload_progress?: number;
   file_path?: string;
   s3_url?: string;
+  s3_key?: string;
   resolution?: string;
   fps?: number;
   codec?: string;
@@ -77,8 +82,11 @@ interface Recording {
   duration: number;
   size: number;
   status: 'recording' | 'completed' | 'uploading' | 'uploaded' | 'failed';
+  uploadStatus: 'pending' | 'queued' | 'uploading' | 'uploaded' | 'failed' | 'completed';
+  uploadProgress?: number;
   localPath?: string;
   s3Url?: string;
+  s3Key?: string;
   segments: RecordingSegment[];
   metadata: {
     resolution: string;
@@ -154,12 +162,24 @@ const RecordingsPage: React.FC = () => {
 
   const fetchUploadTrends = useCallback(async () => {
     try {
+      console.log('🔄 Fetching upload trends...');
       const data = await api.get<TrendsResponse>(endpoints.recordings.getTrends());
-      if (data.data && data.data.hourly) {
+      
+      console.log('📊 Upload trends response:', {
+        hasData: !!data.data,
+        hasHourly: !!(data.data && data.data.hourly),
+        hourlyLength: data.data?.hourly?.length || 0,
+        sampleItem: data.data?.hourly?.[0]
+      });
+      
+      if (data.data && data.data.hourly && Array.isArray(data.data.hourly)) {
+        console.log('✅ Setting upload trend data:', data.data.hourly.length, 'items');
         setUploadTrendData(data.data.hourly);
+      } else {
+        console.warn('⚠️ Invalid upload trends data structure');
       }
     } catch (err: unknown) {
-      console.error('Erro ao buscar tendências de upload:', err);
+      console.error('❌ Erro ao buscar tendências de upload:', err);
       // Manter dados padrão em caso de erro
     }
   }, []);
@@ -248,8 +268,11 @@ const RecordingsPage: React.FC = () => {
               duration: duration,
               size: recording.file_size || 0,
               status: recording.status,
+              uploadStatus: recording.upload_status || 'pending',
+              uploadProgress: recording.upload_progress,
               localPath: recording.file_path,
               s3Url: recording.s3_url,
+              s3Key: recording.s3_key,
               segments: segments,
               metadata: {
                 resolution: recording.resolution || 'N/A',
@@ -345,6 +368,16 @@ const RecordingsPage: React.FC = () => {
     handleRefresh();
   }, [selectedCamera, selectedStatus, searchTerm, dateRange, handleRefresh]);
 
+  // Auto-refresh effect - atualiza a cada 30 segundos
+  useEffect(() => {
+    const autoRefreshInterval = setInterval(() => {
+      fetchRecordings();
+      fetchStats();
+    }, 30000); // 30 segundos
+
+    return () => clearInterval(autoRefreshInterval);
+  }, [fetchRecordings, fetchStats]);
+
   useEffect(() => {
     loadCameras();
   }, [loadCameras]);
@@ -366,16 +399,63 @@ const RecordingsPage: React.FC = () => {
     return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const getStatusBadge = (status: string, uploadStatus?: string) => {
-    // Priorizar upload_status se disponível
-    const currentStatus = uploadStatus || status;
+  const getStatusBadge = (status: string, uploadStatus?: string, uploadProgress?: number) => {
+    // Determinar status atual baseado na prioridade
+    let currentStatus = status;
+    let label = '';
+    
+    if (uploadStatus) {
+      switch (uploadStatus) {
+        case 'pending':
+          currentStatus = 'pending';
+          label = 'Aguardando';
+          break;
+        case 'queued':
+          currentStatus = 'queued';
+          label = 'Na fila';
+          break;
+        case 'uploading':
+          currentStatus = 'uploading';
+          label = uploadProgress ? `Enviando ${uploadProgress}%` : 'Enviando...';
+          break;
+        case 'uploaded':
+          currentStatus = 'uploaded';
+          label = 'Na nuvem';
+          break;
+        case 'failed':
+          currentStatus = 'upload_failed';
+          label = 'Erro no upload';
+          break;
+        default:
+          currentStatus = uploadStatus;
+          label = uploadStatus;
+      }
+    } else {
+      // Status da gravação
+      switch (status) {
+        case 'recording':
+          label = 'Gravando';
+          break;
+        case 'completed':
+          label = 'Local';
+          break;
+        case 'failed':
+          label = 'Falhou';
+          break;
+        default:
+          label = status;
+      }
+    }
     
     const statusConfig = {
-      recording: { color: 'bg-red-100 text-red-800', icon: Video, label: 'Gravando' },
-      completed: { color: 'bg-primary-100 text-primary-800', icon: CheckCircle, label: 'Concluída' },
-      uploading: { color: 'bg-yellow-100 text-yellow-800', icon: Upload, label: 'Enviando' },
-      uploaded: { color: 'bg-green-100 text-green-800', icon: Cloud, label: 'Enviada' },
-      failed: { color: 'bg-red-100 text-red-800', icon: AlertCircle, label: 'Falhou' }
+      recording: { color: 'bg-red-100 text-red-800', icon: Video },
+      completed: { color: 'bg-blue-100 text-blue-800', icon: HardDrive },
+      pending: { color: 'bg-gray-100 text-gray-800', icon: Clock },
+      queued: { color: 'bg-purple-100 text-purple-800', icon: Clock },
+      uploading: { color: 'bg-yellow-100 text-yellow-800', icon: Upload },
+      uploaded: { color: 'bg-green-100 text-green-800', icon: Cloud },
+      failed: { color: 'bg-red-100 text-red-800', icon: AlertCircle },
+      upload_failed: { color: 'bg-orange-100 text-orange-800', icon: AlertCircle }
     };
 
     const config = statusConfig[currentStatus as keyof typeof statusConfig] || statusConfig.completed;
@@ -384,7 +464,7 @@ const RecordingsPage: React.FC = () => {
     return (
       <Badge className={`${config.color} flex items-center gap-1`}>
         <Icon className="w-3 h-3" />
-        {config.label}
+        {label}
       </Badge>
     );
   };
@@ -617,7 +697,7 @@ const RecordingsPage: React.FC = () => {
                       {/* Ícone de armazenamento */}
                       <div className="flex items-center space-x-1">
                         {getStorageIcon(recording)}
-                        {getStatusBadge(recording.status, recording.uploadStatus)}
+                        {getStatusBadge(recording.status, recording.uploadStatus, recording.uploadProgress)}
                       </div>
                       <div className="flex space-x-1">
                         {/* Botão de reprodução destacado */}

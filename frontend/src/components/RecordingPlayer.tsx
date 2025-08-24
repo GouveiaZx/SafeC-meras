@@ -18,13 +18,17 @@ interface Recording {
   endTime: string;
   duration: number;
   size: number;
+  file_size?: number;
   status: 'recording' | 'completed' | 'uploading' | 'uploaded' | 'failed';
-  uploadStatus?: 'pending' | 'queued' | 'uploading' | 'uploaded' | 'failed' | 'cancelled' | 'retrying';
+  uploadStatus: 'pending' | 'queued' | 'uploading' | 'uploaded' | 'failed' | 'cancelled' | 'retrying' | 'completed';
+  upload_status?: string; // Backend field name
   uploadProgress?: number;
   localPath?: string;
   s3Key?: string;
   s3Url?: string;
   uploadedAt?: string;
+  start_time?: string;
+  end_time?: string;
   metadata: {
     resolution: string;
     fps: number;
@@ -71,11 +75,54 @@ const RecordingPlayer: React.FC<RecordingPlayerProps> = ({
       const streamEndpoint = `/api/recording-files/${recording.id}/stream`;
       const downloadEndpoint = `/api/recording-files/${recording.id}/download`;
       
-      setPlaybackUrl(streamEndpoint);
+      // First check if stream endpoint returns JSON (S3) or direct stream (local)
+      console.log('🔍 Checking stream endpoint response type:', streamEndpoint);
+      
+      const response = await fetch(streamEndpoint, {
+        method: 'HEAD',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        }
+      });
+      
+      const contentType = response.headers.get('content-type');
+      console.log('📋 Stream endpoint content type:', contentType);
+      
+      if (contentType?.includes('application/json')) {
+        // S3 source - endpoint returns JSON with presigned URL
+        console.log('🌐 Stream source is S3, fetching presigned URL...');
+        
+        const jsonResponse = await fetch(streamEndpoint, {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+          }
+        });
+        
+        if (!jsonResponse.ok) {
+          throw new Error(`HTTP ${jsonResponse.status}: ${jsonResponse.statusText}`);
+        }
+        
+        const streamData = await jsonResponse.json();
+        console.log('✅ S3 stream data received:', {
+          source: streamData.source,
+          s3_key: streamData.s3_key,
+          expires_at: streamData.expires_at
+        });
+        
+        // Use the presigned URL directly for S3
+        setPlaybackUrl(streamData.url);
+        
+      } else {
+        // Local source - endpoint streams directly
+        console.log('💾 Stream source is local, using endpoint directly');
+        setPlaybackUrl(streamEndpoint);
+      }
+      
+      // Download endpoint can always be used directly (handles redirects)
       setDownloadUrl(downloadEndpoint);
       
-      console.log('🎥 Unified streaming URL configured:', streamEndpoint);
-      console.log('📥 Unified download URL configured:', downloadEndpoint);
+      console.log('🎥 Playback URL configured successfully');
+      console.log('📥 Download URL configured:', downloadEndpoint);
       
     } catch (err) {
       console.error('Erro ao carregar URL de reprodução:', err);
@@ -134,13 +181,28 @@ const RecordingPlayer: React.FC<RecordingPlayerProps> = ({
   };
 
   const getStorageBadge = () => {
+    // Calculate recording age for retention logic
+    const createdAt = new Date(recording.startTime || recording.start_time);
+    const now = new Date();
+    const ageInDays = (now.getTime() - createdAt.getTime()) / (1000 * 60 * 60 * 24);
+    const isWithinRetention = ageInDays < 7; // 7-day retention policy
+    
     if (recording.uploadStatus === 'uploaded' && recording.s3Key) {
-      return (
-        <Badge className="bg-blue-100 text-blue-800 ml-2">
-          <Monitor className="w-3 h-3 mr-1" />
-          Cloud
-        </Badge>
-      );
+      if (isWithinRetention) {
+        return (
+          <Badge className="bg-green-100 text-green-800 ml-2">
+            <HardDrive className="w-3 h-3 mr-1" />
+            Local (Retenção)
+          </Badge>
+        );
+      } else {
+        return (
+          <Badge className="bg-blue-100 text-blue-800 ml-2">
+            <Monitor className="w-3 h-3 mr-1" />
+            Cloud
+          </Badge>
+        );
+      }
     } else {
       return (
         <Badge className="bg-gray-100 text-gray-800 ml-2">
@@ -316,8 +378,12 @@ const RecordingPlayer: React.FC<RecordingPlayerProps> = ({
               <div>
                 <p className="text-sm text-gray-500">Wasabi S3</p>
                 <p className="text-sm font-medium">
-                  {recording.s3Url ? (
+                  {recording.uploadStatus === 'uploaded' || recording.uploadStatus === 'completed' ? (
                     <span className="text-green-400">✓ Enviado</span>
+                  ) : recording.uploadStatus === 'uploading' ? (
+                    <span className="text-blue-400">📤 Enviando</span>
+                  ) : recording.uploadStatus === 'failed' ? (
+                    <span className="text-red-400">❌ Falhou</span>
                   ) : (
                     <span className="text-yellow-400">⏳ Pendente</span>
                   )}

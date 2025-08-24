@@ -109,8 +109,16 @@ const Dashboard: React.FC = () => {
         setMetrics(data.data.metrics);
         
         // Atualizar dados dos gráficos se disponíveis
+        console.log('📊 Dashboard charts data:', {
+          hasCharts: !!data.data.charts,
+          chartKeys: data.data.charts ? Object.keys(data.data.charts) : [],
+          cpuHistoryLength: data.data.charts?.cpu_history?.length || 0,
+          sampleCpuData: data.data.charts?.cpu_history?.[0]
+        });
+        
         if (data.data.charts) {
           if (data.data.charts.cpu_history) {
+            console.log('✅ Setting CPU history data:', data.data.charts.cpu_history.length, 'items');
             setCpuHistoryData(data.data.charts.cpu_history);
           }
           

@@ -605,19 +605,38 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       
       // Adicionar token para MP4 se disponível
       let urlWithToken = src;
+      let isS3PresignedUrl = false;
+      
       if (validatedToken) {
-        // Verificar se o token já está presente na URL
-        const urlObj = new URL(src, window.location.origin);
-        const existingToken = urlObj.searchParams.get('token');
+        // Detectar URLs S3 presigned - NÃO adicionar tokens nessas URLs
+        isS3PresignedUrl = src.includes('X-Amz-Signature') || 
+                          src.includes('s3.wasabisys.com') || 
+                          src.includes('s3.amazonaws.com') ||
+                          src.includes('X-Amz-Algorithm');
         
-        if (existingToken) {
-          console.log('🔐 URL do MP4 já contém token, usando URL original');
+        if (isS3PresignedUrl) {
+          console.log('🔒 URL S3 presigned detectada no VideoPlayer, não adicionando token');
           urlWithToken = src;
         } else {
-          const separator = src.includes('?') ? '&' : '?';
-          urlWithToken = `${src}${separator}token=${encodeURIComponent(validatedToken)}`;
-          console.log('🔐 Token adicionado à URL do MP4');
+          // Verificar se o token já está presente na URL (apenas para URLs locais)
+          const urlObj = new URL(src, window.location.origin);
+          const existingToken = urlObj.searchParams.get('token');
+          
+          if (existingToken) {
+            console.log('🔐 URL do MP4 já contém token, usando URL original');
+            urlWithToken = src;
+          } else {
+            const separator = src.includes('?') ? '&' : '?';
+            urlWithToken = `${src}${separator}token=${encodeURIComponent(validatedToken)}`;
+            console.log('🔐 Token adicionado à URL do MP4');
+          }
         }
+      } else {
+        // Verificar S3 mesmo sem token validado
+        isS3PresignedUrl = src.includes('X-Amz-Signature') || 
+                          src.includes('s3.wasabisys.com') || 
+                          src.includes('s3.amazonaws.com') ||
+                          src.includes('X-Amz-Algorithm');
       }
       
       video.src = urlWithToken;
@@ -627,12 +646,18 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       if (src.includes('/play-web')) {
         // Stream de transcodificação em tempo real - configurações otimizadas
         video.preload = 'auto';
-        video.crossOrigin = 'anonymous';
+        // NÃO definir crossOrigin para URLs S3 presigned para evitar erro 400
+        if (!isS3PresignedUrl) {
+          video.crossOrigin = 'anonymous';
+        }
         console.log('🎥 Configurado para stream MP4 em tempo real (H264 transcoding)');
       } else {
         // Arquivo MP4 estático - configurações padrão
         video.preload = 'metadata';
-        video.crossOrigin = 'anonymous';
+        // NÃO definir crossOrigin para URLs S3 presigned para evitar erro 400
+        if (!isS3PresignedUrl) {
+          video.crossOrigin = 'anonymous';
+        }
       }
       
     } else {
@@ -750,7 +775,14 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
     // Configurações específicas para live streams
     if (src?.includes('/live/')) {
       video.setAttribute('x-webkit-airplay', 'allow');
-      video.crossOrigin = 'anonymous';
+      // Verificar se não é URL S3 presigned antes de definir crossOrigin
+      const isS3Live = src.includes('X-Amz-Signature') || 
+                      src.includes('s3.wasabisys.com') || 
+                      src.includes('s3.amazonaws.com') ||
+                      src.includes('X-Amz-Algorithm');
+      if (!isS3Live) {
+        video.crossOrigin = 'anonymous';
+      }
       console.log('🔴 Configurações de live stream aplicadas');
     }
     

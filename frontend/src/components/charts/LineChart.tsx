@@ -41,6 +41,12 @@ const LineChart: React.FC<LineChartProps> = ({
   unit = ''
 }) => {
   const formatXAxisLabel = (tickItem: string) => {
+    // Se já é um horário no formato HH:MM, retornar como está
+    if (tickItem && tickItem.match(/^\d{2}:\d{2}$/)) {
+      return tickItem;
+    }
+    
+    // Senão, tentar parsear como timestamp
     const date = new Date(tickItem);
     return date.toLocaleTimeString('pt-BR', {
       hour: '2-digit',
@@ -49,6 +55,15 @@ const LineChart: React.FC<LineChartProps> = ({
   };
 
   const formatTooltipLabel = (label: string) => {
+    // Se já é um horário no formato HH:MM, retornar formatado
+    if (label && label.match(/^\d{2}:\d{2}$/)) {
+      const today = new Date();
+      const [hours, minutes] = label.split(':');
+      const date = new Date(today.getFullYear(), today.getMonth(), today.getDate(), parseInt(hours), parseInt(minutes));
+      return date.toLocaleString('pt-BR');
+    }
+    
+    // Senão, tentar parsear como timestamp
     const date = new Date(label);
     return date.toLocaleString('pt-BR');
   };
@@ -71,6 +86,20 @@ const LineChart: React.FC<LineChartProps> = ({
     return [value, name];
   };
 
+  // Debug logging for chart data
+  React.useEffect(() => {
+    console.log(`🔍 LineChart [${title}] Debug:`, {
+      dataLength: data?.length || 0,
+      dataKeys: Object.keys(data?.[0] || {}),
+      sampleData: data?.[0],
+      xAxisKey,
+      lines: lines.map(l => ({ dataKey: l.dataKey, name: l.name })),
+      hasValidData: data && data.length > 0 && data.some(item => 
+        lines.some(line => typeof item[line.dataKey] === 'number' && item[line.dataKey] > 0)
+      )
+    });
+  }, [data, title, xAxisKey, lines]);
+
   return (
     <div className={`bg-white rounded-lg shadow-sm border border-gray-200 p-4 ${className}`}>
       {title && (
@@ -89,7 +118,7 @@ const LineChart: React.FC<LineChartProps> = ({
         >
           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
           <XAxis 
-            dataKey="timestamp"
+            dataKey={xAxisKey}
             tickFormatter={formatXAxisLabel}
             stroke="#6b7280"
             fontSize={12}
@@ -97,6 +126,8 @@ const LineChart: React.FC<LineChartProps> = ({
           <YAxis 
             stroke="#6b7280"
             fontSize={12}
+            domain={['dataMin', 'dataMax']}
+            allowDataOverflow={false}
           />
           <Tooltip
             labelFormatter={formatTooltipLabel}
