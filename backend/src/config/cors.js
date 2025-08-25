@@ -21,6 +21,8 @@ const corsConfig = {
       'http://66.94.104.241:80',
       'http://66.94.104.241:3000',
       'http://66.94.104.241:5173',
+      'http://nuvem.safecameras.com.br',
+      'https://nuvem.safecameras.com.br',
       process.env.FRONTEND_URL,
       process.env.DOMAIN
     ].filter(Boolean); // Remove valores undefined/null

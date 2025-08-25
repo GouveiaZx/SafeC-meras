@@ -1,11 +1,39 @@
 /**
  * Enhanced S3Service for Wasabi/MinIO S3 Compatible Storage
  * Handles uploads, downloads, presigned URLs, and multipart uploads
+ * 
+ * MIGRATED TO AWS SDK v3 - Fixes region configuration bug from v2
  */
 
-import AWS from 'aws-sdk';
-import fs from 'fs/promises';
+import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
 import path from 'path';
+
+// Configure dotenv to load environment variables
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Load .env from project root (following pattern from server.js)
+dotenv.config({ path: path.join(__dirname, '../../.env') });
+dotenv.config({ path: path.join(__dirname, '../../.env.local') });
+
+import { 
+  S3Client, 
+  HeadBucketCommand, 
+  CreateBucketCommand, 
+  PutObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  DeleteObjectCommand,
+  DeleteObjectsCommand,
+  ListObjectsV2Command,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import fs from 'fs/promises';
 import { createReadStream } from 'fs';
 import { createModuleLogger } from '../config/logger.js';
 import PathResolver from '../utils/PathResolver.js';
@@ -15,9 +43,9 @@ const logger = createModuleLogger('S3Service');
 class S3Service {
   constructor() {
     this.isConfigured = false;
-    this.s3 = null;
+    this.s3Client = null;
     this.bucketName = process.env.WASABI_BUCKET || 'newcam-recordings';
-    this.region = process.env.WASABI_REGION || 'us-east-1';
+    this.region = process.env.WASABI_REGION || 'us-east-2'; // Use actual Wasabi bucket region
     this.multipartThreshold = parseInt(process.env.S3_MULTIPART_THRESHOLD) || 100 * 1024 * 1024; // 100MB
     this.presignTtl = parseInt(process.env.S3_PRESIGN_TTL) || 3600; // 1 hour
     
@@ -25,14 +53,15 @@ class S3Service {
   }
 
   /**
-   * Inicializa o cliente S3
+   * Inicializa o cliente S3 com AWS SDK v3
    */
   init() {
     try {
       // Verificar se as credenciais estão configuradas
       const accessKeyId = process.env.WASABI_ACCESS_KEY;
       const secretAccessKey = process.env.WASABI_SECRET_KEY;
-      const endpoint = process.env.WASABI_ENDPOINT || 'https://s3.wasabisys.com';
+      // Use region-specific endpoint for better compatibility - FIXED
+      const endpoint = process.env.WASABI_ENDPOINT || `https://s3.us-east-2.wasabisys.com`;
 
       if (!accessKeyId || !secretAccessKey || 
           accessKeyId === 'your-access-key-here' || 
@@ -41,18 +70,21 @@ class S3Service {
         return;
       }
 
-      // Configurar cliente S3 para Wasabi
-      this.s3 = new AWS.S3({
-        accessKeyId,
-        secretAccessKey,
-        endpoint,
-        region: this.region,
-        s3ForcePathStyle: true,
-        signatureVersion: 'v4'
+      // AWS SDK v3 S3 Client - properly handles region configuration
+      this.s3Client = new S3Client({
+        region: this.region, // Use actual Wasabi bucket region (us-east-2)
+        endpoint: endpoint,
+        credentials: {
+          accessKeyId,
+          secretAccessKey
+        },
+        forcePathStyle: true, // Required for Wasabi
+        useAccelerateEndpoint: false,
+        useDualstackEndpoint: false
       });
 
       this.isConfigured = true;
-      logger.info('Serviço S3 (Wasabi) configurado com sucesso');
+      logger.info('Serviço S3 (Wasabi) configurado com sucesso - AWS SDK v3');
       
       // Testar conexão
       this.testConnection();
@@ -70,11 +102,12 @@ class S3Service {
     }
 
     try {
-      await this.s3.headBucket({ Bucket: this.bucketName }).promise();
+      const command = new HeadBucketCommand({ Bucket: this.bucketName });
+      await this.s3Client.send(command);
       logger.info(`Conexão com bucket ${this.bucketName} estabelecida`);
       return true;
     } catch (error) {
-      if (error.statusCode === 404) {
+      if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
         logger.warn(`Bucket ${this.bucketName} não encontrado, tentando criar...`);
         return await this.createBucket();
       } else {
@@ -93,12 +126,13 @@ class S3Service {
     }
 
     try {
-      await this.s3.createBucket({ 
+      const command = new CreateBucketCommand({
         Bucket: this.bucketName,
         CreateBucketConfiguration: {
           LocationConstraint: this.region
         }
-      }).promise();
+      });
+      await this.s3Client.send(command);
       
       logger.info(`Bucket ${this.bucketName} criado com sucesso`);
       return true;
@@ -124,11 +158,51 @@ class S3Service {
     }
 
     try {
-      // Verify file exists and get stats
-      const stats = await fs.stat(filePath);
+      // VALIDAÇÃO APRIMORADA: Verificar se arquivo existe antes de tentar upload
+      let stats;
+      try {
+        stats = await fs.stat(filePath);
+      } catch (fileError) {
+        logger.error(`File not found for upload: ${filePath}`, {
+          error: fileError.message,
+          key
+        });
+        return {
+          success: false,
+          error: 'FILE_NOT_FOUND',
+          message: `File not found: ${path.basename(filePath)}`
+        };
+      }
+
       const fileSize = stats.size;
 
+      // Validar tamanho do arquivo
+      if (fileSize === 0) {
+        logger.error(`Empty file detected: ${filePath}`);
+        return {
+          success: false,
+          error: 'EMPTY_FILE',
+          message: 'File is empty'
+        };
+      }
+
       logger.info(`Starting S3 upload: ${key} (${(fileSize / 1024 / 1024).toFixed(2)} MB)`);
+
+      // VALIDAÇÃO: Testar conexão S3 antes de upload
+      try {
+        const headBucketCommand = new HeadBucketCommand({ Bucket: this.bucketName });
+        await this.s3Client.send(headBucketCommand);
+      } catch (bucketError) {
+        logger.error(`S3 bucket not accessible: ${this.bucketName}`, {
+          error: bucketError.message,
+          name: bucketError.name
+        });
+        return {
+          success: false,
+          error: 'BUCKET_INACCESSIBLE',
+          message: `Cannot access bucket: ${this.bucketName}`
+        };
+      }
 
       // Use multipart upload for large files
       if (fileSize > this.multipartThreshold) {
@@ -137,7 +211,13 @@ class S3Service {
 
       // Standard upload for smaller files
       const fileStream = createReadStream(filePath);
-      const uploadParams = {
+      
+      // MELHORADO: Tratar erro de stream
+      fileStream.on('error', (streamError) => {
+        logger.error(`File stream error for ${filePath}:`, streamError);
+      });
+      
+      const command = new PutObjectCommand({
         Bucket: this.bucketName,
         Key: key,
         Body: fileStream,
@@ -150,44 +230,64 @@ class S3Service {
           ...metadata
         },
         ServerSideEncryption: 'AES256' // Enable server-side encryption
-      };
+      });
 
-      const upload = this.s3.upload(uploadParams);
-
-      // Track progress if callback provided
-      if (progressCallback) {
-        upload.on('httpUploadProgress', (progress) => {
-          const percent = Math.round((progress.loaded / progress.total) * 100);
-          progressCallback({
-            loaded: progress.loaded,
-            total: progress.total,
-            percentage: percent,
-            key
-          });
-        });
-      }
-
-      const result = await upload.promise();
+      const result = await this.s3Client.send(command);
+      
+      // AWS SDK v3 response structure
+      const location = `${this.s3Client.config.endpoint}/${this.bucketName}/${key}`;
 
       logger.info(`Upload completed successfully: ${result.Location}`);
 
       return {
         success: true,
-        url: result.Location,
-        key: result.Key,
+        url: location,
+        key: key,
         etag: result.ETag,
-        size: fileSize,
-        uploadId: result.UploadId
+        size: fileSize
       };
 
     } catch (error) {
-      logger.error(`Upload failed for ${key}:`, {
+      // TRATAMENTO DE ERRO MELHORADO
+      const errorInfo = {
+        key,
+        filePath,
         error: error.message,
         code: error.code,
-        statusCode: error.statusCode
-      });
-      
-      throw new Error(`S3 upload failed: ${error.message}`);
+        statusCode: error.statusCode,
+        requestId: error.requestId
+      };
+
+      logger.error(`Upload failed for ${key}:`, errorInfo);
+
+      // Classificar tipos de erro para retry (AWS SDK v3)
+      let retryable = true;
+      let errorType = 'UPLOAD_ERROR';
+
+      if (error.name === 'NetworkingError' || error.name === 'TimeoutError') {
+        errorType = 'NETWORK_ERROR';
+        retryable = true;
+      } else if (error.name === 'NoSuchBucket') {
+        errorType = 'BUCKET_NOT_FOUND';
+        retryable = false;
+      } else if (error.name === 'AccessDenied') {
+        errorType = 'ACCESS_DENIED';
+        retryable = false;
+      } else if (error.$metadata?.httpStatusCode >= 500) {
+        errorType = 'SERVER_ERROR';
+        retryable = true;
+      } else if (error.$metadata?.httpStatusCode >= 400 && error.$metadata?.httpStatusCode < 500) {
+        errorType = 'CLIENT_ERROR';
+        retryable = false;
+      }
+
+      return {
+        success: false,
+        error: errorType,
+        message: error.message,
+        retryable,
+        details: errorInfo
+      };
     }
   }
 
@@ -204,7 +304,7 @@ class S3Service {
 
     try {
       // Initialize multipart upload
-      const createParams = {
+      const createCommand = new CreateMultipartUploadCommand({
         Bucket: this.bucketName,
         Key: key,
         ContentType: this.getContentType(filePath),
@@ -216,9 +316,9 @@ class S3Service {
           ...metadata
         },
         ServerSideEncryption: 'AES256'
-      };
+      });
 
-      const createResult = await this.s3.createMultipartUpload(createParams).promise();
+      const createResult = await this.s3Client.send(createCommand);
       const uploadId = createResult.UploadId;
 
       logger.info(`Multipart upload initialized: ${uploadId}`);
@@ -250,14 +350,14 @@ class S3Service {
       });
 
       // Complete multipart upload
-      const completeParams = {
+      const completeCommand = new CompleteMultipartUploadCommand({
         Bucket: this.bucketName,
         Key: key,
         UploadId: uploadId,
         MultipartUpload: { Parts: parts }
-      };
+      });
 
-      const result = await this.s3.completeMultipartUpload(completeParams).promise();
+      const result = await this.s3Client.send(completeCommand);
 
       logger.info(`Multipart upload completed: ${result.Location}`);
 
@@ -276,11 +376,12 @@ class S3Service {
       
       // Attempt to abort the multipart upload
       try {
-        await this.s3.abortMultipartUpload({
+        const abortCommand = new AbortMultipartUploadCommand({
           Bucket: this.bucketName,
           Key: key,
           UploadId: uploadId
-        }).promise();
+        });
+        await this.s3Client.send(abortCommand);
         logger.info(`Aborted failed multipart upload: ${uploadId}`);
       } catch (abortError) {
         logger.error(`Failed to abort multipart upload:`, abortError);
@@ -298,16 +399,16 @@ class S3Service {
     
     const stream = createReadStream(filePath, { start, end: end - 1 });
     
-    const uploadParams = {
+    const uploadCommand = new UploadPartCommand({
       Bucket: this.bucketName,
       Key: key,
       PartNumber: partNumber,
       UploadId: uploadId,
       Body: stream,
       ContentLength: partSize
-    };
+    });
 
-    const result = await this.s3.uploadPart(uploadParams).promise();
+    const result = await this.s3Client.send(uploadCommand);
 
     if (progressCallback) {
       progressCallback({
@@ -359,13 +460,13 @@ class S3Service {
     }
 
     try {
-      const params = {
+      const command = new ListObjectsV2Command({
         Bucket: this.bucketName,
         Prefix: prefix,
         MaxKeys: maxKeys
-      };
+      });
 
-      const result = await this.s3.listObjectsV2(params).promise();
+      const result = await this.s3Client.send(command);
       
       return {
         files: result.Contents || [],
@@ -387,10 +488,11 @@ class S3Service {
     }
 
     try {
-      await this.s3.deleteObject({
+      const command = new DeleteObjectCommand({
         Bucket: this.bucketName,
         Key: key
-      }).promise();
+      });
+      await this.s3Client.send(command);
       
       logger.info(`Arquivo deletado do S3: ${key}`);
       return { success: true };
@@ -409,15 +511,15 @@ class S3Service {
     }
 
     try {
-      const deleteParams = {
+      const command = new DeleteObjectsCommand({
         Bucket: this.bucketName,
         Delete: {
           Objects: keys.map(key => ({ Key: key })),
           Quiet: false
         }
-      };
+      });
 
-      const result = await this.s3.deleteObjects(deleteParams).promise();
+      const result = await this.s3Client.send(command);
       
       logger.info(`${result.Deleted.length} arquivos deletados do S3`);
       
@@ -433,7 +535,7 @@ class S3Service {
   }
 
   /**
-   * Generate presigned URL for download with enhanced options
+   * Generate presigned URL for download with enhanced options - AWS SDK v3
    */
   async getSignedUrl(key, options = {}) {
     if (!this.isConfigured) {
@@ -441,36 +543,47 @@ class S3Service {
     }
 
     const {
-      operation = 'getObject',
+      operation = 'GET',
       expiresIn = this.presignTtl,
       responseHeaders = {},
       versionId = null
     } = options;
 
     try {
-      const params = {
+      // Create command based on operation
+      let command;
+      const commandInput = {
         Bucket: this.bucketName,
-        Key: key,
-        Expires: expiresIn
+        Key: key
       };
 
       // Add version ID if specified
       if (versionId) {
-        params.VersionId = versionId;
+        commandInput.VersionId = versionId;
       }
 
-      // Add response headers for content disposition, etc.
+      // Add response headers
       if (responseHeaders.contentDisposition) {
-        params.ResponseContentDisposition = responseHeaders.contentDisposition;
+        commandInput.ResponseContentDisposition = responseHeaders.contentDisposition;
       }
       if (responseHeaders.contentType) {
-        params.ResponseContentType = responseHeaders.contentType;
+        commandInput.ResponseContentType = responseHeaders.contentType;
       }
       if (responseHeaders.cacheControl) {
-        params.ResponseCacheControl = responseHeaders.cacheControl;
+        commandInput.ResponseCacheControl = responseHeaders.cacheControl;
       }
 
-      const url = await this.s3.getSignedUrlPromise(operation, params);
+      // Use GetObjectCommand for download operations (most common)
+      command = new GetObjectCommand(commandInput);
+
+      // Generate presigned URL with explicit region
+      let url = await getSignedUrl(this.s3Client, command, {
+        expiresIn,
+        signableHeaders: new Set(['host']),
+        unhoistableHeaders: new Set()
+      });
+      
+      // AWS SDK v3 now generates URLs with correct region configuration
       
       logger.debug(`Generated presigned URL for ${key}`, {
         operation,
@@ -490,7 +603,7 @@ class S3Service {
   }
 
   /**
-   * Get presigned URL for upload (for direct client uploads if needed)
+   * Get presigned URL for upload (for direct client uploads if needed) - AWS SDK v3
    */
   async getUploadUrl(key, options = {}) {
     const {
@@ -505,23 +618,28 @@ class S3Service {
     }
 
     try {
-      const params = {
+      const commandInput = {
         Bucket: this.bucketName,
         Key: key,
-        Expires: expiresIn,
         ContentType: contentType
       };
 
       if (contentLength) {
-        params.ContentLength = contentLength;
+        commandInput.ContentLength = contentLength;
       }
 
-      // Add metadata
-      Object.keys(metadata).forEach(key => {
-        params[`x-amz-meta-${key}`] = metadata[key];
-      });
+      // Add metadata (AWS SDK v3 format)
+      if (Object.keys(metadata).length > 0) {
+        commandInput.Metadata = metadata;
+      }
 
-      const url = await this.s3.getSignedUrlPromise('putObject', params);
+      const command = new PutObjectCommand(commandInput);
+      
+      const url = await getSignedUrl(this.s3Client, command, {
+        expiresIn,
+        signableHeaders: new Set(['host']),
+        unhoistableHeaders: new Set()
+      });
       
       logger.debug(`Generated upload URL for ${key}`);
       
@@ -533,7 +651,7 @@ class S3Service {
   }
 
   /**
-   * Check if object exists and get metadata without downloading
+   * Check if object exists and get metadata without downloading - AWS SDK v3
    */
   async headObject(key) {
     if (!this.isConfigured) {
@@ -541,10 +659,12 @@ class S3Service {
     }
 
     try {
-      const result = await this.s3.headObject({
+      const command = new HeadObjectCommand({
         Bucket: this.bucketName,
         Key: key
-      }).promise();
+      });
+      
+      const result = await this.s3Client.send(command);
 
       return {
         exists: true,
@@ -557,7 +677,7 @@ class S3Service {
         versionId: result.VersionId
       };
     } catch (error) {
-      if (error.statusCode === 404) {
+      if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
         return { exists: false };
       }
       
@@ -671,6 +791,233 @@ class S3Service {
     } catch (error) {
       logger.error(`Failed to upload recording ${recording.id}:`, error);
       throw error;
+    }
+  }
+
+  /**
+   * Validate S3 access and object existence
+   * @param {string} s3Key - S3 object key to validate
+   * @returns {Promise<Object>} - Validation result with access status
+   */
+  async validateAccess(s3Key) {
+    if (!this.isConfigured) {
+      return {
+        accessible: false,
+        error: 'S3_NOT_CONFIGURED',
+        message: 'S3 service not configured'
+      };
+    }
+
+    if (!s3Key) {
+      return {
+        accessible: false,
+        error: 'INVALID_KEY',
+        message: 'S3 key is required'
+      };
+    }
+
+    try {
+      // Check if object exists using headObject
+      const headResult = await this.headObject(s3Key);
+      
+      if (!headResult.exists) {
+        return {
+          accessible: false,
+          error: 'OBJECT_NOT_FOUND',
+          message: `Object not found: ${s3Key}`,
+          s3Key
+        };
+      }
+
+      // Try to generate a presigned URL to test permissions
+      try {
+        const presignedUrl = await this.getSignedUrl(s3Key, {
+          expiresIn: 300, // 5 minutes for validation
+          responseHeaders: {
+            contentType: 'video/mp4'
+          }
+        });
+
+        // Test HTTP HEAD request to presigned URL
+        try {
+          const response = await fetch(presignedUrl, { 
+            method: 'HEAD',
+            headers: {
+              'User-Agent': 'NewCAM-Validation/1.0'
+            }
+          });
+
+          const accessible = response.ok;
+          
+          return {
+            accessible,
+            error: accessible ? null : 'HTTP_ACCESS_FAILED',
+            message: accessible 
+              ? 'Object is accessible'
+              : `HTTP access failed: ${response.status} ${response.statusText}`,
+            s3Key,
+            objectSize: headResult.size,
+            lastModified: headResult.lastModified,
+            etag: headResult.etag,
+            contentType: headResult.contentType,
+            httpStatus: response.status,
+            presignedUrl: accessible ? presignedUrl : null
+          };
+
+        } catch (httpError) {
+          return {
+            accessible: false,
+            error: 'HTTP_REQUEST_FAILED',
+            message: `HTTP request failed: ${httpError.message}`,
+            s3Key,
+            objectSize: headResult.size,
+            lastModified: headResult.lastModified,
+            presignedUrl
+          };
+        }
+
+      } catch (urlError) {
+        return {
+          accessible: false,
+          error: 'PRESIGNED_URL_FAILED',
+          message: `Failed to generate presigned URL: ${urlError.message}`,
+          s3Key,
+          objectSize: headResult.size,
+          lastModified: headResult.lastModified
+        };
+      }
+
+    } catch (s3Error) {
+      return {
+        accessible: false,
+        error: 'S3_ERROR',
+        message: `S3 error: ${s3Error.message}`,
+        s3Key,
+        code: s3Error.code
+      };
+    }
+  }
+
+  /**
+   * Batch validate multiple S3 objects
+   * @param {string[]} s3Keys - Array of S3 keys to validate
+   * @returns {Promise<Object[]>} - Array of validation results
+   */
+  async batchValidateAccess(s3Keys) {
+    if (!Array.isArray(s3Keys)) {
+      throw new Error('s3Keys must be an array');
+    }
+
+    const results = [];
+    
+    // Process in chunks to avoid overwhelming the service
+    const chunkSize = 5;
+    for (let i = 0; i < s3Keys.length; i += chunkSize) {
+      const chunk = s3Keys.slice(i, i + chunkSize);
+      
+      const chunkPromises = chunk.map(async (key) => {
+        try {
+          return await this.validateAccess(key);
+        } catch (error) {
+          return {
+            accessible: false,
+            error: 'VALIDATION_FAILED',
+            message: `Validation failed: ${error.message}`,
+            s3Key: key
+          };
+        }
+      });
+
+      const chunkResults = await Promise.all(chunkPromises);
+      results.push(...chunkResults);
+
+      // Small delay between chunks to be nice to the service
+      if (i + chunkSize < s3Keys.length) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Get object stream for proxy streaming
+   * This bypasses presigned URL limitations with Wasabi
+   * @param {string} key - S3 object key
+   * @param {string} range - Optional range header (e.g., "bytes=0-1023")
+   * @returns {Promise<ReadableStream>} Node.js readable stream
+   */
+  async getObjectStream(key, range) {
+    if (!this.isConfigured) {
+      throw new Error('S3 não configurado. Configure as credenciais do Wasabi/S3.');
+    }
+
+    try {
+      const commandInput = {
+        Bucket: this.bucketName,
+        Key: key
+      };
+
+      // Add range if provided (for HTTP range requests)
+      if (range) {
+        commandInput.Range = range;
+      }
+
+      const command = new GetObjectCommand(commandInput);
+      
+      logger.debug(`Getting object stream for ${key}`, {
+        range: range || 'full file',
+        bucket: this.bucketName
+      });
+
+      const response = await this.s3Client.send(command);
+      
+      // AWS SDK v3 returns response.Body as a readable stream
+      if (!response.Body) {
+        throw new Error('No response body received from S3');
+      }
+
+      // Ensure the stream is Node.js compatible
+      const { Readable } = await import('stream');
+      let nodeStream = response.Body;
+      
+      // Convert AWS SDK v3 stream to Node.js Readable if needed
+      if (response.Body && typeof response.Body.pipe === 'function') {
+        // Already a Node.js compatible stream
+        nodeStream = response.Body;
+      } else if (response.Body && response.Body[Symbol.asyncIterator]) {
+        // Convert async iterable to Node.js readable stream
+        nodeStream = Readable.from(response.Body);
+      } else if (response.Body && typeof response.Body.transformToByteArray === 'function') {
+        // Handle AWS SDK v3 specific transformations
+        const buffer = await response.Body.transformToByteArray();
+        nodeStream = Readable.from(Buffer.from(buffer));
+      }
+
+      logger.debug(`✅ S3 object stream obtained and converted for ${key}`, {
+        contentLength: response.ContentLength,
+        contentType: response.ContentType,
+        range: range || 'full file',
+        streamType: typeof nodeStream.pipe === 'function' ? 'Node.js compatible' : 'Custom stream'
+      });
+
+      return nodeStream;
+      
+    } catch (error) {
+      logger.error(`Failed to get object stream for ${key}:`, {
+        error: error.message,
+        range,
+        code: error.Code
+      });
+      
+      // Provide more specific error messages
+      if (error.Code === 'NoSuchKey') {
+        throw new Error(`File not found in S3: ${key}`);
+      } else if (error.Code === 'InvalidRange') {
+        throw new Error(`Invalid range request: ${range}`);
+      } else {
+        throw new Error(`Failed to get S3 object stream: ${error.message}`);
+      }
     }
   }
 }

@@ -36,10 +36,25 @@ const logFormat = winston.format.combine(
   winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss:ms' }),
   winston.format.colorize({ all: true }),
   winston.format.printf((info) => {
-    if (info.stack) {
-      return `${info.timestamp} ${info.level}: ${info.message}\n${info.stack}`;
+    let message = `${info.timestamp} ${info.level}: ${info.message}`;
+    
+    // Include metadata if present (exclude standard fields)
+    const metadata = Object.keys(info)
+      .filter(key => !['timestamp', 'level', 'message', 'stack', 'splat', Symbol.for('level')].includes(key))
+      .reduce((obj, key) => {
+        obj[key] = info[key];
+        return obj;
+      }, {});
+    
+    if (Object.keys(metadata).length > 0) {
+      message += `\n  Metadata: ${JSON.stringify(metadata, null, 2)}`;
     }
-    return `${info.timestamp} ${info.level}: ${info.message}`;
+    
+    if (info.stack) {
+      message += `\n${info.stack}`;
+    }
+    
+    return message;
   })
 );
 

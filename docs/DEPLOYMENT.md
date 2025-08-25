@@ -4,14 +4,31 @@
 
 Este guia detalha o processo completo de deploy do Sistema NewCAM para produção no servidor `nuvem.safecameras.com.br` (66.94.104.241).
 
+### ✅ Status do Sistema (Janeiro 2025)
+- **Sistema Limpo**: Todos os arquivos temporários e logs removidos
+- **S3 Upload**: Sistema de upload para Wasabi S3 100% funcional
+- **AWS SDK v3**: Migração completa com presigned URLs funcionais
+- **Docker**: Configuração otimizada para produção
+- **PM2**: Configuração completa para gerenciamento de processos
+
 ## 🔧 Pré-requisitos
 
 ### Servidor de Produção
 - **Sistema Operacional**: Ubuntu 20.04+ LTS
-- **RAM**: Mínimo 4GB, Recomendado 8GB
-- **Storage**: Mínimo 50GB SSD
-- **CPU**: 2+ cores
-- **Rede**: Porta 443 (HTTPS), 80 (HTTP), 1935 (RTMP)
+- **RAM**: Mínimo 8GB, Recomendado 16GB
+- **Storage**: Mínimo 100GB SSD NVMe
+- **CPU**: 4+ cores (para processamento de vídeo)
+- **Rede**: Porta 443 (HTTPS), 80 (HTTP), 1935 (RTMP), 554 (RTSP), 8000 (HLS)
+
+### Portas Necessárias
+- **80**: HTTP (Nginx)
+- **443**: HTTPS/SSL (Nginx)
+- **3002**: Backend API (interno)
+- **3003**: Worker Service (interno)
+- **8000**: ZLMediaKit HTTP/HLS
+- **1935**: RTMP Streaming
+- **554**: RTSP Streaming
+- **6379**: Redis (interno)
 
 ### Software Necessário
 ```bash

@@ -64,7 +64,7 @@ module.exports = {
       // WORKER SERVICE
       // =====================================
       name: 'newcam-worker',
-      script: './worker/src/worker.js',
+      script: './backend/src/scripts/start-worker.js',
       cwd: '/var/www/newcam',
       
       // Instâncias e modo de execução
@@ -74,7 +74,8 @@ module.exports = {
       // Variáveis de ambiente
       env: {
         NODE_ENV: 'production',
-        PORT: 3001,
+        PORT: 3003,
+        BACKEND_URL: 'http://localhost:3002',
         LOG_LEVEL: 'info',
         WORKER_TOKEN: 'newcam-worker-token-2025-secure'
       },
@@ -112,7 +113,7 @@ module.exports = {
       user: 'root',
       host: '66.94.104.241',
       ref: 'origin/main',
-      repo: 'git@github.com:seu-usuario/newcam-surveillance-system.git',
+      repo: 'https://github.com/GouveiaRx/NewCAM-Surveillance-System.git',
       path: '/var/www/newcam',
       
       // Comandos de deploy
@@ -125,7 +126,7 @@ module.exports = {
       user: 'root',
       host: 'staging.safecameras.com.br',
       ref: 'origin/develop',
-      repo: 'git@github.com:seu-usuario/newcam-surveillance-system.git',
+      repo: 'https://github.com/GouveiaRx/NewCAM-Surveillance-System.git',
       path: '/var/www/newcam-staging',
       
       // Comandos de deploy

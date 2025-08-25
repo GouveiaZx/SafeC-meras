@@ -64,6 +64,11 @@ export function initializeSocket(io) {
     }
   });
 
+  // Configurar heartbeat global
+  setInterval(() => {
+    cleanupInactiveConnections(io);
+  }, 30000); // Verificar a cada 30 segundos
+
   // Eventos de conexão
   io.on('connection', (socket) => {
     handleConnection(socket, io);
@@ -655,18 +660,38 @@ async function getRecordingsStats(userCameras) {
   }
 }
 
-// Limpeza periódica de conexões inativas
-setInterval(() => {
+/**
+ * Limpeza de conexões inativas
+ * @param {Object} io - Instância do Socket.IO
+ */
+function cleanupInactiveConnections(io) {
   const now = new Date();
   const timeout = 5 * 60 * 1000; // 5 minutos
+  const inactiveConnections = [];
   
   for (const [socketId, connection] of activeConnections.entries()) {
     if (now - connection.lastActivity > timeout) {
-      logger.warn(`Removendo conexão inativa: ${connection.userEmail} (${socketId})`);
-      activeConnections.delete(socketId);
+      inactiveConnections.push({ socketId, connection });
     }
   }
-}, 60 * 1000); // Verificar a cada minuto
+  
+  if (inactiveConnections.length > 0) {
+    logger.info(`Limpando ${inactiveConnections.length} conexões inativas`);
+    
+    for (const { socketId, connection } of inactiveConnections) {
+      try {
+        const socket = io.sockets.sockets.get(socketId);
+        if (socket) {
+          socket.disconnect(true);
+        }
+        activeConnections.delete(socketId);
+        logger.debug(`Conexão inativa removida: ${connection.userEmail} (${socketId})`);
+      } catch (error) {
+        logger.warn(`Erro ao remover conexão inativa ${socketId}:`, error);
+      }
+    }
+  }
+}
 
 export default {
   initializeSocket,

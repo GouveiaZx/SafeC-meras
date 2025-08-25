@@ -13,6 +13,7 @@ import axios from 'axios';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 import FeatureFlagService from '../services/FeatureFlagService.js';
+import PathResolver from '../utils/PathResolver.js';
 
 const router = express.Router();
 const logger = createModuleLogger('ZLMHooks-Improved');
@@ -28,12 +29,12 @@ async function processTemporaryFilesForCamera(cameraId) {
   try {
     logger.info(`🔍 Processando arquivos temporários para câmera ${cameraId}`);
     
-    // Buscar arquivos temporários na estrutura de diretórios
+    // Buscar arquivos temporários na estrutura de diretórios - USANDO PathResolver
     const searchPaths = [
-      path.join(process.cwd(), 'storage', 'www', 'record', 'live', cameraId),
-      path.join(process.cwd(), '..', 'storage', 'live', cameraId),
-      path.join(process.cwd(), '..', 'storage', 'www', 'record', cameraId)
-    ];
+      PathResolver.resolveToAbsolute(`storage/www/record/live/${cameraId}`),
+      PathResolver.resolveToAbsolute(`storage/live/${cameraId}`),
+      PathResolver.resolveToAbsolute(`storage/www/record/${cameraId}`)
+    ].filter(Boolean);
     
     const today = new Date().toISOString().split('T')[0];
     let processedFiles = 0;
@@ -98,7 +99,7 @@ async function tryLinkFileToDatabase(cameraId, filePath) {
     
     if (orphanRecording) {
       const stats = await fs.stat(filePath);
-      const relativePath = filePath.replace(process.cwd(), '').replace(/\\/g, '/');
+      const relativePath = PathResolver.normalizeToRelative(filePath);
       
       const { error } = await supabaseAdmin
         .from('recordings')
@@ -212,7 +213,7 @@ const DEBOUNCE_TIME = 1000; // 1 segundo de debounce (REDUZIDO para melhor respo
 // CORREÇÃO: Sistema de locks melhorado com timeout automático
 const recordingCreationLock = new Map();
 const LOCK_TIMEOUT = 30000; // 30 segundos
-const DEBOUNCE_WEBHOOK_TIME = 5000; // 5 segundos para ignorar webhooks duplicados
+const DEBOUNCE_WEBHOOK_TIME = 2000; // 2 segundos para ignorar webhooks duplicados (REDUZIDO)
 
 // Cache para webhooks recentes (debouncing)
 const recentWebhooks = new Map();
@@ -923,6 +924,7 @@ router.post('/on_record_mp4', async (req, res) => {
       start_time,
       file_size,
       time_len,
+      duration, // ZLMediaKit may send 'duration' instead of 'time_len'
       file_path,
       file_name,
       folder,
@@ -947,6 +949,7 @@ router.post('/on_record_mp4', async (req, res) => {
       'start_time': { value: start_time, type: typeof start_time, valid: !!(start_time && !isNaN(start_time)) },
       'file_size': { value: file_size, type: typeof file_size, valid: !!(file_size && file_size > 0) },
       'time_len': { value: time_len, type: typeof time_len, valid: !!(time_len && time_len > 0) },
+      'duration': { value: duration, type: typeof duration, valid: !!(duration && duration > 0) },
       'file_path': { value: file_path, type: typeof file_path, length: file_path?.length || 0 },
       'file_name': { value: file_name, type: typeof file_name, length: file_name?.length || 0 },
       'folder': { value: folder, type: typeof folder, length: folder?.length || 0 },
@@ -962,7 +965,7 @@ router.post('/on_record_mp4', async (req, res) => {
       hookId,
       file_name,
       file_size,
-      duration: time_len,
+      duration: duration || time_len,
       file_path,
       stream,
       start_time,
@@ -980,7 +983,7 @@ router.post('/on_record_mp4', async (req, res) => {
       'Pasta': folder,
       'Stream ID': stream,
       'Tamanho (bytes)': file_size,
-      'Duração (segundos)': time_len,
+      'Duração (segundos)': duration || time_len,
       'Início gravação': start_time,
       'URL de origem': url,
       'App': app
@@ -991,11 +994,11 @@ router.post('/on_record_mp4', async (req, res) => {
     logger.info(`🔍 Tipo de arquivo: ${isTemporary ? 'TEMPORÁRIO (com ponto)' : 'FINAL'}`);
 
     // Log dos paths que vamos testar
-    const basePath = process.cwd();
+    const basePath = PathResolver.getProjectRoot();
     logger.info('🗂️ PATHS DE BUSCA:', {
       'Base path': basePath,
-      'Path 1': path.join(basePath, 'storage', 'www', 'record', 'live', stream),
-      'Path 2': path.join(basePath, 'storage', 'www', folder || '', file_name),
+      'Path 1': PathResolver.resolveToAbsolute(`storage/www/record/live/${stream}`),
+      'Path 2': PathResolver.resolveToAbsolute(`storage/www/${folder || ''}/${file_name}`),
       'Path 3': file_path ? path.resolve(file_path) : null
     });
 
@@ -1085,11 +1088,49 @@ router.post('/on_record_mp4', async (req, res) => {
     // Validar timestamp
     const startTimeISO = validateTimestamp(start_time);
 
-    // Validar duração
-    const duration = time_len ? Math.round(parseFloat(time_len)) : null;
-    if (duration && duration < 5) {
+    // Validar duração - ZLMediaKit pode enviar como 'duration' ou 'time_len'
+    let actualDuration = (duration || time_len) ? Math.round(parseFloat(duration || time_len)) : null;
+    
+    // Se duração não veio do ZLMediaKit, tentar extrair via ffprobe
+    if (!actualDuration && file_path) {
+      try {
+        logger.info('📏 Duração não fornecida pelo ZLM, extraindo via ffprobe...', { webhookId, file_path });
+        
+        // Convert Windows path to Unix format for Docker
+        let dockerPath = file_path.replace(/.*www[\\/]record[\\/]live/, 'www/record/live');
+        // Replace all backslashes with forward slashes for Unix compatibility
+        dockerPath = dockerPath.replace(/\\/g, '/');
+        
+        const { exec } = await import('child_process');
+        const { promisify } = await import('util');
+        const execAsync = promisify(exec);
+        
+        const ffprobeCmd = `docker exec newcam-zlmediakit ffprobe -v quiet -show_entries format=duration -of csv=p=0 "/opt/media/bin/${dockerPath}"`;
+        
+        logger.debug('🔍 Executando comando ffprobe:', { ffprobeCmd });
+        
+        const { stdout } = await execAsync(ffprobeCmd);
+        const extractedDuration = parseFloat(stdout.trim());
+        
+        if (extractedDuration && extractedDuration > 0) {
+          actualDuration = Math.round(extractedDuration);
+          logger.info(`✅ Duração extraída via ffprobe: ${actualDuration}s`, { webhookId, file_path });
+        } else {
+          logger.warn('⚠️ Não foi possível extrair duração válida', { webhookId, stdout: stdout.trim() });
+        }
+        
+      } catch (ffprobeError) {
+        logger.warn('⚠️ Erro ao extrair duração via ffprobe:', { 
+          webhookId, 
+          error: ffprobeError.message,
+          file_path 
+        });
+      }
+    }
+    
+    if (actualDuration && actualDuration < 5) {
       logger.warn('⚠️ Gravação com duração muito pequena:', {
-        duration,
+        duration: actualDuration,
         file_name,
         stream,
         possivel_causa: 'Segmentação incorreta ou configuração ZLM'
@@ -1150,19 +1191,19 @@ router.post('/on_record_mp4', async (req, res) => {
       activeRecording = recordingActiveData;
       logger.info('✅ Encontrada gravação com status "recording":', { id: activeRecording.id });
     } else {
-      // Segunda tentativa: buscar QUALQUER gravação sem file_path das últimas 4 horas
-      // CORREÇÃO: Expandir janela de tempo para 24h
-      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      // Segunda tentativa: buscar GRAVAÇÃO sem file_path das últimas 2 horas
+      // CORREÇÃO: Reduzir janela de tempo para 2h para evitar links incorretos
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
       
       const { data: orphanData, error: orphanError } = await supabaseAdmin
         .from('recordings')
         .select('id, status, filename, file_path, local_path, created_at, start_time, metadata')
         .eq('camera_id', cameraId)
-        .in('status', ['recording', 'processing', 'completed']) // Incluir todos os status possíveis
+        .eq('status', 'recording') // APENAS status recording para evitar links incorretos
         .is('file_path', null)
-        .gte('created_at', twentyFourHoursAgo)
+        .gte('created_at', twoHoursAgo)
         .order('created_at', { ascending: false })
-        .limit(3) // Pegar mais registros para melhor matching
+        .limit(1) // Pegar apenas o mais recente
         .maybeSingle();
 
       if (orphanData) {
@@ -1193,19 +1234,13 @@ router.post('/on_record_mp4', async (req, res) => {
       file_to_process: file_name
     });
 
-    // Validar se arquivo físico existe - Busca robusta em múltiplos locais
-    let fullFilePath = file_path;
-    let fileInfo = null;
-    
-    // CORREÇÃO: Melhorar normalização de nomes de arquivo
+    // CORREÇÃO SIMPLIFICADA: Usar filename original do ZLMediaKit sem modificações
     let cleanFileName = file_name || '';
     
-    // Remover prefixo '.' se existir
-    if (cleanFileName.startsWith('.')) {
-      cleanFileName = cleanFileName.substring(1);
-    }
+    // IMPORTANTE: NÃO remover mais o ponto inicial - preservar filename original
+    // O PathResolver já lida com variantes de filename internamente
     
-    // Garantir extensão .mp4
+    // Apenas garantir extensão .mp4 se necessário
     if (!cleanFileName.endsWith('.mp4') && cleanFileName.length > 0) {
       cleanFileName = cleanFileName.replace(/\.[^/.]+$/, '') + '.mp4';
     }
@@ -1213,10 +1248,10 @@ router.post('/on_record_mp4', async (req, res) => {
     logger.info('🔧 FILENAME PROCESSADO:', {
       'Original': file_name,
       'Limpo': cleanFileName,
-      'Com ponto': cleanFileName.startsWith('.') ? 'SIM' : 'NÃO'
+      'Precisa Renomear': needsFileRename
     });
 
-    // Verificar se arquivo já foi processado com o filename LIMPO
+    // Verificar duplicatas por filename
     const { data: existingRecording, error: queryError } = await supabaseAdmin
       .from('recordings')
       .select('id, status')
@@ -1224,104 +1259,90 @@ router.post('/on_record_mp4', async (req, res) => {
       .eq('camera_id', cameraId)
       .single();
 
-    logger.info('📊 RESULTADO DA CONSULTA DE DUPLICATAS POR FILENAME LIMPO:', {
-      webhookId,
-      existing_found: !!existingRecording,
-      existing_data: existingRecording,
-      query_error: queryError,
-      query: { table: 'recordings', filename: cleanFileName, camera_id: cameraId }
-    });
-
     if (existingRecording) {
-      logger.warn('⚠️ PASSO 5 INTERROMPIDO: Gravação já existe no banco:', {
+      logger.warn('⚠️ Gravação já existe no banco:', {
         webhookId,
         recordingId: existingRecording.id,
         status: existingRecording.status,
-        clean_file_name: cleanFileName,
-        original_file_name: file_name
+        filename: cleanFileName
       });
       processedRecordings.add(cacheKey);
       return res.json({ code: 0, msg: 'already exists in database' });
     }
-    logger.info('✅ PASSO 5 CONCLUÍDO: Nenhuma duplicata por filename encontrada', { webhookId });
     
-    // Versões alternativas para busca abrangente
-    const fileWithDot = '.' + cleanFileName;
-    const originalFileName = file_name || '';
+    // BUSCA SIMPLIFICADA: Usar PathResolver com objeto simulado
+    // CORREÇÃO: Construir file_path usando cleanFileName ao invés do file_path original
+    const cleanFilePath = file_path ? file_path.replace(file_name, cleanFileName) : null;
     
-    // Extrair data do nome limpo (formato: YYYY-MM-DD-HH-mm-ss-N.mp4)
-    const dateMatch = cleanFileName.match(/^(\d{4}-\d{2}-\d{2})/);
-    const dateFolder = dateMatch ? dateMatch[1] : new Date().toISOString().split('T')[0];
-
-    logger.info('🔍 PROCESSAMENTO DE NOMES DE ARQUIVO:', {
-      'Nome original': file_name,
-      'Nome limpo': cleanFileName,
-      'Nome com ponto': fileWithDot,
-      'Data extraída': dateFolder,
-      'Match de data': dateMatch?.[1] || 'NÃO ENCONTRADO'
-    });
+    const mockRecording = {
+      id: 'temp',
+      camera_id: cameraId,
+      filename: cleanFileName,
+      file_path: cleanFilePath,
+      local_path: cleanFilePath,
+      created_at: new Date().toISOString()
+    };
     
-    // Definir caminhos possíveis onde o arquivo pode estar
-    const possiblePaths = [];
+    logger.info('🔍 Buscando arquivo usando PathResolver...');
+    const fileResult = await PathResolver.findRecordingFile(mockRecording);
     
-    // CORREÇÃO: Adicionar busca com todas as variações de nome
-    const fileNameVariations = [
-      cleanFileName,      // Nome normalizado sem ponto
-      fileWithDot,        // Nome normalizado com ponto
-      originalFileName,   // Nome original do webhook
-      file_name           // Fallback
-    ].filter(name => name && name.trim().length > 0); // Remover nomes vazios
+    let fullFilePath = null;
+    let fileInfo = null;
     
-    for (const fileName of fileNameVariations) {
-      // Caminhos com estrutura de data (mais provável)
-      possiblePaths.push(
-        join(__dirname, '../../../storage/www/record/live', cameraId, dateFolder, fileName),
-        join(__dirname, '../../../storage/bin/www/record/live', cameraId, dateFolder, fileName),
-        join(__dirname, '../../storage/www/record/live', cameraId, dateFolder, fileName),
-        // Caminhos sem estrutura de data (fallback)
-        join(__dirname, '../../../storage/www/record/live', cameraId, fileName),
-        join(__dirname, '../../../storage/bin/www/record/live', cameraId, fileName),
-        join(__dirname, '../../storage/bin/www/record/live', cameraId, fileName),
-        join(__dirname, '../../storage/www/record/live', cameraId, fileName),
-        // Caminhos diretos sem camera_id (menos provável)
-        join(__dirname, '../../../storage/bin/www/record/live', fileName),
-        join(__dirname, '../../../storage/www/record/live', fileName),
-        join(__dirname, '../../storage/bin/www/record/live', fileName),
-        join(__dirname, '../../storage/www/record/live', fileName)
-      );
-    }
-    
-    logger.info(`🔎 Total de ${possiblePaths.length} paths para testar`);
-
-    if (!fullFilePath) {
-      // Procurar o arquivo em cada path possível
-      for (let i = 0; i < possiblePaths.length; i++) {
-        const testPath = possiblePaths[i];
-        logger.debug(`🔍 Testando path ${i + 1}/${possiblePaths.length}: ${testPath}`);
-        
-        const testInfo = await getFileInfo(testPath);
-        if (testInfo.exists) {
-          fullFilePath = testPath;
-          fileInfo = testInfo;
-          logger.info(`✅ ARQUIVO ENCONTRADO no path ${i + 1}: ${testPath}`, {
-            'Tamanho': testInfo.size,
-            'Última modificação': testInfo.mtime
+    if (fileResult && fileResult.exists) {
+      fullFilePath = fileResult.absolutePath;
+      fileInfo = {
+        exists: true,
+        size: fileResult.size,
+        mtime: fileResult.mtime
+      };
+      logger.info(`✅ ARQUIVO ENCONTRADO: ${fullFilePath}`);
+      
+      // Renomear arquivo físico se necessário (remover ponto inicial)
+      if (needsFileRename && path.basename(fullFilePath).startsWith('.')) {
+        try {
+          const { rename } = await import('fs/promises');
+          const dir = path.dirname(fullFilePath);
+          const oldName = path.basename(fullFilePath);
+          const newName = oldName.substring(1); // Remove ponto inicial
+          const newPath = path.join(dir, newName);
+          
+          await rename(fullFilePath, newPath);
+          fullFilePath = newPath;
+          
+          logger.info(`✅ ARQUIVO RENOMEADO: ${oldName} → ${newName}`);
+        } catch (renameError) {
+          logger.warn('⚠️ Falha ao renomear arquivo físico:', {
+            error: renameError.message,
+            oldPath: fullFilePath
           });
-          break;
-        } else {
-          logger.debug(`❌ Não encontrado no path ${i + 1}: ${testPath}`);
+          // Continuar com o arquivo original se renomeação falhar
         }
       }
     } else {
-      logger.info(`🎯 Usando file_path fornecido: ${fullFilePath}`);
-      fileInfo = await getFileInfo(fullFilePath);
+      // Fallback: tentar file_path fornecido se PathResolver falhar
+      if (file_path) {
+        const absolutePath = path.isAbsolute(file_path) ? 
+          file_path : 
+          PathResolver.resolveToAbsolute(file_path);
+        
+        if (absolutePath) {
+          const fallbackResult = await PathResolver.validatePath(absolutePath);
+          if (fallbackResult.exists) {
+            fullFilePath = fallbackResult.absolutePath;
+            fileInfo = fallbackResult;
+            logger.info(`✅ ARQUIVO ENCONTRADO via fallback: ${fullFilePath}`);
+          }
+        }
+      }
     }
     
     if (!fileInfo || !fileInfo.exists) {
-      logger.error('❌ Arquivo físico não encontrado em nenhum local:', { 
+      logger.error('❌ Arquivo físico não encontrado:', { 
         file_name, 
         file_path,
-        searchedPaths: !file_path ? possiblePaths : [file_path]
+        cameraId,
+        cleanFileName
       });
       return res.status(404).json({ code: -1, msg: 'file not found' });
     }
@@ -1330,7 +1351,7 @@ router.post('/on_record_mp4', async (req, res) => {
     const actualFileSize = file_size || fileInfo.size;
 
     // CORREÇÃO: Calcular duração e metadados usando ffprobe se não fornecida
-    let actualDuration = duration;
+    // actualDuration já foi definida anteriormente no código
     let videoMetadata = {
       resolution: null,
       fps: null,
@@ -1345,7 +1366,29 @@ router.post('/on_record_mp4', async (req, res) => {
         const { spawn } = await import('child_process');
         
         // Tentar ffprobe via Docker primeiro (mais confiável)
-        const dockerPath = fullFilePath.replace(/\\/g, '/').replace('storage/', '/opt/media/bin/');
+        // CORREÇÃO CRÍTICA: Mapear corretamente path do host para Docker container
+        const relativePath = PathResolver.normalizeToRelative(fullFilePath);
+        
+        // Docker container mapeia storage/www para /opt/media/bin/www
+        // Exemplo: storage/www/record/live/camera/date/file.mp4 → /opt/media/bin/www/record/live/camera/date/file.mp4
+        let dockerPath;
+        if (relativePath && relativePath.startsWith('storage/www/')) {
+          // Remove 'storage/www/' e adiciona o prefixo do container
+          dockerPath = `/opt/media/bin/www/${relativePath.replace('storage/www/', '')}`;
+        } else if (relativePath && relativePath.startsWith('storage/')) {
+          // Se só tem 'storage/', mapear para /opt/media/bin/www diretamente
+          dockerPath = `/opt/media/bin/www/${relativePath.replace('storage/', '')}`;
+        } else {
+          // Fallback: usar path relativo direto
+          dockerPath = `/opt/media/bin/www/record/live/${relativePath || file_name}`;
+        }
+        
+        logger.debug('Path mapping para FFprobe:', {
+          originalPath: fullFilePath,
+          relativePath,
+          dockerPath,
+          fileName: file_name
+        });
         
         const ffprobeResult = await new Promise((resolve, reject) => {
           const ffprobe = spawn('docker', [
@@ -1477,12 +1520,11 @@ router.post('/on_record_mp4', async (req, res) => {
         file_size: actualFileSize,
         duration: actualDuration,
         end_time: actualDuration ? new Date(new Date(startTimeISO).getTime() + (actualDuration * 1000)).toISOString() : null,
-        // NÃO marcar como ended_at ainda - gravação pode continuar
-        // ended_at: new Date().toISOString(),
-        status: 'recording', // CORREÇÃO: Manter como 'recording' - só completar quando parar explicitamente
+        // Marcar como completa quando arquivo MP4 é gerado
+        ended_at: new Date().toISOString(),
+        status: 'completed', // Arquivo MP4 pronto = gravação completa
         quality: videoMetadata.bitrate > 2000 ? 'high' : videoMetadata.bitrate > 1000 ? 'medium' : 'low',
         codec: videoMetadata.codec || 'h264',
-        format: 'mp4',
         resolution: videoMetadata.resolution,
         width: videoMetadata.width,
         height: videoMetadata.height,
@@ -1540,12 +1582,11 @@ router.post('/on_record_mp4', async (req, res) => {
         start_time: startTimeISO,
         started_at: startTimeISO,
         end_time: actualDuration ? new Date(new Date(startTimeISO).getTime() + (actualDuration * 1000)).toISOString() : null,
-        // NÃO marcar como ended_at ainda - pode ser arquivo temporário
-        // ended_at: new Date().toISOString(),
-        status: 'recording', // CORREÇÃO: Manter como 'recording' - só completar quando parar explicitamente
+        // Marcar como completa quando arquivo MP4 é gerado
+        ended_at: new Date().toISOString(),
+        status: 'completed', // Arquivo MP4 pronto = gravação completa
         quality: videoMetadata.bitrate > 2000 ? 'high' : videoMetadata.bitrate > 1000 ? 'medium' : 'low',
         codec: videoMetadata.codec || 'h264',
-        format: 'mp4',
         resolution: videoMetadata.resolution,
         width: videoMetadata.width,
         height: videoMetadata.height,
@@ -1647,7 +1688,7 @@ router.post('/on_record_mp4', async (req, res) => {
     // Limpar cache após um tempo (evitar crescimento infinito)
     setTimeout(() => {
       processedRecordings.delete(cacheKey);
-    }, 300000); // 5 minutos
+    }, 120000); // 2 minutos (REDUZIDO)
 
     // LOG DE SUCESSO FINAL COM MÉTRICAS
     const endProcessTime = Date.now();

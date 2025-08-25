@@ -4,7 +4,7 @@
  */
 
 import path from 'path';
-import { promises as fs } from 'fs';
+import { promises as fs, existsSync } from 'fs';
 import { createModuleLogger } from '../config/logger.js';
 
 const logger = createModuleLogger('PathResolver');
@@ -12,10 +12,67 @@ const logger = createModuleLogger('PathResolver');
 class PathResolver {
   constructor() {
     // Define base recordings path (configurable via env)
-    this.recordingsBasePath = process.env.RECORDINGS_PATH || 
-      path.join(process.cwd(), '..', 'storage', 'www', 'record', 'live');
+    // Detectar automaticamente o root do projeto procurando por package.json
+    let projectRoot = process.cwd();
     
-    logger.info(`PathResolver initialized with base path: ${this.recordingsBasePath}`);
+    // Detecção especial: se estamos rodando de backend/, subir um nível
+    if (path.basename(projectRoot) === 'backend') {
+      const parentDir = path.dirname(projectRoot);
+      if (existsSync(path.join(parentDir, 'package.json')) && 
+          existsSync(path.join(parentDir, 'storage'))) {
+        projectRoot = parentDir;
+        logger.info('Detected backend subdirectory, using parent as project root');
+      }
+    }
+    
+    // Se ainda não achamos package.json, subir até encontrar
+    if (!existsSync(path.join(projectRoot, 'package.json'))) {
+      let searchPath = projectRoot;
+      while (!existsSync(path.join(searchPath, 'package.json')) && 
+             searchPath !== path.dirname(searchPath)) {
+        searchPath = path.dirname(searchPath);
+      }
+      
+      // Validar que encontramos um projeto NewCAM válido
+      const storageCheck = path.join(searchPath, 'storage');
+      if (existsSync(path.join(searchPath, 'package.json')) && 
+          existsSync(storageCheck)) {
+        projectRoot = searchPath;
+      }
+    }
+    
+    // Validar que encontramos um package.json válido do NewCAM
+    const packageJsonPath = path.join(projectRoot, 'package.json');
+    if (!existsSync(packageJsonPath)) {
+      throw new Error('Could not find project root with package.json');
+    }
+    
+    // Garantir que é o projeto NewCAM verificando se existe o diretório storage
+    const storageDir = path.join(projectRoot, 'storage');
+    if (!existsSync(storageDir)) {
+      logger.warn(`Storage directory not found at ${storageDir}, creating it...`);
+      // Se não existe, pode ser um projeto novo - vamos usar o path mesmo assim
+    }
+    
+    this.projectRoot = projectRoot;
+    this.recordingsBasePath = process.env.RECORDINGS_PATH || 
+      path.join(projectRoot, 'storage', 'www', 'record', 'live');
+    
+    logger.info(`PathResolver initialized:`, {
+      projectRoot: this.projectRoot,
+      recordingsBasePath: this.recordingsBasePath,
+      cwd: process.cwd(),
+      detectedFromBackendSubdir: path.basename(process.cwd()) === 'backend'
+    });
+  }
+
+  /**
+   * Get the project root directory
+   * @returns {string} - Absolute path to project root
+   */
+  getProjectRoot() {
+    // Retornar o project root já calculado no constructor
+    return this.projectRoot;
   }
 
   /**
@@ -38,6 +95,9 @@ class PathResolver {
           normalized = parts.slice(storageIndex).join('/');
         }
       }
+      
+      // NOTA: Preservar pontos iniciais - ZLMediaKit cria arquivos temporários com pontos
+      // Não removemos mais os pontos, pois isso causava mismatch com os dados do banco
       
       // Ensure path starts with storage/www/record/live
       if (normalized.includes('storage/www/record/live')) {
@@ -79,17 +139,27 @@ class PathResolver {
         return relativePath;
       }
       
-      // Handle relative paths starting with storage/
+      // CRITICAL FIX: Handle relative paths starting with storage/
       if (relativePath.startsWith('storage/')) {
-        return path.join(process.cwd(), '..', relativePath);
+        return path.join(this.getProjectRoot(), relativePath);
       }
       
       // Handle paths starting with www/
       if (relativePath.startsWith('www/')) {
-        return path.join(process.cwd(), '..', 'storage', relativePath);
+        return path.join(this.getProjectRoot(), 'storage', relativePath);
       }
       
-      // Default: assume it's relative to recordings base path
+      // CRITICAL FIX: Check if path already contains full recordings base structure
+      // This prevents double concatenation when paths already have "storage/www/record/live"
+      const normalizedPath = relativePath.replace(/\\/g, '/');
+      if (normalizedPath.includes('storage/www/record/live/')) {
+        // Path already contains the full structure, just resolve to absolute from project root
+        const storageIndex = normalizedPath.indexOf('storage/www/record/live/');
+        const fullRelativePath = normalizedPath.substring(storageIndex);
+        return path.join(this.getProjectRoot(), fullRelativePath);
+      }
+      
+      // Default: assume it's relative to recordings base path (for simple filenames only)
       return path.join(this.recordingsBasePath, relativePath);
       
     } catch (error) {
@@ -201,14 +271,27 @@ class PathResolver {
   generateSearchPaths(recording) {
     const paths = [];
     
-    // 1. Try local_path if exists
+    logger.info('🔍 generateSearchPaths - Input recording:', {
+      id: recording.id,
+      filename: recording.filename,
+      camera_id: recording.camera_id,
+      local_path: recording.local_path,
+      file_path: recording.file_path,
+      created_at: recording.created_at
+    });
+    
+    // 1. Try local_path if exists (simplified - use exact path)
     if (recording.local_path) {
-      paths.push(this.resolveToAbsolute(recording.local_path));
+      const localPath = this.resolveToAbsolute(recording.local_path);
+      paths.push(localPath);
+      logger.info('📁 Added local_path:', localPath);
     }
     
     // 2. Try file_path if exists and different from local_path
     if (recording.file_path && recording.file_path !== recording.local_path) {
-      paths.push(this.resolveToAbsolute(recording.file_path));
+      const filePath = this.resolveToAbsolute(recording.file_path);
+      paths.push(filePath);
+      logger.debug('📁 Added file_path:', filePath);
     }
     
     // 3. Construct expected paths based on camera_id and filename
@@ -217,43 +300,85 @@ class PathResolver {
         new Date(recording.created_at) : new Date();
       const dateStr = date.toISOString().split('T')[0];
       
-      // Define base paths to search
+      // SIMPLIFICAÇÃO CRÍTICA: Com o webhook corrigido, filename é sempre consistente
+      // Reduzir drasticamente a complexidade da busca
+      const filename = recording.filename;
+      
+      // Apenas 2 locais principais para busca
       const basePaths = [
-        this.recordingsBasePath, // storage/www/record/live
-        path.join(process.cwd(), '..', 'storage', 'live'), // NEW: storage/live for ZLMediaKit files
-        path.join(process.cwd(), '..', 'storage', 'www', 'record') // Also check www/record without /live
+        this.recordingsBasePath, // storage/www/record/live (padrão do sistema)
+        path.join(this.getProjectRoot(), 'storage', 'www') // fallback para arquivos diretos
       ];
       
-      // Search in all base paths
+      // Busca simplificada: apenas as estruturas reais do sistema
       for (const basePath of basePaths) {
-        // Standard structure: {camera_id}/{date}/{filename}
-        paths.push(
-          path.join(basePath, recording.camera_id, dateStr, recording.filename),
-          path.join(basePath, recording.camera_id, recording.filename),
-          path.join(basePath, 'processed', dateStr, recording.filename),
-          path.join(basePath, 'processed', recording.filename)
-        );
+        // Estrutura padrão: {base_path}/{camera_id}/{date}/{filename}
+        paths.push(path.join(basePath, recording.camera_id, dateStr, filename));
         
-        // ZLMediaKit specific paths with nested structure
-        paths.push(
-          path.join(basePath, recording.camera_id, dateStr, 'record', 'live', recording.camera_id, dateStr, recording.filename),
-          // Also check for files with dot prefix (ZLM creates temporary files with dots)
-          path.join(basePath, recording.camera_id, dateStr, 'record', 'live', recording.camera_id, dateStr, `.${recording.filename}`),
-          // Direct filename without date folders
-          path.join(basePath, recording.filename),
-          path.join(basePath, `.${recording.filename}`)
-        );
+        // Estrutura sem data (arquivos antigos): {base_path}/{camera_id}/{filename}
+        paths.push(path.join(basePath, recording.camera_id, filename));
+        
+        // Fallback: arquivo direto na pasta base (casos especiais)
+        if (basePath === path.join(this.getProjectRoot(), 'storage', 'www')) {
+          paths.push(path.join(basePath, 'record', 'live', recording.camera_id, dateStr, filename));
+        }
+      }
+      
+      // ADICIONAR: Buscar no diretório processed (onde ZLMediaKit move arquivos finalizados)
+      const processedPath = path.join(this.recordingsBasePath, 'processed');
+      paths.push(path.join(processedPath, filename));
+      
+      // CRÍTICO: Tentar sem o ponto inicial do filename (ZLMediaKit remove pontos no processed)
+      if (filename.startsWith('.')) {
+        const filenameWithoutDot = filename.substring(1);
+        const processedNoDotPath = path.join(processedPath, filenameWithoutDot);
+        paths.push(processedNoDotPath);
+        logger.info('🔍 Added processed path without dot:', processedNoDotPath);
+        
+        // Também tentar na estrutura padrão sem ponto
+        for (const basePath of basePaths) {
+          const noDotPath1 = path.join(basePath, recording.camera_id, dateStr, filenameWithoutDot);
+          const noDotPath2 = path.join(basePath, recording.camera_id, filenameWithoutDot);
+          paths.push(noDotPath1);
+          paths.push(noDotPath2);
+          logger.debug('🔍 Added no-dot paths:', { noDotPath1, noDotPath2 });
+        }
       }
     }
     
-    // 4. Try just filename in base directory
-    if (recording.filename) {
-      paths.push(path.join(this.recordingsBasePath, recording.filename));
-      paths.push(path.join(process.cwd(), '..', 'storage', 'live', recording.filename));
+    // 4. Fallback simplificado: para gravações sem camera_id (casos raros)
+    if (recording.filename && !recording.camera_id) {
+      const filename = recording.filename;
+      
+      // Buscar apenas nos locais principais
+      paths.push(
+        path.join(this.recordingsBasePath, filename),
+        path.join(this.getProjectRoot(), 'storage', 'www', filename)
+      );
     }
     
     // Filter out null/undefined and deduplicate
-    return [...new Set(paths.filter(Boolean))];
+    const filteredPaths = [...new Set(paths.filter(Boolean))];
+    
+    // CRITICAL FIX: Ensure ALL paths are converted to absolute before returning
+    const finalPaths = filteredPaths.map(searchPath => {
+      const absolutePath = path.isAbsolute(searchPath) ? 
+        searchPath : this.resolveToAbsolute(searchPath);
+      return absolutePath;
+    }).filter(Boolean); // Remove any null results
+    
+    logger.info('🔍 Final search paths generated:', {
+      totalPaths: finalPaths.length,
+      rawPathsCount: paths.length,
+      filteredPathsCount: filteredPaths.length,
+      deduplicatedPathsCount: finalPaths.length
+    });
+    
+    // Log each path individually for clear visibility  
+    finalPaths.forEach((pathItem, index) => {
+      logger.info(`📁 Path ${index + 1}: ${pathItem}`);
+    });
+    return finalPaths;
   }
 
   /**

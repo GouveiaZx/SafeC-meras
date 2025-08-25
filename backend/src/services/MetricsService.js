@@ -9,6 +9,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { supabaseAdmin } from '../config/database.js';
 import { logger } from '../config/logger.js';
+import PathResolver from '../utils/PathResolver.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -429,8 +430,8 @@ class MetricsService {
    */
   async collectStorageMetrics() {
     try {
-      // Storage local (aproximado)
-      const recordingsPath = path.join(process.cwd(), '..', 'storage', 'recordings');
+      // Storage local usando PathResolver para caminho correto
+      const recordingsPath = PathResolver.resolveToAbsolute('storage/www/record/live');
       
       try {
         const files = await fs.readdir(recordingsPath, { recursive: true });
@@ -454,7 +455,16 @@ class MetricsService {
           percentage: 0
         };
       } catch (error) {
-        logger.warn('Não foi possível acessar diretório de gravações:', error.message);
+        logger.warn('Não foi possível acessar diretório de gravações:', {
+          errorMessage: error.message,
+          errorName: error.name,
+          errorCode: error.code,
+          errorErrno: error.errno,
+          errorPath: error.path,
+          fullError: error.toString(),
+          recordingsPath,
+          pathExists: require('fs').existsSync(recordingsPath)
+        });
       }
 
       // Storage S3 (seria necessário fazer chamadas para a API do Wasabi)

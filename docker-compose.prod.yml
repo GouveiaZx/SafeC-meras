@@ -1,0 +1,146 @@
+version: '3.8'
+
+# =================================================
+# DOCKER COMPOSE - PRODUÇÃO NEWCAM
+# =================================================
+# Configuração otimizada para ambiente de produção
+# Servidor: nuvem.safecameras.com.br (66.94.104.241)
+
+services:
+  # =================================================
+  # REDIS - Cache e Sessões
+  # =================================================
+  redis:
+    image: redis:7-alpine
+    container_name: newcam-redis-prod
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"  # Bind apenas localhost
+    volumes:
+      - redis_data_prod:/data
+      - ./docker/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: redis-server /usr/local/etc/redis/redis.conf
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - newcam-network-prod
+
+  # =================================================
+  # ZLMEDIAKIT - Servidor de Mídia Principal
+  # =================================================
+  zlmediakit:
+    image: zlmediakit/zlmediakit:master
+    container_name: newcam-zlmediakit-prod
+    restart: unless-stopped
+    shm_size: 4gb
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+      memlock:
+        soft: -1
+        hard: -1
+    environment:
+      - GOGC=50
+      - GOMAXPROCS=4
+      - LOG_LEVEL=info
+      - TZ=America/Sao_Paulo
+    volumes:
+      - ./docker/zlmediakit/config.prod.ini:/opt/media/conf/config.ini:ro
+      - /var/www/newcam/storage/recordings:/opt/media/bin/www/record
+      - /var/www/newcam/storage/live:/opt/media/bin/live
+      - /var/www/newcam/storage/temp:/opt/media/bin/temp
+    ports:
+      - "1935:1935"     # RTMP
+      - "8000:80"       # HTTP-HLS e API
+      - "554:554"       # RTSP
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/index/api/getServerConfig"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - newcam-network-prod
+
+  # =================================================
+  # NGINX - Reverse Proxy e SSL
+  # =================================================
+  nginx:
+    image: nginx:alpine
+    container_name: newcam-nginx-prod
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/sites-available:/etc/nginx/sites-available:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /var/www/newcam/frontend/dist:/var/www/html:ro
+      - /var/www/newcam/storage:/var/www/storage:ro
+    depends_on:
+      - zlmediakit
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - newcam-network-prod
+
+  # =================================================
+  # WATCHTOWER - Auto Update Containers
+  # =================================================
+  watchtower:
+    image: containrrr/watchtower
+    container_name: newcam-watchtower-prod
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=86400  # 24 hours
+      - WATCHTOWER_INCLUDE_STOPPED=true
+      - WATCHTOWER_NOTIFICATIONS=email
+      - WATCHTOWER_NOTIFICATION_EMAIL_TO=admin@safecameras.com.br
+    networks:
+      - newcam-network-prod
+
+# =================================================
+# VOLUMES PERSISTENTES
+# =================================================
+volumes:
+  redis_data_prod:
+    driver: local
+    driver_opts:
+      type: none
+      device: /var/www/newcam/data/redis
+      o: bind
+  
+  zlmediakit_data_prod:
+    driver: local
+    driver_opts:
+      type: none
+      device: /var/www/newcam/data/zlmediakit
+      o: bind
+
+# =================================================
+# NETWORK CONFIGURATION
+# =================================================
+networks:
+  newcam-network-prod:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+          gateway: 172.20.0.1

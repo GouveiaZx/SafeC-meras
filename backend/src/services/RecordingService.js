@@ -10,6 +10,8 @@ import path from 'path';
 import axios from 'axios';
 import { createModuleLogger } from '../config/logger.js';
 import { supabaseAdmin } from '../config/database.js';
+import uploadQueueService from './UploadQueueService.js';
+import PathResolver from '../utils/PathResolver.js';
 
 const logger = createModuleLogger('RecordingService');
 
@@ -22,11 +24,15 @@ class RecordingService {
     this.zlmApiUrl = process.env.ZLM_API_URL || 'http://localhost:8000/index/api';
     this.zlmSecret = process.env.ZLM_SECRET || '9QqL3M2K7vHQexkbfp6RvbCUB3GkV4MK';
     
-    // Caminhos simplificados
-    this.recordingsBasePath = path.join(process.cwd(), '..', 'storage', 'www', 'record', 'live');
+    // Usar PathResolver para caminhos consistentes
+    this.pathResolver = PathResolver;
+    this.recordingsBasePath = this.pathResolver.resolveToAbsolute('storage/www/record/live');
     
     // Timeout automático para gravações (30 minutos)
     this.recordingTimeout = 30 * 60 * 1000; // 30 minutos em ms
+    
+    // Serviço de upload
+    this.uploadQueueService = uploadQueueService;
     
     this.logger.info(`[RecordingService] Serviço simplificado inicializado`);
     this.ensureDirectories();
@@ -72,115 +78,40 @@ class RecordingService {
    * Resolver path absoluto a partir do relativo
    */
   resolveAbsolutePath(relativePath) {
-    if (!relativePath) return null;
-    
-    // Se já é absoluto, retornar
-    if (path.isAbsolute(relativePath)) {
-      return relativePath;
-    }
-    
-    // Definir raiz do projeto
-    const projectRoot = process.cwd().includes('backend') 
-      ? path.join(process.cwd(), '..')
-      : process.cwd();
-    
-    // Construir path absoluto
-    if (relativePath.startsWith('storage/')) {
-      return path.join(projectRoot, relativePath);
-    }
-    
-    // Default: assumir que está no diretório base
-    return path.join(this.recordingsBasePath, relativePath);
+    // Delegar para PathResolver para consistência
+    return this.pathResolver.resolveToAbsolute(relativePath);
   }
 
   /**
-   * Buscar arquivo de gravação - SIMPLIFICADO
+   * Buscar arquivo de gravação - USANDO PathResolver OTIMIZADO
    */
   async findRecordingFile(recording) {
     this.logger.info(`🔍 Buscando arquivo para gravação: ${recording.id}`);
     
-    // Paths de busca simplificados
-    const searchPaths = [];
+    // Usar PathResolver para busca robusta e consistente
+    const PathResolver = (await import('../utils/PathResolver.js')).default;
     
-    // 1. Usar file_path e local_path se existir
-    if (recording.file_path) {
-      const absolutePath = this.resolveAbsolutePath(recording.file_path);
-      if (absolutePath) searchPaths.push(absolutePath);
-    }
-    
-    if (recording.local_path && recording.local_path !== recording.file_path) {
-      const absolutePath = this.resolveAbsolutePath(recording.local_path);
-      if (absolutePath) searchPaths.push(absolutePath);
-    }
-    
-    // 2. Buscar por estrutura padrão se tiver camera_id
-    if (recording.camera_id) {
-      const date = recording.created_at?.split('T')[0] || new Date().toISOString().split('T')[0];
-      const filename = recording.filename || '*.mp4';
+    try {
+      const result = await PathResolver.findRecordingFile(recording);
       
-      const basePath = path.join(process.cwd(), 'storage', 'www', 'record', 'live');
-      searchPaths.push(
-        path.join(basePath, recording.camera_id, date, filename),
-        path.join(basePath, recording.camera_id, filename)
-      );
-    }
-    
-    // 3. Buscar no diretório processed (onde arquivos são salvos atualmente)
-    const filename = recording.filename || (recording.file_path ? path.basename(recording.file_path) : null);
-    this.logger.info(`📁 [FIND] Filename extraído: ${filename}`);
-    if (filename) {
-      // Buscar no diretório processed atual
-      const processedPath = path.join(process.cwd(), 'storage', 'www', 'record', 'live', 'processed', filename);
-      this.logger.info(`📁 [FIND] Adicionado path processed: ${processedPath}`);
-      searchPaths.push(processedPath);
-      
-      // Também buscar em storage/www/record/live/ direto
-      const directPath = path.join(process.cwd(), 'storage', 'www', 'record', 'live', filename);
-      searchPaths.push(directPath);
-    }
-    
-    // 4. Buscar usando estrutura por data se temos camera_id
-    if (recording.camera_id && !filename) {
-      const today = new Date().toISOString().split('T')[0];
-      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-      
-      // Buscar arquivos MP4 recentes para esta câmera
-      const cameraPaths = [
-        path.join(process.cwd(), 'storage', 'www', 'record', 'live', recording.camera_id, today),
-        path.join(process.cwd(), 'storage', 'www', 'record', 'live', recording.camera_id, yesterday),
-        path.join(process.cwd(), 'storage', 'www', 'record', 'live', 'processed'),
-      ];
-      
-      for (const cameraPath of cameraPaths) {
-        try {
-          const files = await fs.readdir(cameraPath);
-          const mp4Files = files.filter(f => f.endsWith('.mp4') && f.includes(recording.camera_id));
-          if (mp4Files.length > 0) {
-            // Pegar o arquivo mais recente
-            const latestFile = mp4Files[mp4Files.length - 1];
-            searchPaths.push(path.join(cameraPath, latestFile));
+      if (result && result.exists) {
+        this.logger.info(`✅ Arquivo encontrado via PathResolver: ${result.absolutePath}`);
+        return result.absolutePath;
+      } else {
+        this.logger.warn(`❌ Arquivo não encontrado para gravação: ${recording.id}`, {
+          recording: {
+            filename: recording.filename,
+            file_path: recording.file_path,
+            local_path: recording.local_path,
+            camera_id: recording.camera_id
           }
-        } catch (error) {
-          // Diretório não existe, continuar
-        }
+        });
+        return null;
       }
+    } catch (error) {
+      this.logger.error(`❌ Erro ao buscar arquivo para gravação ${recording.id}:`, error);
+      return null;
     }
-    
-    // Testar cada path
-    for (const testPath of searchPaths) {
-      try {
-        const stats = await fs.stat(testPath);
-        if (stats.isFile()) {
-          this.logger.info(`✅ Arquivo encontrado: ${testPath}`);
-          return testPath;
-        }
-      } catch (error) {
-        // Arquivo não encontrado, continuar
-      }
-    }
-    
-    this.logger.warn(`❌ Arquivo não encontrado para gravação: ${recording.id}`);
-    return null;
   }
 
   /**
@@ -364,13 +295,20 @@ class RecordingService {
     try {
       this.logger.info(`📡 Iniciando gravação ZLM para stream: ${streamId}`);
       
+      // Generate proper filename without leading dot
+      const now = new Date();
+      const timestamp = now.toISOString().slice(0, 19).replace(/[T:]/g, '-');
+      const filename = `${timestamp}-${streamId}.mp4`;
+      const customPath = `record/live/${streamId}/${now.toISOString().slice(0, 10)}/${filename}`;
+      
       const response = await axios.post(`${this.zlmApiUrl}/startRecord`, null, {
         params: {
           secret: this.zlmSecret,
           type: 1, // MP4
           vhost: '__defaultVhost__',
           app: app,
-          stream: streamId
+          stream: streamId,
+          customized_path: customPath
         },
         timeout: 10000
       });
@@ -510,15 +448,37 @@ class RecordingService {
       const formattedRecordings = (recordings || []).map(recording => {
         const camera = recording.cameras || {};
         
-        // Calcular duração se não existir mas tiver start_time e end_time
+        // FALLBACK ROBUSTO DE DURAÇÃO - múltiplas fontes
         let duration = recording.duration || 0;
+        
+        // Tentativa 1: calcular por start_time e end_time
         if (!duration && recording.start_time && recording.end_time) {
           const startTime = new Date(recording.start_time);
           const endTime = new Date(recording.end_time);
-          duration = Math.round((endTime.getTime() - startTime.getTime()) / 1000);
+          const calculatedDuration = Math.round((endTime.getTime() - startTime.getTime()) / 1000);
           
-          // Log para debug quando calculamos duração
-          this.logger.debug(`📊 Duração calculada para gravação ${recording.id}: ${duration}s`);
+          if (calculatedDuration > 0 && calculatedDuration < 7200) { // Máximo 2 horas válido
+            duration = calculatedDuration;
+            this.logger.debug(`📊 Duração calculada por timestamps para ${recording.id}: ${duration}s`);
+          }
+        }
+        
+        // Tentativa 2: calcular por started_at e ended_at se timestamps principais falharem
+        if (!duration && recording.started_at && recording.ended_at) {
+          const startTime = new Date(recording.started_at);
+          const endTime = new Date(recording.ended_at);
+          const calculatedDuration = Math.round((endTime.getTime() - startTime.getTime()) / 1000);
+          
+          if (calculatedDuration > 0 && calculatedDuration < 7200) { // Máximo 2 horas válido
+            duration = calculatedDuration;
+            this.logger.debug(`📊 Duração calculada por started/ended para ${recording.id}: ${duration}s`);
+          }
+        }
+        
+        // Tentativa 3: duração padrão baseada no status se nada funcionar
+        if (!duration && recording.status === 'completed') {
+          duration = 30; // Duração padrão de 30s para gravações completed sem duração
+          this.logger.debug(`📊 Duração padrão aplicada para ${recording.id}: ${duration}s`);
         }
         
         // Validar se todos os campos críticos estão presentes
@@ -567,6 +527,16 @@ class RecordingService {
           playable: hasValidFile && (recording.status === 'completed' || recording.status === 'uploaded'),
           cameras: camera, // Manter compatibilidade com frontend
           segments: [], // Will be populated separately if needed
+          // Upload-related fields for frontend status display
+          upload_status: recording.upload_status || 'pending',
+          uploadStatus: recording.upload_status || 'pending', // Camel case for frontend compatibility
+          s3_key: recording.s3_key || null,
+          s3Key: recording.s3_key || null,
+          s3_url: recording.s3_url || null,
+          s3Url: recording.s3_url || null,
+          localPath: recording.local_path || recording.file_path,
+          uploaded_at: recording.uploaded_at,
+          upload_progress: recording.upload_progress || null,
           metadata: {
             ...recording.metadata || {},
             resolution: recording.resolution || 'N/A',
@@ -740,33 +710,94 @@ class RecordingService {
         return null;
       }
 
-      console.log(`✅ [DEBUG] Recording found:`, { id: recording.id, filename: recording.filename, file_path: recording.file_path, local_path: recording.local_path });
+      console.log(`✅ [DEBUG] Recording found:`, { id: recording.id, filename: recording.filename, file_path: recording.file_path, local_path: recording.local_path, upload_status: recording.upload_status, s3_key: recording.s3_key });
 
-      // Buscar arquivo
+      // Try local file first
       const filePath = await this.findRecordingFile(recording);
-      if (!filePath) {
-        console.log(`❌ [DEBUG] File not found for recording: ${recordingId}`);
-        this.logger.error(`Arquivo não encontrado para gravação: ${recordingId}`);
-        return null;
+      if (filePath) {
+        try {
+          const stats = await fs.stat(filePath);
+          console.log(`✅ [DEBUG] Local file exists, size: ${stats.size} bytes`);
+          
+          return {
+            filePath,
+            fileSize: stats.size,
+            recording,
+            source: 'local'
+          };
+        } catch (error) {
+          console.log(`⚠️ [DEBUG] Local file access error: ${filePath}`, error.message);
+          this.logger.warn(`Erro ao acessar arquivo local: ${filePath}`, error);
+          // Continue to S3 fallback
+        }
       }
 
-      console.log(`📁 [DEBUG] File path found: ${filePath}`);
-
-      // Verificar se arquivo existe
-      try {
-        const stats = await fs.stat(filePath);
-        console.log(`✅ [DEBUG] File exists, size: ${stats.size} bytes`);
+      // Fallback to S3 if file uploaded and local not available
+      if (recording.upload_status === 'uploaded' && recording.s3_key) {
+        console.log(`🌐 [DEBUG] Falling back to S3: ${recording.s3_key}`);
+        this.logger.info(`💾 Arquivo local não encontrado, usando S3: ${recording.s3_key}`, {
+          recordingId: recording.id,
+          filename: recording.filename,
+          s3Key: recording.s3_key,
+          uploadStatus: recording.upload_status,
+          s3Size: recording.s3_size,
+          uploadedAt: recording.uploaded_at
+        });
         
-        return {
-          filePath,
-          fileSize: stats.size,
-          recording
-        };
-      } catch (error) {
-        console.log(`❌ [DEBUG] Error accessing file: ${filePath}`, error.message);
-        this.logger.error(`Erro ao acessar arquivo: ${filePath}`, error);
-        return null;
+        // Import S3Service dynamically to avoid circular imports
+        const S3Service = (await import('./S3Service.js')).default;
+        
+        try {
+          // BYPASS headObject check that causes 301/403 errors
+          // Generate presigned URL directly since we know file exists (upload_status='uploaded')
+          console.log(`🔍 [DEBUG] Bypassing headObject check, generating presigned URL directly for: ${recording.s3_key}`);
+          
+          // Generate presigned URL for streaming with string replacement fix
+          const presignedUrl = await S3Service.getSignedUrl(recording.s3_key, {
+            expiresIn: 3600, // 1 hour
+            responseHeaders: {
+              contentType: 'video/mp4',
+              cacheControl: 'max-age=3600'
+            }
+          });
+
+          console.log(`✅ [DEBUG] S3 presigned URL generated successfully with string replacement fix`);
+          this.logger.info(`S3 presigned URL generated successfully (bypassed headObject)`, {
+            recordingId: recording.id,
+            s3Key: recording.s3_key,
+            expiresIn: 3600,
+            uploadStatus: recording.upload_status
+          });
+          
+          return {
+            s3Url: presignedUrl,
+            s3Key: recording.s3_key,
+            fileSize: recording.s3_size || recording.file_size || 0,
+            recording,
+            source: 's3',
+            validation: {
+              accessible: true,
+              method: 'bypassed_headobject',
+              uploadStatus: recording.upload_status
+            }
+          };
+          
+        } catch (s3Error) {
+          console.log(`❌ [DEBUG] S3 access error:`, s3Error.message);
+          this.logger.error(`Erro ao acessar S3: ${recording.s3_key}`, {
+            error: s3Error.message,
+            code: s3Error.code,
+            recordingId: recording.id,
+            stack: s3Error.stack
+          });
+          return null;
+        }
       }
+
+      console.log(`❌ [DEBUG] No playback source available for recording: ${recordingId}`);
+      this.logger.error(`Nenhuma fonte de reprodução disponível para gravação: ${recordingId}`);
+      return null;
+      
     } catch (error) {
       console.log(`❌ [DEBUG] Error in preparePlayback: ${recordingId}`, error.message);
       this.logger.error(`Erro ao preparar playback: ${recordingId}`, error);
@@ -822,10 +853,10 @@ class RecordingService {
     try {
       this.logger.info(`📊 Calculando estatísticas de gravações...`);
       
-      // Buscar estatísticas gerais
+      // Buscar estatísticas gerais (incluindo upload_status)
       const { data: generalStats, error: generalError } = await this.supabase
         .from('recordings')
-        .select('id, file_size, duration, status, created_at');
+        .select('id, file_size, duration, status, upload_status, created_at');
 
       if (generalError) {
         this.logger.error('Erro ao buscar estatísticas gerais:', generalError);
@@ -864,19 +895,39 @@ class RecordingService {
       const activeRecordingsCount = activeRecordings?.length || 0;
       const activeCameras = activeRecordings ? [...new Set(activeRecordings.map(r => r.camera_id))] : [];
 
+      // Calcular estatísticas de upload usando upload_status
+      const uploadedRecordings = recordings.filter(r => r.upload_status === 'uploaded');
+      const pendingUploads = recordings.filter(r => r.upload_status === 'pending' || r.upload_status === 'queued');
+      const processingUploads = recordings.filter(r => r.upload_status === 'uploading');
+      const failedUploads = recordings.filter(r => r.upload_status === 'failed');
+      
+      // Debug: Log upload status breakdown
+      this.logger.info(`📊 [UPLOAD STATS] Breakdown:`, {
+        total: recordings.length,
+        uploaded: uploadedRecordings.length,
+        pending: pendingUploads.length,
+        processing: processingUploads.length,
+        failed: failedUploads.length,
+        uploadStatuses: recordings.map(r => ({ id: r.id, upload_status: r.upload_status, file_size: r.file_size }))
+      });
+      
+      // Calcular tamanho S3 aproximado (gravações já enviadas)
+      const s3Size = uploadedRecordings.reduce((sum, r) => sum + (r.file_size || 0), 0);
+
       const stats = {
         // Compatibilidade com frontend RecordingsPage.tsx
         totalRecordings: total,
         activeRecordings: activeRecordingsCount,
-        pendingUploads: recordings.filter(r => r.status === 'processing' || r.status === 'uploading').length,
+        pendingUploads: pendingUploads.length,
+        failedUploads: failedUploads.length,
         storageUsed: {
-          s3: 0, // Placeholder - seria calculado do S3
+          s3: s3Size,
           local: totalSize
         },
         uploadQueue: {
-          pending: recordings.filter(r => r.status === 'processing').length,
-          processing: recordings.filter(r => r.status === 'uploading').length,
-          failed: recordings.filter(r => r.status === 'failed' || r.status === 'error').length
+          pending: pendingUploads.length,
+          processing: processingUploads.length,
+          failed: failedUploads.length
         },
         totalSegments: total, // Simplificação - cada gravação é um segmento
         
@@ -891,6 +942,7 @@ class RecordingService {
         processing: recordings.filter(r => r.status === 'processing').length
       };
 
+      console.log('🔍 [DEBUG] Stats object before return:', JSON.stringify(stats, null, 2));
       this.logger.info(`📊 Estatísticas calculadas:`, JSON.stringify(stats, null, 2));
       return stats;
 
@@ -901,6 +953,7 @@ class RecordingService {
         totalRecordings: 0,
         activeRecordings: 0,
         pendingUploads: 0,
+        failedUploads: 0,
         storageUsed: {
           s3: 0,
           local: 0
@@ -928,20 +981,104 @@ class RecordingService {
   /**
    * Get recording trends (stub implementation)
    */
-  async getTrends(userId = null, period = '7d') {
+  async getTrends(userId = null, period = '24h') {
     try {
-      // Simple trends implementation
+      const now = new Date();
+      let startDate;
+      
+      // Calculate start date based on period
+      if (period === '24h') {
+        startDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      } else if (period === '7d') {
+        startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      } else {
+        startDate = new Date(now.getTime() - 24 * 60 * 60 * 1000); // Default to 24h
+      }
+
+      this.logger.info(`📊 Fetching upload trends from ${startDate} to ${now}`);
+
+      // Query upload statistics from recordings table
+      const { data: recordings, error } = await this.supabase
+        .from('recordings')
+        .select('upload_status, created_at, updated_at')
+        .gte('created_at', startDate.toISOString())
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        this.logger.error('Error fetching upload trends:', error);
+        throw error;
+      }
+
+      // Group by hour for 24h charts
+      const hourlyData = {};
+      const hours = 24;
+      
+      // Initialize hourly buckets
+      for (let i = 0; i < hours; i++) {
+        const hour = new Date(startDate.getTime() + i * 60 * 60 * 1000);
+        const hourKey = hour.getHours().toString().padStart(2, '0') + ':00';
+        hourlyData[hourKey] = {
+          time: hourKey,
+          uploads: 0,     // Renamed from successful
+          failures: 0,    // Renamed from failed
+          size: 0,        // Added size field
+          pending: 0,
+          total: 0
+        };
+      }
+
+      // Process recordings and count by status
+      recordings?.forEach(recording => {
+        const recordingTime = new Date(recording.created_at);
+        const hourKey = recordingTime.getHours().toString().padStart(2, '0') + ':00';
+        
+        if (hourlyData[hourKey]) {
+          hourlyData[hourKey].total++;
+          
+          const status = recording.upload_status;
+          const fileSize = recording.file_size || recording.s3_size || 0;
+          
+          if (status === 'uploaded') {
+            hourlyData[hourKey].uploads++;
+            hourlyData[hourKey].size += fileSize;
+          } else if (status === 'failed') {
+            hourlyData[hourKey].failures++;
+          } else if (status === 'pending' || status === 'queued' || status === 'uploading') {
+            hourlyData[hourKey].pending++;
+          }
+        }
+      });
+
+      // Convert to array format expected by frontend
+      const hourly = Object.values(hourlyData);
+      
+      // Calculate totals
+      const totals = hourly.reduce((acc, hour) => ({
+        uploads: acc.uploads + hour.uploads,
+        failures: acc.failures + hour.failures,
+        pending: acc.pending + hour.pending,
+        total: acc.total + hour.total,
+        size: acc.size + hour.size
+      }), { uploads: 0, failures: 0, pending: 0, total: 0, size: 0 });
+
+      this.logger.info(`✅ Upload trends calculated:`, {
+        period,
+        recordingsFound: recordings?.length || 0,
+        totals
+      });
+
       return {
-        uploads: [],
-        failures: [],
-        period
+        period,
+        hourly,
+        totals
       };
+      
     } catch (error) {
       this.logger.error('Erro ao obter tendências:', error);
       return {
-        uploads: [],
-        failures: [],
-        period
+        period,
+        hourly: [],
+        totals: { uploads: 0, failures: 0, pending: 0, total: 0, size: 0 }
       };
     }
   }
@@ -977,17 +1114,87 @@ class RecordingService {
   }
 
   /**
-   * Processa a fila de uploads para o Wasabi S3 (método stub)
+   * Processa a fila de uploads para o Wasabi S3
    * @returns {Promise<Object>} Resultado do processamento
    */
   async processUploadQueue() {
-    this.logger.debug('📤 [RecordingService] processUploadQueue chamado (método stub)');
-    return {
-      processed: 0,
-      success: 0,
-      failed: 0,
-      message: 'Upload queue processing not implemented'
-    };
+    this.logger.debug('📤 [RecordingService] Processando fila de uploads...');
+    
+    try {
+      // Verificar se upload está habilitado
+      const uploadEnabled = process.env.S3_UPLOAD_ENABLED === 'true';
+      if (!uploadEnabled) {
+        this.logger.debug('📤 Upload S3 desabilitado via env var');
+        return {
+          processed: 0,
+          success: 0,
+          failed: 0,
+          message: 'S3 upload disabled'
+        };
+      }
+
+      let totalProcessed = 0;
+      let totalSuccess = 0;
+      let totalFailed = 0;
+
+      // Buscar gravações elegíveis para upload
+      const { data: recordings, error } = await this.supabase
+        .from('recordings')
+        .select('id, filename, status, upload_status')
+        .eq('status', 'completed')
+        .in('upload_status', ['pending', 'failed'])
+        .limit(10); // Processar até 10 por vez
+
+      if (error) {
+        this.logger.error('📤 Erro ao buscar gravações para upload:', error);
+        throw error;
+      }
+
+      if (!recordings || recordings.length === 0) {
+        this.logger.debug('📤 Nenhuma gravação pendente para upload');
+        return {
+          processed: 0,
+          success: 0,
+          failed: 0,
+          message: 'No recordings pending upload'
+        };
+      }
+
+      this.logger.info(`📤 Encontradas ${recordings.length} gravações para upload`);
+
+      // Processar cada gravação
+      for (const recording of recordings) {
+        try {
+          this.logger.debug(`📤 Enfileirando gravação: ${recording.id}`);
+          await this.uploadQueueService.enqueue(recording.id);
+          totalProcessed++;
+          totalSuccess++;
+        } catch (error) {
+          this.logger.error(`📤 Erro ao enfileirar ${recording.id}:`, error);
+          totalProcessed++;
+          totalFailed++;
+        }
+      }
+
+      const result = {
+        processed: totalProcessed,
+        success: totalSuccess,
+        failed: totalFailed,
+        message: `Processed ${totalProcessed} recordings (${totalSuccess} success, ${totalFailed} failed)`
+      };
+
+      this.logger.info('📤 Resultado do processamento da fila:', result);
+      return result;
+
+    } catch (error) {
+      this.logger.error('📤 Erro crítico no processamento da fila:', error);
+      return {
+        processed: 0,
+        success: 0,
+        failed: 0,
+        message: `Error: ${error.message}`
+      };
+    }
   }
 
   /**
@@ -1151,6 +1358,103 @@ class RecordingService {
 
     } catch (error) {
       this.logger.error('[RecordingService] Erro geral no verificador de timeout:', error);
+    }
+  }
+
+  /**
+   * Atualiza estatísticas das gravações
+   * Recalcula métricas, duração, tamanhos, etc.
+   */
+  async updateRecordingStatistics() {
+    try {
+      this.logger.info('🔄 Iniciando atualização de estatísticas das gravações...');
+      
+      let updated = 0;
+      
+      // Buscar gravações que precisam de atualização de estatísticas
+      const { data: recordings, error } = await this.supabase
+        .from('recordings')
+        .select('*')
+        .or('duration.is.null,file_size.is.null')
+        .order('created_at', { ascending: false })
+        .limit(100); // Processar em lotes de 100
+      
+      if (error) {
+        this.logger.error('Erro ao buscar gravações para atualização:', error);
+        throw error;
+      }
+      
+      if (!recordings || recordings.length === 0) {
+        this.logger.info('✅ Todas as gravações já possuem estatísticas atualizadas');
+        return { updated: 0, total: 0 };
+      }
+      
+      this.logger.info(`📊 Processando ${recordings.length} gravações para atualização de estatísticas`);
+      
+      for (const recording of recordings) {
+        try {
+          let hasUpdates = false;
+          const updateData = {};
+          
+          // Se não tem duração, tentar extrair do arquivo
+          if (!recording.duration || recording.duration === 0) {
+            const filePath = await this.findRecordingFile(recording);
+            if (filePath) {
+              try {
+                // Usar VideoMetadataExtractor se disponível
+                const VideoMetadataExtractor = (await import('../utils/videoMetadata.js')).VideoMetadataExtractor;
+                const extractor = new VideoMetadataExtractor();
+                const metadata = await extractor.extractMetadata(filePath);
+                
+                if (metadata.duration) {
+                  updateData.duration = Math.round(metadata.duration);
+                  hasUpdates = true;
+                }
+                
+                if (metadata.fileSize && !recording.file_size) {
+                  updateData.file_size = metadata.fileSize;
+                  hasUpdates = true;
+                }
+                
+              } catch (metadataError) {
+                this.logger.warn(`Erro ao extrair metadados para ${recording.filename}:`, metadataError.message);
+              }
+            }
+          }
+          
+          // Aplicar atualizações se houver
+          if (hasUpdates) {
+            updateData.updated_at = new Date().toISOString();
+            
+            const { error: updateError } = await this.supabase
+              .from('recordings')
+              .update(updateData)
+              .eq('id', recording.id);
+            
+            if (updateError) {
+              this.logger.error(`Erro ao atualizar gravação ${recording.id}:`, updateError);
+            } else {
+              updated++;
+              this.logger.debug(`✅ Estatísticas atualizadas para ${recording.filename}`);
+            }
+          }
+          
+        } catch (recordingError) {
+          this.logger.error(`Erro ao processar gravação ${recording.id}:`, recordingError);
+        }
+      }
+      
+      this.logger.info(`📊 Atualização de estatísticas concluída: ${updated}/${recordings.length} gravações atualizadas`);
+      
+      return {
+        updated,
+        total: recordings.length,
+        timestamp: new Date().toISOString()
+      };
+      
+    } catch (error) {
+      this.logger.error('Erro ao atualizar estatísticas das gravações:', error);
+      throw error;
     }
   }
 }

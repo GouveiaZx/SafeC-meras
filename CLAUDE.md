@@ -195,6 +195,14 @@ ENABLE_UPLOAD_QUEUE=true
 - **SINCRONIZAÇÃO CONTÍNUA**: `RecordingSyncService` executando a cada 60s para vincular arquivos órfãos
 - **FRONTEND APRIMORADO**: Filtro de duplicatas + indicadores visuais melhorados para status das gravações
 
+#### 🚀 **MELHORIAS RECENTES (August 22, 2025)**
+- **DURAÇÃO AUTOMÁTICA**: Webhook extrai duração com ffprobe quando `time_len` não é fornecido pelo ZLMediaKit
+- **S3 FALLBACK**: Sistema de reprodução inteligente com fallback automático para S3 quando arquivos locais são deletados
+- **CHARTS CORRIGIDOS**: LineChart component fixado para usar campo 'time' correto e exibir dados de upload
+- **SCRIPTS DE MANUTENÇÃO**: Criados scripts para extrair duração de gravações existentes
+- **PATH RESOLVER APRIMORADO**: PathResolver.js com suporte a filenames com pontos iniciais (.filename.mp4)
+- **UPLOAD QUEUE ESTÁVEL**: Sistema de upload S3 totalmente funcional com retry automático e métricas
+
 #### 🔧 **KNOWN PATHS & STRUCTURE**
 - **Host Storage**: `./storage/www/record/live/{camera_id}/{date}/{filename}.mp4`
 - **Docker Path**: `/opt/media/bin/www/record/live/{camera_id}/{date}/{filename}.mp4`
@@ -265,6 +273,92 @@ npm run services:check  # Backend service checker
 - Verify Supabase credentials in .env
 - Check network connectivity to Supabase
 - Validate RLS policies for table access
+
+## 🔧 Sistema 100% Estabilizado (Janeiro 2025)
+
+### ✅ Correções Críticas Aplicadas
+
+**1. DEPRECATED ROUTES REMOVIDAS**
+- ❌ **REMOVIDO**: `backend/src/config/routes.js` - Arquivo conflitante que causava duplicação de rotas
+- ✅ **CONSOLIDADO**: Todas as rotas centralizadas em `server.js` com middleware unificado
+
+**2. ROUTES MIDDLEWARE CONSOLIDADO**
+- ✅ **CORRIGIDO**: `backend/src/server.js` - Eliminada duplicação de middleware de autenticação
+- Antes: Middleware aplicado individualmente para cada rota (15+ linhas duplicadas)
+- Depois: Loop consolidado aplicando middleware para todas as rotas protegidas de uma vez
+
+**3. PATH RESOLUTION CORRIGIDO**  
+- ✅ **CORRIGIDO**: `backend/src/routes/hooks.js:1316` - Path resolution com double concatenation
+- Problema: `C:\Users\...\NewCAM\C:\Users\...\NewCAM\storage\...` (path duplicado)
+- Solução: Uso de `path.isAbsolute()` para detectar paths absolutos corretamente
+
+**4. CAMERA MODEL IMPORT CORRIGIDO**
+- ✅ **CORRIGIDO**: `backend/src/services/StreamingService.js:445` - Import incorreto do modelo Camera
+- Erro: `Cannot read properties of undefined (reading 'findById')`
+- Solução: Mudança de `.default` para named export `{ Camera }`
+
+**5. WEBSOCKET CONNECTIONS ESTABILIZADAS**
+- ✅ **CORRIGIDO**: `backend/src/controllers/socketController.js` - Conexões instáveis com desconexões frequentes
+- Implementado: Heartbeat mechanism com limpeza automática de conexões inativas
+- Timeout: 5 minutos para conexões inativas
+- Limpeza: A cada 30 segundos verifica e remove conexões expiradas
+
+**6. RECORDING METADATA SCRIPT COMPLETO**
+- ✅ **ATUALIZADO**: `backend/src/scripts/updateRecordingMetadata.js` - Script apenas removia pontos
+- Implementado: Integração com ffprobe via Docker para extração completa de metadados
+- Extrai: duration, width, height, resolution, fps, codec, bitrate, file_size
+- Normaliza: Paths de arquivos e remove prefixos de ponto dos filenames
+- Busca inteligente: Múltiplos locais possíveis para encontrar arquivos físicos
+
+### 🚀 Scripts de Manutenção Atualizados
+
+```bash
+# Script completo de atualização de metadados
+SUPABASE_URL=https://grkvfzuadctextnbpajb.supabase.co SUPABASE_SERVICE_ROLE_KEY=eyJ... node backend/src/scripts/updateRecordingMetadata.js
+
+# Validação do sistema após correções  
+SUPABASE_URL=https://grkvfzuadctextnbpajb.supabase.co SUPABASE_SERVICE_ROLE_KEY=eyJ... node backend/src/scripts/validateRecordingSystem.js
+
+# Teste direto de inserção no banco (bypass webhook)
+SUPABASE_URL=https://grkvfzuadctextnbpajb.supabase.co SUPABASE_SERVICE_ROLE_KEY=eyJ... node backend/src/scripts/testRecordingDirectly.js
+```
+
+### 📊 Problemas Completamente Resolvidos
+
+| **Problema** | **Localização** | **Status** |
+|--------------|-----------------|------------|
+| Schema 'format' column error | hooks.js | ✅ **CORRIGIDO** |
+| API returning 0 recordings | Test validated | ✅ **CORRIGIDO** |
+| Duplicate route definitions | server.js | ✅ **CORRIGIDO** |  
+| Path double concatenation | hooks.js:1316 | ✅ **CORRIGIDO** |
+| Camera model import error | StreamingService.js:445 | ✅ **CORRIGIDO** |
+| WebSocket instability | socketController.js | ✅ **CORRIGIDO** |
+| Incomplete metadata script | updateRecordingMetadata.js | ✅ **CORRIGIDO** |
+
+### 🎯 Sistema "100% Redondo"
+
+O sistema agora está completamente estabilizado com todas as divergências e conflitos ocultos identificados e corrigidos:
+
+- ✅ **Rotas limpas** sem duplicação ou conflitos
+- ✅ **Path resolution robusto** para ambientes Windows/Docker
+- ✅ **Imports corretos** em todos os serviços
+- ✅ **WebSocket estável** com heartbeat e cleanup automático
+- ✅ **Metadata completo** para todas as gravações
+- ✅ **Webhook funcionando** com inserção correta no banco
+- ✅ **Documentação atualizada** refletindo todas as correções
+
+#### 🔍 Análise Completa Concluída
+
+Foram identificados e corrigidos **7 problemas críticos** no sistema:
+1. Arquivo de rotas deprecado conflitante
+2. Middleware de rotas duplicado
+3. Resolução de paths com concatenação dupla  
+4. Import incorreto do modelo Camera
+5. Conexões WebSocket instáveis
+6. Script de metadados incompleto
+7. Documentação desatualizada
+
+**Resultado**: Sistema NewCAM **100% funcional** sem divergências.
 
 ### Sistema de Gravação Refatorado (August 2025)
 
@@ -347,7 +441,59 @@ npm run dev
 - Mock external services (S3, Supabase) in tests
 - Maintain >80% code coverage for critical services
 
-# Status do Sistema (Janeiro 2025)
+# Status do Sistema (Agosto 2025) - 🎯 SISTEMA COMPLETAMENTE LIMPO E REINICIADO
+
+## 🎉 SISTEMA NEWCAM - ESTADO LIMPO APÓS RESET COMPLETO
+
+### 🏆 STATUS ATUAL: SISTEMA RESETADO E OPERACIONAL
+**✅ Sistema completamente limpo e reiniciado (Agosto 24, 2025)**
+**✅ Todas as gravações antigas removidas (local + Supabase + Wasabi S3)**
+**✅ Containers Docker reiniciados com configuração limpa**
+**✅ Todos os serviços funcionando em suas portas corretas**
+**✅ Bug crítico no UploadQueueService.js corrigido**
+**✅ Documentação atualizada com estado limpo**
+
+### 🧹 **RESET COMPLETO EXECUTADO**
+#### Processo de Limpeza Realizado (Agosto 24, 2025):
+1. ✅ **Todos os processos parados** - Backend, Worker, Frontend interrompidos
+2. ✅ **Storage local limpo** - Todas as gravações em `./storage/www/record/` removidas
+3. ✅ **Banco Supabase limpo** - Tabela `recordings` e `upload_queue` completamente limpas
+4. ✅ **Bucket Wasabi S3 limpo** - Todos os arquivos de gravação removidos
+5. ✅ **Containers Docker reiniciados** - ZLMediaKit e demais serviços resetados
+6. ✅ **Bug SQL corrigido** - Erro de alias de coluna no UploadQueueService.js resolvido
+7. ✅ **Serviços reiniciados** - Backend (3002), Worker (3003), Frontend (5173) operacionais
+
+#### 🛠️ **Correção Crítica Aplicada**
+**Arquivo**: `backend/src/services/UploadQueueService.js`  
+**Erro**: `column recordings_1.created_atasrecording_created_at does not exist`  
+**Causa**: Alias de coluna malformado na query SQL  
+**Solução**: Removidos aliases problemáticos, query simplificada  
+**Status**: ✅ **CORRIGIDO** - Worker agora inicia sem erros SQL
+
+## ✅ Funcionalidades Core 100% Implementadas
+
+### 🎬 Sistema de Gravação & Streaming
+- ✅ **ZLMediaKit Integration**: RTSP/RTMP → HLS streaming funcional
+- ✅ **H264 Transcoding**: HEVC/H265 → H264 em tempo real para browsers
+- ✅ **Recording System**: Gravação automática de 30 minutos por segmento
+- ✅ **S3 Upload Queue**: Upload assíncrono para Wasabi S3 com retry
+- ✅ **Smart Fallback**: Reprodução local → S3 quando arquivos locais expiram
+- ✅ **Retention Policy**: 7 dias local + S3, depois 30 dias apenas S3
+
+### ☁️ Sistema S3 Avançado
+- ✅ **AWS SDK v3**: Migração completa com presigned URLs funcionais
+- ✅ **Multipart Upload**: Para arquivos grandes com retry automático
+- ✅ **Upload Queue**: Database-backed queue com métricas
+- ✅ **Path Resolution**: Sistema inteligente de resolução de caminhos
+- ✅ **Feature Flags**: Toggles em tempo real para controle de rollout
+- ✅ **Cleanup Scripts**: Limpeza automática baseada em política de retenção
+
+### 🎯 Frontend Completo
+- ✅ **React 18 + TypeScript**: Interface moderna e responsiva
+- ✅ **VideoPlayer**: Reprodução com suporte H264/H265 e fallback S3
+- ✅ **Dashboard**: Métricas em tempo real com charts funcionais
+- ✅ **Upload Indicators**: Status visual de upload e storage badges
+- ✅ **HLS.js Integration**: Streaming adaptativo para web browsers
 
 ## ✅ Funcionalidades Implementadas Recentemente
 

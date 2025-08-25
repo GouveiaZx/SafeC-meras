@@ -10,10 +10,13 @@ const logger = createModuleLogger('FeatureFlagService');
 class FeatureFlagService {
   constructor() {
     this.flags = new Map();
+    // Load flags synchronously on initialization
     this.loadFromEnvironment();
     
     logger.info('FeatureFlagService initialized', {
-      flags_loaded: this.flags.size
+      flags_loaded: this.flags.size,
+      s3_upload_enabled: this.flags.get('s3_upload_enabled'),
+      enable_upload_queue: this.flags.get('enable_upload_queue')
     });
   }
 

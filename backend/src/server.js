@@ -8,7 +8,6 @@ import { Server } from 'socket.io';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-
 // Configurar __dirname para ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -116,9 +115,6 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(requestLogger);
 
 // Middleware de autenticação para rotas protegidas
-app.use('/api/users', authenticateToken);
-app.use('/api/cameras', authenticateToken);
-// Nota: /api/streams usa seu próprio middleware de autenticação HLS
 // Aplicar autenticação apenas para rotas específicas de recordings (excluindo stream)
 app.use('/api/recordings', (req, res, next) => {
   console.log('🔍 [RECORDINGS MIDDLEWARE] Requisição recebida:', {
@@ -137,12 +133,12 @@ app.use('/api/recordings', (req, res, next) => {
   console.log('🔐 [AUTH APPLY] Aplicando autenticação global para rota:', req.path);
   return authenticateToken(req, res, next);
 });
-app.use('/api/dashboard', authenticateToken);
-app.use('/api/metrics', authenticateToken);
-app.use('/api/logs', authenticateToken);
-app.use('/api/discovery', authenticateToken);
-// app.use('/api/worker', authenticateToken); // REMOVIDO: Worker usa seu próprio sistema de autenticação
-app.use('/api/segmentation', authenticateToken);
+
+// Aplicar autenticação para todas as outras rotas protegidas
+const protectedRoutes = ['/api/users', '/api/cameras', '/api/dashboard', '/api/metrics', '/api/logs', '/api/discovery', '/api/segmentation'];
+protectedRoutes.forEach(route => {
+  app.use(route, authenticateToken);
+});
 
 // Rota de health check (sem autenticação)
 app.get('/health', (req, res) => {

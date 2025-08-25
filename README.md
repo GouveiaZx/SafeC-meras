@@ -129,16 +129,20 @@ cp backend/.env.example backend/.env
 npm run dev
 ```
 
-### ✅ Status Atual (Janeiro 2025)
-**FUNCIONANDO**: Todos os problemas críticos foram resolvidos:
-- ✅ Erro HTTP 500 corrigido
-- ✅ ZLMediaKit funcionando
-- ✅ Sistema de streaming operacional
-- ✅ Configurações padronizadas
-- ✅ Sistema de usuários funcional (login, gestão, permissões)
-- ✅ Página de Arquivo completamente funcional (filtros, player, listagem)
-- ✅ RecordingService refatorado e otimizado
-- ✅ Integração completa frontend-backend-worker testada
+### ✅ Status Atual (Janeiro 2025) - SISTEMA COMPLETO
+**FUNCIONANDO**: Sistema 100% operacional com todas as funcionalidades:
+- ✅ **Sistema de Gravação S3**: Upload automático para Wasabi S3 com retention policy
+- ✅ **Retenção Inteligente**: 7 dias local + S3, depois 30 dias apenas S3
+- ✅ **Upload Queue**: Fila assíncrona com retry automático e métricas
+- ✅ **S3 Fallback**: Reprodução inteligente local → S3 quando arquivos locais expiram  
+- ✅ **AWS SDK v3**: Migração completa com presigned URLs funcionais
+- ✅ **Sistema de Usuários**: Gestão completa com roles e permissões (admin, integrator, client, viewer)
+- ✅ **Interface de Arquivo**: Filtros avançados, batch operations, export jobs
+- ✅ **VideoPlayer**: Reprodução com suporte H264/H265 e transcoding automático
+- ✅ **ZLMediaKit**: Streaming RTSP/RTMP/HLS com gravação automática
+- ✅ **API Completa**: Endpoints REST + WebSocket para todas as operações
+- ✅ **Docker Integration**: Containerização completa com persistência de dados
+- ✅ **Documentação**: Sistema totalmente documentado e validado
 
 ### 🚀 Desenvolvimento Local
 
@@ -202,12 +206,23 @@ ZLM_SECRET=035c73f7-bb6b-4889-a715-d9eb2d1925cc
 SRS_API_URL=http://localhost:8080
 SRS_SECRET=your-srs-secret
 
-# Wasabi S3
+# Wasabi S3 (Sistema de Armazenamento Completo)
 WASABI_ACCESS_KEY=your-access-key
 WASABI_SECRET_KEY=your-secret-key
 WASABI_BUCKET=your-bucket
-WASABI_REGION=us-east-1
-WASABI_ENDPOINT=https://s3.wasabisys.com
+WASABI_REGION=us-east-2
+WASABI_ENDPOINT=https://s3.us-east-2.wasabisys.com
+
+# S3 Upload & Retention (Sistema Avançado)
+S3_UPLOAD_ENABLED=true
+S3_UPLOAD_CONCURRENCY=2
+S3_UPLOAD_MAX_RETRIES=5
+S3_PRESIGN_TTL=3600
+LOCAL_RETENTION_DAYS=7
+S3_RETENTION_DAYS=30
+PREFER_S3_STREAMING=true
+DELETE_LOCAL_AFTER_UPLOAD=false
+ENABLE_UPLOAD_QUEUE=true
 
 # Worker
 WORKER_TOKEN=your-worker-token

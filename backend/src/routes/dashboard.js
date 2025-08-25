@@ -1251,6 +1251,7 @@ async function getCpuHistoryData(period) {
       const memory = Math.max(0, Math.min(100, baseMemory + (Math.random() - 0.5) * 3));
       
       simulatedData.push({
+        time: timestamp.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
         timestamp: timestamp.toISOString(),
         cpu: Math.round(cpu * 10) / 10,
         memory: Math.round(memory * 10) / 10
@@ -1271,6 +1272,7 @@ async function getCpuHistoryData(period) {
       const memory = 18 + Math.sin(i * 0.2 + 1) * 4 + (Math.random() - 0.5) * 3;
       
       simulatedData.push({
+        time: timestamp.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
         timestamp: timestamp.toISOString(),
         cpu: Math.max(0, Math.min(100, Math.round(cpu * 10) / 10)),
         memory: Math.max(0, Math.min(100, Math.round(memory * 10) / 10))

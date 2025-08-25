@@ -442,7 +442,7 @@ class StreamingService {
       // Atualizar status da câmera para offline após parar o stream
       try {
         // Buscar a câmera pelo ID do stream (que é o mesmo ID da câmera)
-        const Camera = (await import('../models/Camera.js')).default;
+        const { Camera } = await import('../models/Camera.js');
         const camera = await Camera.findById(stream.camera_id);
         if (camera) {
           await camera.updateStatus('offline');
