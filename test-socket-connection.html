@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Socket Connection</title>
+</head>
+<body>
+    <h1>Testing Socket.IO Connection</h1>
+    <div id="status">Disconnected</div>
+    <div id="logs"></div>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script>
+        const token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIwODA4YzI3ZS1hYjhjLTQ1NGEtYjdhNC0wYWVkNjI5YzJhYWMiLCJlbWFpbCI6ImdvdXZlaWFyeEBnbWFpbC5jb20iLCJyb2xlIjoiYWRtaW4iLCJpYXQiOjE3MjQ3MDY5ODAsImV4cCI6MTcyNDc5MzM4MH0.o6Y70m3g6W8c6_fk_jgLzLBXyoFWoGZpNaJ7SXLB0Kk'; // Replace with actual token
+        
+        const socket = io('http://localhost:3002', {
+            auth: {
+                token: token,
+                type: 'user'
+            },
+            transports: ['websocket', 'polling'],
+            timeout: 10000,
+            forceNew: true
+        });
+
+        const statusEl = document.getElementById('status');
+        const logsEl = document.getElementById('logs');
+
+        function log(message) {
+            console.log(message);
+            const div = document.createElement('div');
+            div.textContent = new Date().toLocaleTimeString() + ': ' + message;
+            logsEl.appendChild(div);
+        }
+
+        socket.on('connect', () => {
+            statusEl.textContent = 'Connected';
+            statusEl.style.color = 'green';
+            log('✅ Socket connected: ' + socket.id);
+        });
+
+        socket.on('disconnect', (reason) => {
+            statusEl.textContent = 'Disconnected';
+            statusEl.style.color = 'red';
+            log('❌ Socket disconnected: ' + reason);
+        });
+
+        socket.on('connect_error', (error) => {
+            statusEl.textContent = 'Connection Error';
+            statusEl.style.color = 'red';
+            log('❌ Connection error: ' + error.message);
+        });
+
+        socket.on('connection_established', (data) => {
+            log('🔗 Connection established: ' + JSON.stringify(data));
+        });
+
+        socket.on('recording_status_changed', (data) => {
+            log('📊 Recording status changed: ' + JSON.stringify(data));
+        });
+
+        socket.on('error', (error) => {
+            log('❌ Socket error: ' + JSON.stringify(error));
+        });
+
+        log('🔌 Attempting to connect...');
+    </script>
+</body>
+</html>

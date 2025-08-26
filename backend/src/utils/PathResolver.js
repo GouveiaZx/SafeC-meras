@@ -12,10 +12,42 @@ const logger = createModuleLogger('PathResolver');
 class PathResolver {
   constructor() {
     // Define base recordings path (configurable via env)
+    // Always resolve to project root regardless of working directory
+    const projectRoot = this.findProjectRoot();
     this.recordingsBasePath = process.env.RECORDINGS_PATH || 
-      path.join(process.cwd(), '..', 'storage', 'www', 'record', 'live');
+      path.join(projectRoot, 'storage', 'www', 'record', 'live');
     
     logger.info(`PathResolver initialized with base path: ${this.recordingsBasePath}`);
+  }
+
+  /**
+   * Find project root directory by looking for package.json
+   * @private
+   * @returns {string} - Project root path
+   */
+  findProjectRoot() {
+    let currentDir = process.cwd();
+    
+    // Keep going up directories until we find package.json or reach root
+    while (currentDir !== path.dirname(currentDir)) {
+      try {
+        const packageJsonPath = path.join(currentDir, 'package.json');
+        if (require('fs').existsSync(packageJsonPath)) {
+          return currentDir;
+        }
+        currentDir = path.dirname(currentDir);
+      } catch (error) {
+        break;
+      }
+    }
+    
+    // Fallback: assume we're in backend directory and go up one level
+    if (process.cwd().endsWith('backend')) {
+      return path.dirname(process.cwd());
+    }
+    
+    // Final fallback: use current directory
+    return process.cwd();
   }
 
   /**
@@ -79,14 +111,16 @@ class PathResolver {
         return relativePath;
       }
       
+      const projectRoot = this.findProjectRoot();
+      
       // Handle relative paths starting with storage/
       if (relativePath.startsWith('storage/')) {
-        return path.join(process.cwd(), '..', relativePath);
+        return path.join(projectRoot, relativePath);
       }
       
       // Handle paths starting with www/
       if (relativePath.startsWith('www/')) {
-        return path.join(process.cwd(), '..', 'storage', relativePath);
+        return path.join(projectRoot, 'storage', relativePath);
       }
       
       // Default: assume it's relative to recordings base path
@@ -217,11 +251,13 @@ class PathResolver {
         new Date(recording.created_at) : new Date();
       const dateStr = date.toISOString().split('T')[0];
       
+      const projectRoot = this.findProjectRoot();
+      
       // Define base paths to search
       const basePaths = [
         this.recordingsBasePath, // storage/www/record/live
-        path.join(process.cwd(), '..', 'storage', 'live'), // NEW: storage/live for ZLMediaKit files
-        path.join(process.cwd(), '..', 'storage', 'www', 'record') // Also check www/record without /live
+        path.join(projectRoot, 'storage', 'live'), // NEW: storage/live for ZLMediaKit files
+        path.join(projectRoot, 'storage', 'www', 'record') // Also check www/record without /live
       ];
       
       // Search in all base paths
@@ -248,8 +284,9 @@ class PathResolver {
     
     // 4. Try just filename in base directory
     if (recording.filename) {
+      const projectRoot = this.findProjectRoot();
       paths.push(path.join(this.recordingsBasePath, recording.filename));
-      paths.push(path.join(process.cwd(), '..', 'storage', 'live', recording.filename));
+      paths.push(path.join(projectRoot, 'storage', 'live', recording.filename));
     }
     
     // Filter out null/undefined and deduplicate

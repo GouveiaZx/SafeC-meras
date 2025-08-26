@@ -257,6 +257,39 @@ router.get('/:id/upload-status',
 );
 
 /**
+ * @route GET /api/recordings/debug/status/:id
+ * @desc Debug endpoint to check recording status
+ * @access Private
+ */
+// Debug endpoint sem auth
+router.get('/debug/status/:id', (req, res, next) => {
+  req.skipAuth = true;
+  next();
+}, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const { data: recording, error } = await supabaseAdmin
+      .from('recordings')
+      .select('id, filename, status, upload_status, s3_key, updated_at')
+      .eq('id', id)
+      .single();
+
+    if (error) {
+      return res.status(404).json({ error: 'Recording not found', details: error });
+    }
+
+    res.json({
+      recording,
+      frontend_should_show: recording.upload_status === 'uploaded' ? 'Na nuvem' : recording.upload_status,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * @route POST /api/recordings/:id/upload
  * @desc Manually trigger upload for a recording
  * @access Private

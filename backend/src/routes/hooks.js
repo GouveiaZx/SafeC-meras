@@ -13,6 +13,7 @@ import axios from 'axios';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 import FeatureFlagService from '../services/FeatureFlagService.js';
+import { notifyRecordingStatusChange } from '../controllers/socketController.js';
 
 const router = express.Router();
 const logger = createModuleLogger('ZLMHooks-Improved');
@@ -1344,42 +1345,100 @@ router.post('/on_record_mp4', async (req, res) => {
       try {
         const { spawn } = await import('child_process');
         
+        logger.info('🎬 Calculando duração e metadados do vídeo:', { 
+          file_name,
+          fullFilePath,
+          time_len: time_len
+        });
+        
+        // Função auxiliar para executar ffprobe
+        const runFFprobe = (command, args) => {
+          return new Promise((resolve) => {
+            const ffprobe = spawn(command, args);
+            
+            let output = '';
+            let errorOutput = '';
+            
+            ffprobe.stdout.on('data', (data) => output += data);
+            ffprobe.stderr.on('data', (data) => errorOutput += data);
+            
+            ffprobe.on('close', (code) => {
+              if (code === 0 && output.trim()) {
+                try {
+                  const result = JSON.parse(output.trim());
+                  resolve({ success: true, data: result });
+                } catch (e) {
+                  logger.warn(`Erro ao parsear JSON do ffprobe: ${e.message}`);
+                  resolve({ success: false, error: 'JSON parse error' });
+                }
+              } else {
+                logger.warn(`ffprobe falhou - código: ${code}, erro: ${errorOutput.trim()}`);
+                resolve({ success: false, error: errorOutput.trim() || 'Process failed' });
+              }
+            });
+            
+            ffprobe.on('error', (err) => {
+              logger.warn(`ffprobe erro: ${err.message}`);
+              resolve({ success: false, error: err.message });
+            });
+          });
+        };
+        
         // Tentar ffprobe via Docker primeiro (mais confiável)
         const dockerPath = fullFilePath.replace(/\\/g, '/').replace('storage/', '/opt/media/bin/');
+        logger.info(`🐳 Tentando ffprobe via Docker: ${dockerPath}`);
         
-        const ffprobeResult = await new Promise((resolve, reject) => {
-          const ffprobe = spawn('docker', [
-            'exec', 'newcam-zlmediakit', 'ffprobe',
+        let ffprobeResult = await runFFprobe('docker', [
+          'exec', 'newcam-zlmediakit', 'ffprobe',
+          '-v', 'quiet',
+          '-show_entries', 'format=duration:stream=width,height,r_frame_rate,codec_name,bit_rate',
+          '-of', 'json',
+          dockerPath
+        ]);
+        
+        // Se Docker falhar, tentar ffprobe local
+        if (!ffprobeResult.success) {
+          logger.info('🔧 Docker ffprobe falhou, tentando ffprobe local:', ffprobeResult.error);
+          
+          ffprobeResult = await runFFprobe('ffprobe', [
             '-v', 'quiet',
             '-show_entries', 'format=duration:stream=width,height,r_frame_rate,codec_name,bit_rate',
             '-of', 'json',
-            dockerPath
+            fullFilePath
           ]);
-          
-          let output = '';
-          ffprobe.stdout.on('data', (data) => output += data);
-          ffprobe.on('close', (code) => {
-            if (code === 0 && output.trim()) {
-              try {
-                resolve(JSON.parse(output.trim()));
-              } catch (e) {
-                resolve(null);
-              }
-            } else {
-              resolve(null);
-            }
-          });
-          ffprobe.on('error', () => resolve(null));
-        });
+        }
         
-        if (ffprobeResult) {
+        // Se ainda falhar, tentar usando time_len do ZLMediaKit
+        if (!ffprobeResult.success && time_len && time_len > 0) {
+          logger.info('📊 ffprobe falhou, usando time_len do ZLMediaKit:', { time_len });
+          actualDuration = Math.round(time_len);
+          
+          // Metadados básicos baseados no nome do arquivo
+          if (file_name && file_name.includes('1920x1080')) {
+            videoMetadata.resolution = '1920x1080';
+            videoMetadata.width = 1920;
+            videoMetadata.height = 1080;
+          } else if (file_name && file_name.includes('1280x720')) {
+            videoMetadata.resolution = '1280x720';
+            videoMetadata.width = 1280;
+            videoMetadata.height = 720;
+          }
+          
+          logger.info('✅ Duração calculada via time_len:', { duration: actualDuration });
+        }
+        
+        // Processar resultado do ffprobe se obtido
+        if (ffprobeResult.success && ffprobeResult.data) {
+          const result = ffprobeResult.data;
+          
           // Extrair duração
-          if (ffprobeResult.format?.duration) {
-            actualDuration = Math.round(parseFloat(ffprobeResult.format.duration));
+          if (result.format?.duration) {
+            actualDuration = Math.round(parseFloat(result.format.duration));
+            logger.info('📊 Duração extraída via ffprobe:', { duration: actualDuration });
           }
           
           // Extrair metadados do stream de vídeo
-          const videoStream = ffprobeResult.streams?.find(s => s.codec_type === 'video');
+          const videoStream = result.streams?.find(s => s.codec_type === 'video');
           if (videoStream) {
             videoMetadata.width = videoStream.width;
             videoMetadata.height = videoStream.height;
@@ -1414,11 +1473,37 @@ router.post('/on_record_mp4', async (req, res) => {
             resolution: videoMetadata.resolution,
             fps: videoMetadata.fps,
             codec: videoMetadata.codec,
-            bitrate: videoMetadata.bitrate
+            bitrate: videoMetadata.bitrate,
+            method: 'ffprobe'
           });
         }
+        
+        // Se ainda não temos duração, usar estimativa baseada no tamanho do arquivo
+        if (!actualDuration || actualDuration === 0) {
+          if (actualFileSize && actualFileSize > 100000) { // > 100KB
+            // Estimativa muito básica: ~1MB por minuto para qualidade média
+            actualDuration = Math.round(actualFileSize / (1024 * 1024) * 60);
+            logger.info('📊 Duração estimada baseada no tamanho:', { 
+              duration: actualDuration, 
+              fileSize: actualFileSize,
+              method: 'file_size_estimate'
+            });
+          }
+        }
+        
       } catch (error) {
-        logger.warn('⚠️ Erro ao calcular metadados via ffprobe:', error.message);
+        logger.error('❌ Erro ao calcular metadados:', {
+          error: error.message,
+          stack: error.stack,
+          file_name,
+          time_len
+        });
+        
+        // Fallback final usando time_len se disponível
+        if (time_len && time_len > 0) {
+          actualDuration = Math.round(time_len);
+          logger.info('📊 Fallback: usando time_len como duração:', { duration: actualDuration });
+        }
       }
     }
 
@@ -1608,6 +1693,56 @@ router.post('/on_record_mp4', async (req, res) => {
       logger.info(`✅ Câmera ${camera.name} (${cameraId}) atualizada - gravação completada`);
     }
 
+    // NOVO: Enfileirar para upload S3 se habilitado
+    try {
+      const s3UploadEnabled = process.env.S3_UPLOAD_ENABLED === 'true';
+      const enableUploadQueue = process.env.ENABLE_UPLOAD_QUEUE === 'true';
+      
+      if (s3UploadEnabled && enableUploadQueue && recording && recording.id) {
+        logger.info('📤 Enfileirando gravação para upload S3:', {
+          recordingId: recording.id,
+          filename: recording.filename || file_name,
+          cameraId: cameraId
+        });
+        
+        // Importar o UploadQueueService dinamicamente
+        const { default: UploadQueueService } = await import('../services/UploadQueueService.js');
+        
+        // Enfileirar com prioridade normal
+        const enqueueResult = await UploadQueueService.enqueue(recording.id, {
+          priority: 'normal',
+          source: 'webhook_auto'
+        });
+        
+        if (enqueueResult.success) {
+          logger.info('✅ Gravação enfileirada para upload:', {
+            recordingId: recording.id,
+            reason: enqueueResult.reason || 'enqueued',
+            s3_key: enqueueResult.s3_key || null
+          });
+        } else {
+          logger.warn('⚠️ Falha ao enfileirar gravação para upload:', {
+            recordingId: recording.id,
+            reason: enqueueResult.reason,
+            note: 'Upload pode ser processado manualmente'
+          });
+        }
+      } else {
+        logger.debug('📤 Upload S3 desabilitado ou gravação inválida:', {
+          s3UploadEnabled,
+          enableUploadQueue,
+          recordingExists: !!recording?.id
+        });
+      }
+    } catch (uploadEnqueueError) {
+      logger.error('❌ Erro ao enfileirar gravação para upload:', {
+        error: uploadEnqueueError.message,
+        recordingId: recording?.id,
+        stack: uploadEnqueueError.stack,
+        note: 'Gravação salva com sucesso, mas upload deve ser processado manualmente'
+      });
+    }
+
     logger.info(`🎉 Gravação MP4 processada com sucesso:`, {
       camera: camera.name,
       file_name,
@@ -1665,6 +1800,17 @@ router.post('/on_record_mp4', async (req, res) => {
       total_steps: 'Todos os passos executados com sucesso',
       timestamp: new Date().toISOString()
     });
+
+    // ADICIONAR: Enviar notificação WebSocket sobre mudança de status
+    try {
+      const io = req.app?.get('io');
+      if (io && recording) {
+        notifyRecordingStatusChange(io, recording);
+        logger.info(`📡 Notificação WebSocket enviada para gravação: ${recording.id}`);
+      }
+    } catch (notificationError) {
+      logger.error('❌ Erro ao enviar notificação WebSocket:', notificationError);
+    }
 
     res.json({ 
       code: 0, 

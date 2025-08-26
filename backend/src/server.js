@@ -40,6 +40,7 @@ import discoveryRoutes from './routes/discovery.js';
 import workerRoutes from './routes/worker.js';
 import hookRoutes from './routes/hooks.js';
 import healthRoutes from './routes/health.js';
+import testWebSocketRoutes from './routes/testWebSocket.js';
 import segmentationRoutes, { injectSegmentationService } from './routes/segmentation.js';
 
 // Importar serviços
@@ -49,6 +50,10 @@ import MetricsService from './services/MetricsService.js';
 import SegmentationService from './services/SegmentationService.js';
 import RecordingMonitorService from './services/RecordingMonitorService.js';
 import recordingFinalizationService from './services/RecordingFinalizationService.js';
+import UploadQueueService from './services/UploadQueueService.js';
+import OrphanFileMonitor from './services/OrphanFileMonitor.js';
+import UploadFallbackService from './services/UploadFallbackService.js';
+import ValidationRecoveryService from './services/ValidationRecoveryService.js';
 import { initializeSocket } from './controllers/socketController.js';
 
 // Configurações
@@ -171,6 +176,7 @@ app.use('/api/discovery', discoveryRoutes);
 app.use('/api/worker', workerRoutes);
 app.use('/api/hook', hookRoutes);
 app.use('/api/health', healthRoutes);
+app.use('/api', testWebSocketRoutes);
 app.use('/api/segmentation', segmentationRoutes);
 
 // REMOVIDO POR SEGURANÇA: Exposição estática de streams sem autenticação
@@ -189,6 +195,22 @@ initializeSocket(io);
 
 // Tornar io disponível globalmente para outros módulos
 app.set('io', io);
+
+// Configurar Socket.IO no UploadQueueService para notificações em tempo real
+UploadQueueService.setSocketIO(io);
+app.set('uploadQueueService', UploadQueueService);
+
+// Inicializar OrphanFileMonitor para detectar arquivos não associados
+const orphanFileMonitor = new OrphanFileMonitor();
+app.set('orphanFileMonitor', orphanFileMonitor);
+
+// Inicializar UploadFallbackService para retry automático de uploads
+const uploadFallbackService = new UploadFallbackService();
+app.set('uploadFallbackService', uploadFallbackService);
+
+// Inicializar ValidationRecoveryService para validação e correção automática
+const validationRecoveryService = new ValidationRecoveryService();
+app.set('validationRecoveryService', validationRecoveryService);
 
 // Variável global para o serviço de segmentação
 let globalSegmentationService = null;
@@ -363,6 +385,41 @@ async function initializeServices() {
     
   } catch (error) {
     console.error('Erro ao inicializar serviço de gravação:', error);
+  }
+
+  // Inicializar OrphanFileMonitor
+  try {
+    console.log('🔍 Iniciando OrphanFileMonitor...');
+    orphanFileMonitor.start(io);
+    console.log('✅ OrphanFileMonitor iniciado com sucesso');
+    
+    // Limpar cache a cada 4 horas
+    setInterval(() => {
+      orphanFileMonitor.clearProcessedCache();
+    }, 4 * 60 * 60 * 1000);
+    
+  } catch (error) {
+    console.error('❌ Erro ao inicializar OrphanFileMonitor:', error);
+  }
+
+  // Inicializar UploadFallbackService
+  try {
+    console.log('🔄 Iniciando UploadFallbackService...');
+    uploadFallbackService.start(io);
+    console.log('✅ UploadFallbackService iniciado com sucesso');
+    
+  } catch (error) {
+    console.error('❌ Erro ao inicializar UploadFallbackService:', error);
+  }
+
+  // Inicializar ValidationRecoveryService
+  try {
+    console.log('🔍 Iniciando ValidationRecoveryService...');
+    validationRecoveryService.start(io);
+    console.log('✅ ValidationRecoveryService iniciado com sucesso');
+    
+  } catch (error) {
+    console.error('❌ Erro ao inicializar ValidationRecoveryService:', error);
   }
 
   // Inicializar câmeras automaticamente após 10 segundos

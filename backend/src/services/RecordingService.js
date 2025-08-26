@@ -559,6 +559,11 @@ class RecordingService {
           fps: recording.fps || null,
           bitrate: recording.bitrate || null,
           thumbnail_url: recording.thumbnail_url || null,
+          // ADICIONADO: Campos de upload essenciais para o frontend
+          upload_status: recording.upload_status || 'pending',
+          upload_progress: recording.upload_progress || 0,
+          s3_key: recording.s3_key || null,
+          s3_url: recording.s3_url || null,
           download_url: `http://localhost:3002/api/recording-files/${recording.id}/download`,
           stream_url: `http://localhost:3002/api/recording-files/${recording.id}/play`,
           play_web_url: `http://localhost:3002/api/recording-files/${recording.id}/play-web`,
@@ -930,18 +935,65 @@ class RecordingService {
    */
   async getTrends(userId = null, period = '7d') {
     try {
-      // Simple trends implementation
+      // Calcular período baseado no parâmetro
+      let hours = 24;
+      if (period === '7d') hours = 24 * 7;
+      if (period === '30d') hours = 24 * 30;
+      
+      const startDate = new Date();
+      startDate.setHours(startDate.getHours() - hours);
+      
+      // Buscar gravações no período
+      const { data: recordings } = await this.supabase
+        .from('recordings')
+        .select('*')
+        .gte('created_at', startDate.toISOString())
+        .order('created_at', { ascending: true });
+
+      // Gerar dados por hora para o gráfico
+      const hourlyData = [];
+      const now = new Date();
+      
+      for (let i = 0; i < Math.min(hours, 24); i++) {
+        const hour = new Date(now);
+        hour.setHours(hour.getHours() - (23 - i));
+        hour.setMinutes(0, 0, 0);
+        
+        const nextHour = new Date(hour);
+        nextHour.setHours(nextHour.getHours() + 1);
+        
+        const hourRecordings = recordings?.filter(r => {
+          const recordingTime = new Date(r.created_at);
+          return recordingTime >= hour && recordingTime < nextHour;
+        }) || [];
+        
+        hourlyData.push({
+          time: hour.toISOString(),
+          hour: hour.getHours(),
+          uploads: hourRecordings.filter(r => r.upload_status === 'uploaded').length,
+          total: hourRecordings.length,
+          failures: hourRecordings.filter(r => r.upload_status === 'failed').length,
+          size: hourRecordings.reduce((sum, r) => sum + (r.file_size || 0), 0)
+        });
+      }
+      
       return {
-        uploads: [],
-        failures: [],
-        period
+        hourly: hourlyData,
+        uploads: recordings?.filter(r => r.upload_status === 'uploaded') || [],
+        failures: recordings?.filter(r => r.upload_status === 'failed') || [],
+        period,
+        totalUploads: recordings?.filter(r => r.upload_status === 'uploaded').length || 0,
+        totalFailures: recordings?.filter(r => r.upload_status === 'failed').length || 0
       };
     } catch (error) {
       this.logger.error('Erro ao obter tendências:', error);
       return {
+        hourly: [],
         uploads: [],
         failures: [],
-        period
+        period,
+        totalUploads: 0,
+        totalFailures: 0
       };
     }
   }

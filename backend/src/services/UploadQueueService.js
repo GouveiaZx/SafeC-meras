@@ -7,6 +7,7 @@ import { createModuleLogger } from '../config/logger.js';
 import { supabaseAdmin } from '../config/database.js';
 import S3Service from './S3Service.js';
 import PathResolver from '../utils/PathResolver.js';
+import { notifyRecordingStatusChange, notifyUploadProgress, notifyUploadError } from '../controllers/socketController.js';
 
 const logger = createModuleLogger('UploadQueueService');
 
@@ -17,12 +18,68 @@ class UploadQueueService {
     this.concurrency = parseInt(process.env.S3_UPLOAD_CONCURRENCY) || 2;
     this.maxRetries = parseInt(process.env.S3_UPLOAD_MAX_RETRIES) || 3;
     this.retryDelayBase = parseInt(process.env.S3_UPLOAD_RETRY_DELAY) || 5000; // 5 seconds
+    this.io = null; // Socket.IO instance for real-time notifications
     
     logger.info(`UploadQueueService initialized`, {
       concurrency: this.concurrency,
       maxRetries: this.maxRetries,
       retryDelayBase: this.retryDelayBase
     });
+  }
+
+  /**
+   * Set Socket.IO instance for real-time notifications
+   * @param {Object} io - Socket.IO instance
+   */
+  setSocketIO(io) {
+    this.io = io;
+    logger.info('Socket.IO instance set for real-time upload notifications');
+  }
+
+  /**
+   * Notify recording status change via WebSocket
+   * @param {Object} recording - Recording data
+   */
+  _notifyStatusChange(recording) {
+    if (this.io) {
+      try {
+        notifyRecordingStatusChange(this.io, recording);
+      } catch (error) {
+        logger.warn('Failed to send WebSocket notification:', error.message);
+      }
+    }
+  }
+
+  /**
+   * Notify upload progress via WebSocket
+   * @param {string} recordingId - Recording ID
+   * @param {number} progress - Progress percentage (0-100)
+   * @param {Object} details - Additional details
+   */
+  _notifyProgress(recordingId, progress, details = {}) {
+    if (this.io) {
+      try {
+        notifyUploadProgress(this.io, recordingId, progress, details);
+      } catch (error) {
+        logger.warn('Failed to send WebSocket progress notification:', error.message);
+      }
+    }
+  }
+
+  /**
+   * Notify upload error via WebSocket
+   * @param {string} recordingId - Recording ID
+   * @param {string} error - Error message
+   * @param {Object} details - Additional details
+   */
+  _notifyError(recordingId, error, details = {}) {
+    if (this.io) {
+      try {
+        notifyUploadError(this.io, recordingId, error, details);
+      } catch (error) {
+        logger.warn('Failed to send WebSocket error notification:', error.message);
+      }
+    }
   }
 
   /**
@@ -117,6 +174,9 @@ class UploadQueueService {
         fileSize: fileInfo.size
       });
 
+      // Notify WebSocket clients about status change
+      this._notifyStatusChange(updated);
+
       return {
         success: true,
         recording_id: recordingId,
@@ -145,12 +205,12 @@ class UploadQueueService {
           upload_status, upload_attempts, created_at, updated_at,
           file_size, duration
         `)
-        .eq('upload_status', 'queued')
+        .in('upload_status', ['pending', 'queued']) // Process both pending and queued
         .order('created_at', { ascending: true })
         .limit(10); // Check top 10 for efficiency
 
       if (error) {
-        logger.error('Error fetching queued recordings:', error);
+        logger.error('Error fetching pending/queued recordings:', error);
         throw error;
       }
 
@@ -193,7 +253,7 @@ class UploadQueueService {
           updated_at: new Date().toISOString()
         })
         .eq('id', recording.id)
-        .eq('upload_status', 'queued') // Only update if still queued
+        .in('upload_status', ['pending', 'queued']) // Update if pending or queued
         .select()
         .single();
 
@@ -206,6 +266,9 @@ class UploadQueueService {
         filename: recording.filename,
         camera_id: recording.camera_id
       });
+
+      // Notify WebSocket clients about status change
+      this._notifyStatusChange(claimed);
 
       return claimed;
 
@@ -263,6 +326,30 @@ class UploadQueueService {
         status,
         progress: updateData.upload_progress
       });
+
+      // Fetch updated recording to send complete notification
+      const { data: updatedRecording } = await this.supabase
+        .from('recordings')
+        .select('*')
+        .eq('id', recordingId)
+        .single();
+
+      if (updatedRecording) {
+        this._notifyStatusChange(updatedRecording);
+        
+        // Also send progress notification for progress updates
+        if (details.progress !== undefined) {
+          this._notifyProgress(recordingId, details.progress, { status });
+        }
+        
+        // Send error notification for failed uploads
+        if (status === 'failed' && details.error_message) {
+          this._notifyError(recordingId, details.error_message, {
+            error_code: details.error_code,
+            retry_count: details.retry_count
+          });
+        }
+      }
 
     } catch (error) {
       logger.error(`Error updating status for ${recordingId}:`, error);

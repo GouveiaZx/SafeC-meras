@@ -24,6 +24,7 @@ import LineChart from '@/components/charts/LineChart';
 import RecordingPlayer from '@/components/RecordingPlayer';
 import { buildAuthenticatedVideoUrl } from '@/utils/videoUrl';
 import { useAuth } from '@/contexts/AuthContext';
+import useSocket from '@/hooks/useSocket';
 
 interface Camera {
   id: string;
@@ -147,51 +148,14 @@ const RecordingsPage: React.FC = () => {
   const [isPlayerOpen, setIsPlayerOpen] = useState(false);
 
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
-  
 
-
-  // Dados de tendência de upload carregados da API
-  const [uploadTrendData, setUploadTrendData] = useState([
-    { time: '00:00', uploads: 0, failures: 0, size: 0 },
-    { time: '04:00', uploads: 0, failures: 0, size: 0 },
-    { time: '08:00', uploads: 0, failures: 0, size: 0 },
-    { time: '12:00', uploads: 0, failures: 0, size: 0 },
-    { time: '16:00', uploads: 0, failures: 0, size: 0 },
-    { time: '20:00', uploads: 0, failures: 0, size: 0 }
-  ]);
-
-  const fetchUploadTrends = useCallback(async () => {
+  // Definir funções primeiro para evitar erro de inicialização
+  const fetchStats = useCallback(async () => {
     try {
-      console.log('🔄 Fetching upload trends...');
-      const data = await api.get<TrendsResponse>(endpoints.recordings.getTrends());
-      
-      console.log('📊 Upload trends response:', {
-        hasData: !!data.data,
-        hasHourly: !!(data.data && data.data.hourly),
-        hourlyLength: data.data?.hourly?.length || 0,
-        sampleItem: data.data?.hourly?.[0]
-      });
-      
-      if (data.data && data.data.hourly && Array.isArray(data.data.hourly)) {
-        console.log('✅ Setting upload trend data:', data.data.hourly.length, 'items');
-        setUploadTrendData(data.data.hourly);
-      } else {
-        console.warn('⚠️ Invalid upload trends data structure');
-      }
+      const data = await api.get<StatsResponse>(endpoints.recordings.getStats());
+      setStats(data.data);
     } catch (err: unknown) {
-      console.error('❌ Erro ao buscar tendências de upload:', err);
-      // Manter dados padrão em caso de erro
-    }
-  }, []);
-
-  const loadCameras = useCallback(async () => {
-    try {
-      const response = await api.get<CamerasResponse>(endpoints.cameras.getAll());
-      const camerasData = response.data || [];
-      setCameras(camerasData);
-    } catch (err) {
-      console.error('Erro ao carregar câmeras:', err);
-      setCameras([]);
+      console.error('Erro ao buscar estatísticas:', err);
     }
   }, []);
 
@@ -294,15 +258,143 @@ const RecordingsPage: React.FC = () => {
       setError(err instanceof Error ? err.message : 'Erro desconhecido');
     }
   }, [selectedCamera, selectedStatus, searchTerm, dateRange, fetchRecordingSegments]);
+  
+  // WebSocket para notificações em tempo real
+  const { isConnected } = useSocket({
+    recording_status_changed: useCallback((data: any) => {
+      console.log('📊 WebSocket - Status da gravação alterado:', data);
+      
+      // Atualizar a gravação específica na lista
+      setRecordings(prev => 
+        prev.map(recording => 
+          recording.id === data.recording_id 
+            ? {
+                ...recording,
+                status: data.status,
+                uploadStatus: data.upload_status,
+                uploadProgress: data.upload_progress || 0,
+                s3Key: data.s3_key,
+                s3Url: data.s3_url,
+                displayStatus: data.display_status
+              }
+            : recording
+        )
+      );
+      
+      // Atualizar estatísticas
+      fetchStats();
+      
+      setLastUpdate(new Date());
+    }, [fetchStats]),
 
-  const fetchStats = useCallback(async () => {
+    upload_progress: useCallback((data: any) => {
+      console.log('📤 WebSocket - Progresso do upload:', data);
+      
+      // Atualizar progresso da gravação específica
+      setRecordings(prev => 
+        prev.map(recording => 
+          recording.id === data.recording_id 
+            ? {
+                ...recording,
+                uploadProgress: data.progress,
+                uploadStatus: 'uploading',
+                displayStatus: `Enviando... (${data.progress}%)`
+              }
+            : recording
+        )
+      );
+    }, []),
+
+    upload_error: useCallback((data: any) => {
+      console.error('❌ WebSocket - Erro no upload:', data);
+      
+      // Atualizar status da gravação para erro
+      setRecordings(prev => 
+        prev.map(recording => 
+          recording.id === data.recording_id 
+            ? {
+                ...recording,
+                uploadStatus: 'failed',
+                displayStatus: 'Erro no upload'
+              }
+            : recording
+        )
+      );
+      
+      // Atualizar estatísticas
+      fetchStats();
+    }, [fetchStats]),
+
+    new_recording: useCallback((data: any) => {
+      console.log('🎥 WebSocket - Nova gravação:', data);
+      
+      // Recarregar dados para mostrar nova gravação
+      fetchRecordings();
+      fetchStats();
+    }, [fetchRecordings, fetchStats]),
+
+    recordings_refresh: useCallback((data: any) => {
+      console.log('🔄 WebSocket - Refresh forçado:', data);
+      
+      // Forçar recarregamento completo dos dados
+      fetchRecordings();
+      fetchStats();
+    }, [fetchRecordings, fetchStats]),
+
+    connection_established: useCallback((data: any) => {
+      console.log('✅ WebSocket - Conexão estabelecida:', data);
+    }, []),
+
+    error: useCallback((error: any) => {
+      console.error('❌ WebSocket - Erro:', error);
+    }, [])
+  });
+
+  // Dados de tendência de upload carregados da API
+  const [uploadTrendData, setUploadTrendData] = useState([
+    { time: '00:00', uploads: 0, failures: 0, size: 0 },
+    { time: '04:00', uploads: 0, failures: 0, size: 0 },
+    { time: '08:00', uploads: 0, failures: 0, size: 0 },
+    { time: '12:00', uploads: 0, failures: 0, size: 0 },
+    { time: '16:00', uploads: 0, failures: 0, size: 0 },
+    { time: '20:00', uploads: 0, failures: 0, size: 0 }
+  ]);
+
+  const fetchUploadTrends = useCallback(async () => {
     try {
-      const data = await api.get<StatsResponse>(endpoints.recordings.getStats());
-      setStats(data.data);
+      console.log('🔄 Fetching upload trends...');
+      const data = await api.get<TrendsResponse>(endpoints.recordings.getTrends());
+      
+      console.log('📊 Upload trends response:', {
+        hasData: !!data.data,
+        hasHourly: !!(data.data && data.data.hourly),
+        hourlyLength: data.data?.hourly?.length || 0,
+        sampleItem: data.data?.hourly?.[0]
+      });
+      
+      if (data.data && data.data.hourly && Array.isArray(data.data.hourly)) {
+        console.log('✅ Setting upload trend data:', data.data.hourly.length, 'items');
+        setUploadTrendData(data.data.hourly);
+      } else {
+        console.warn('⚠️ Invalid upload trends data structure');
+      }
     } catch (err: unknown) {
-      console.error('Erro ao buscar estatísticas:', err);
+      console.error('❌ Erro ao buscar tendências de upload:', err);
+      // Manter dados padrão em caso de erro
     }
   }, []);
+
+  const loadCameras = useCallback(async () => {
+    try {
+      const response = await api.get<CamerasResponse>(endpoints.cameras.getAll());
+      const camerasData = response.data || [];
+      setCameras(camerasData);
+    } catch (err) {
+      console.error('Erro ao carregar câmeras:', err);
+      setCameras([]);
+    }
+  }, []);
+
 
   const handleRefresh = useCallback(async () => {
     setLoading(true);
@@ -368,15 +460,18 @@ const RecordingsPage: React.FC = () => {
     handleRefresh();
   }, [selectedCamera, selectedStatus, searchTerm, dateRange, handleRefresh]);
 
-  // Auto-refresh effect - atualiza a cada 30 segundos
+  // Auto-refresh effect - apenas como fallback para o WebSocket (30s)
   useEffect(() => {
+    // Se WebSocket não estiver conectado, usar refresh mais frequente
+    const refreshInterval = isConnected ? 30000 : 5000; // 30s se conectado, 5s se não conectado
+    
     const autoRefreshInterval = setInterval(() => {
       fetchRecordings();
       fetchStats();
-    }, 30000); // 30 segundos
+    }, refreshInterval);
 
     return () => clearInterval(autoRefreshInterval);
-  }, [fetchRecordings, fetchStats]);
+  }, [fetchRecordings, fetchStats, isConnected]);
 
   useEffect(() => {
     loadCameras();
@@ -523,6 +618,13 @@ const RecordingsPage: React.FC = () => {
           </p>
         </div>
         <div className="flex items-center space-x-4">
+          {/* Indicador de conexão WebSocket */}
+          <div className="flex items-center space-x-2 text-sm">
+            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
+            <span className={isConnected ? 'text-green-600' : 'text-red-600'}>
+              {isConnected ? 'Tempo real ativo' : 'Sem conexão tempo real'}
+            </span>
+          </div>
           <Button onClick={handleRefresh} variant="outline" size="sm" disabled={loading}>
             <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
             Atualizar

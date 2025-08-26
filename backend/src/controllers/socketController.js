@@ -532,6 +532,92 @@ export function notifyNewRecording(io, recording) {
 }
 
 /**
+ * Notificar mudança no status de upload de gravação
+ * @param {Object} io - Instância do Socket.IO
+ * @param {Object} recording - Dados da gravação
+ */
+export function notifyRecordingStatusChange(io, recording) {
+  const notification = {
+    recording_id: recording.id,
+    camera_id: recording.camera_id,
+    status: recording.status,
+    upload_status: recording.upload_status,
+    upload_progress: recording.upload_progress || 0,
+    s3_key: recording.s3_key,
+    s3_url: recording.s3_url,
+    duration: recording.duration,
+    size: recording.size,
+    filename: recording.filename,
+    timestamp: new Date().toISOString()
+  };
+
+  // Determinar o que o frontend deveria mostrar
+  let displayStatus = 'UNKNOWN';
+  switch (recording.upload_status) {
+    case 'pending': displayStatus = 'Aguardando'; break;
+    case 'queued': displayStatus = 'Na fila'; break;
+    case 'uploading': displayStatus = `Enviando... (${recording.upload_progress || 0}%)`; break;
+    case 'uploaded': displayStatus = 'Na nuvem'; break;
+    case 'failed': displayStatus = 'Erro no upload'; break;
+  }
+
+  notification.display_status = displayStatus;
+
+  // Enviar para sala da câmera específica
+  io.to(`camera_${recording.camera_id}`).emit('recording_status_changed', notification);
+  
+  // Enviar para todos os usuários (para atualizar a lista geral)
+  io.emit('recording_status_changed', notification);
+
+  logger.info(`Status da gravação ${recording.id} alterado: ${recording.status} / ${recording.upload_status} (${displayStatus})`);
+}
+
+/**
+ * Notificar progresso de upload
+ * @param {Object} io - Instância do Socket.IO
+ * @param {string} recordingId - ID da gravação
+ * @param {number} progress - Progresso (0-100)
+ * @param {Object} details - Detalhes adicionais
+ */
+export function notifyUploadProgress(io, recordingId, progress, details = {}) {
+  const notification = {
+    recording_id: recordingId,
+    progress: Math.round(progress),
+    ...details,
+    timestamp: new Date().toISOString()
+  };
+
+  // Enviar para todos os usuários
+  io.emit('upload_progress', notification);
+
+  // Log apenas para marcos significativos
+  if (progress % 25 === 0 || progress === 100) {
+    logger.info(`Upload progress - Gravação ${recordingId}: ${progress}%`);
+  }
+}
+
+/**
+ * Notificar erro de upload
+ * @param {Object} io - Instância do Socket.IO
+ * @param {string} recordingId - ID da gravação
+ * @param {string} error - Mensagem de erro
+ * @param {Object} details - Detalhes adicionais
+ */
+export function notifyUploadError(io, recordingId, error, details = {}) {
+  const notification = {
+    recording_id: recordingId,
+    error: error,
+    ...details,
+    timestamp: new Date().toISOString()
+  };
+
+  // Enviar para todos os usuários
+  io.emit('upload_error', notification);
+
+  logger.error(`Upload error - Gravação ${recordingId}: ${error}`, details);
+}
+
+/**
  * Notificar alerta do sistema
  * @param {Object} io - Instância do Socket.IO
  * @param {Object} alert - Dados do alerta
@@ -672,6 +758,9 @@ export default {
   initializeSocket,
   notifyCameraStatusChange,
   notifyNewRecording,
+  notifyRecordingStatusChange,
+  notifyUploadProgress,
+  notifyUploadError,
   notifySystemAlert,
   broadcastMessage,
   getConnectionStats

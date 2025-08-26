@@ -35,6 +35,8 @@ class NewCAMWorker {
     this.isConnected = false;
     this.monitoringInterval = null;
     this.uploadWorker = null;
+    this.periodicUploadInterval = null;
+    this.supabase = supabase;
     
     this.setupExpress();
     this.connectToBackend();
@@ -359,10 +361,21 @@ class NewCAMWorker {
    * Start upload worker if S3 upload is enabled
    */
   async startUploadWorker() {
+    const s3UploadEnabled = process.env.S3_UPLOAD_ENABLED === 'true';
+    const enableUploadQueue = process.env.ENABLE_UPLOAD_QUEUE === 'true';
     const uploadEnabled = FeatureFlagService.isEnabled('s3_upload_enabled');
     
-    if (!uploadEnabled) {
-      logger.info('📤 S3 upload disabled - upload worker not started');
+    logger.info('🔍 Verificando configurações de upload:', {
+      S3_UPLOAD_ENABLED: s3UploadEnabled,
+      ENABLE_UPLOAD_QUEUE: enableUploadQueue,
+      featureFlag_s3_upload_enabled: uploadEnabled
+    });
+    
+    if (!s3UploadEnabled || !enableUploadQueue) {
+      logger.info('📤 S3 upload ou queue desabilitado - upload worker não iniciado', {
+        s3UploadEnabled,
+        enableUploadQueue
+      });
       return;
     }
 
@@ -406,6 +419,10 @@ class NewCAMWorker {
       UploadReaper.start();
       logger.info('🧹 Upload Reaper started successfully');
       
+      // Adicionar processamento periódico da fila (cada 2 minutos)
+      this.startPeriodicUploadProcessing();
+      logger.info('🔄 Upload queue periodic processing started');
+      
     } catch (error) {
       logger.error('❌ Failed to start upload worker:', error);
     }
@@ -422,9 +439,63 @@ class NewCAMWorker {
       logger.info('✅ Upload worker stopped');
     }
     
+    // Stop periodic processing
+    if (this.periodicUploadInterval) {
+      clearInterval(this.periodicUploadInterval);
+      this.periodicUploadInterval = null;
+    }
+    
     // Stop the Upload Reaper
     UploadReaper.stop();
     logger.info('🧹 Upload Reaper stopped');
+  }
+
+  /**
+   * Start periodic upload queue processing
+   */
+  startPeriodicUploadProcessing() {
+    // Processar fila a cada 2 minutos
+    this.periodicUploadInterval = setInterval(async () => {
+      try {
+        logger.debug('🔄 Processamento periódico da fila de upload...');
+        
+        // Verificar se há gravações pendentes que deveriam estar na fila
+        const { default: UploadQueueService } = await import('../services/UploadQueueService.js');
+        
+        // Buscar gravações com status completed mas upload_status pending
+        const { data: pendingUploads } = await this.supabase
+          .from('recordings')
+          .select('id, filename, created_at')
+          .eq('status', 'completed')
+          .eq('upload_status', 'pending')
+          .limit(10);
+        
+        if (pendingUploads && pendingUploads.length > 0) {
+          logger.info(`🔍 Encontradas ${pendingUploads.length} gravações pendentes para upload`);
+          
+          // Enfileirar cada uma
+          for (const recording of pendingUploads) {
+            try {
+              const result = await UploadQueueService.enqueue(recording.id, {
+                priority: 'normal',
+                source: 'periodic_check'
+              });
+              
+              if (result.success) {
+                logger.info(`📤 Gravação ${recording.filename} enfileirada via processamento periódico`);
+              }
+            } catch (enqueueError) {
+              logger.warn(`⚠️ Erro ao enfileirar ${recording.filename}:`, enqueueError.message);
+            }
+          }
+        }
+        
+      } catch (error) {
+        logger.error('❌ Erro no processamento periódico de uploads:', error.message);
+      }
+    }, 2 * 60 * 1000); // 2 minutos
+    
+    logger.info('⏰ Processamento periódico da fila de upload configurado (2min)');
   }
 }
 
