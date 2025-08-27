@@ -54,6 +54,7 @@ import UploadQueueService from './services/UploadQueueService.js';
 import OrphanFileMonitor from './services/OrphanFileMonitor.js';
 import UploadFallbackService from './services/UploadFallbackService.js';
 import ValidationRecoveryService from './services/ValidationRecoveryService.js';
+import UploadWorker from './workers/UploadWorker.js';
 import { initializeSocket } from './controllers/socketController.js';
 
 // Configurações
@@ -211,6 +212,13 @@ app.set('uploadFallbackService', uploadFallbackService);
 // Inicializar ValidationRecoveryService para validação e correção automática
 const validationRecoveryService = new ValidationRecoveryService();
 app.set('validationRecoveryService', validationRecoveryService);
+
+// Inicializar UploadWorker para processamento de uploads S3
+const uploadWorker = new UploadWorker({
+  concurrency: parseInt(process.env.S3_UPLOAD_CONCURRENCY) || 2,
+  pollInterval: parseInt(process.env.UPLOAD_POLL_INTERVAL) || 30000
+});
+app.set('uploadWorker', uploadWorker);
 
 // Variável global para o serviço de segmentação
 let globalSegmentationService = null;
@@ -420,6 +428,25 @@ async function initializeServices() {
     
   } catch (error) {
     console.error('❌ Erro ao inicializar ValidationRecoveryService:', error);
+  }
+
+  // Inicializar UploadWorker
+  try {
+    console.log('🚀 Iniciando UploadWorker...');
+    await uploadWorker.start();
+    console.log('✅ UploadWorker iniciado com sucesso');
+    
+    // Configurar event handlers
+    uploadWorker.onUploadComplete = (recordingId, result) => {
+      console.log(`📤 Upload concluído: ${recordingId}`, result);
+    };
+    
+    uploadWorker.onUploadError = (recordingId, error) => {
+      console.error(`❌ Erro no upload: ${recordingId}`, error);
+    };
+    
+  } catch (error) {
+    console.error('❌ Erro ao inicializar UploadWorker:', error);
   }
 
   // Inicializar câmeras automaticamente após 10 segundos

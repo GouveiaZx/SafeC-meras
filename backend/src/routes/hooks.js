@@ -1707,9 +1707,10 @@ router.post('/on_record_mp4', async (req, res) => {
         
         // Importar o UploadQueueService dinamicamente
         const { default: UploadQueueService } = await import('../services/UploadQueueService.js');
+        const uploadQueueService = new UploadQueueService();
         
         // Enfileirar com prioridade normal
-        const enqueueResult = await UploadQueueService.enqueue(recording.id, {
+        const enqueueResult = await uploadQueueService.enqueue(recording.id, {
           priority: 'normal',
           source: 'webhook_auto'
         });
@@ -1756,7 +1757,11 @@ router.post('/on_record_mp4', async (req, res) => {
       try {
         logger.info(`📤 Enfileirando gravação para upload S3: ${recording.id}`);
         
-        const enqueueResult = await UploadQueueService.enqueue(recording.id);
+        // Importar e instanciar UploadQueueService
+        const { default: UploadQueueService } = await import('../services/UploadQueueService.js');
+        const uploadQueueService = new UploadQueueService();
+        
+        const enqueueResult = await uploadQueueService.enqueue(recording.id);
         
         if (enqueueResult.success) {
           logger.info(`✅ Gravação enfileirada para upload: ${recording.id}`, {

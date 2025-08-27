@@ -460,18 +460,21 @@ const RecordingsPage: React.FC = () => {
     handleRefresh();
   }, [selectedCamera, selectedStatus, searchTerm, dateRange, handleRefresh]);
 
-  // Auto-refresh effect - apenas como fallback para o WebSocket (30s)
+  // Auto-refresh effect - ajustado dinamicamente baseado na conexão WebSocket
   useEffect(() => {
-    // Se WebSocket não estiver conectado, usar refresh mais frequente
-    const refreshInterval = isConnected ? 30000 : 5000; // 30s se conectado, 5s se não conectado
+    // Se WebSocket não estiver conectado, usar refresh mais frequente para compensar
+    const refreshInterval = isConnected ? 60000 : 10000; // 60s se conectado (WebSocket compensa), 10s se não conectado
     
     const autoRefreshInterval = setInterval(() => {
-      fetchRecordings();
-      fetchStats();
+      // Apenas atualizar se não estivermos carregando para evitar spam
+      if (!loading) {
+        fetchRecordings();
+        fetchStats();
+      }
     }, refreshInterval);
 
     return () => clearInterval(autoRefreshInterval);
-  }, [fetchRecordings, fetchStats, isConnected]);
+  }, [fetchRecordings, fetchStats, isConnected, loading]);
 
   useEffect(() => {
     loadCameras();
@@ -618,13 +621,15 @@ const RecordingsPage: React.FC = () => {
           </p>
         </div>
         <div className="flex items-center space-x-4">
-          {/* Indicador de conexão WebSocket */}
-          <div className="flex items-center space-x-2 text-sm">
-            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
-            <span className={isConnected ? 'text-green-600' : 'text-red-600'}>
-              {isConnected ? 'Tempo real ativo' : 'Sem conexão tempo real'}
-            </span>
-          </div>
+          {/* Indicador de conexão WebSocket - apenas quando conectado */}
+          {isConnected && (
+            <div className="flex items-center space-x-2 text-sm">
+              <div className="w-2 h-2 rounded-full bg-green-500" />
+              <span className="text-green-600">
+                Tempo real ativo
+              </span>
+            </div>
+          )}
           <Button onClick={handleRefresh} variant="outline" size="sm" disabled={loading}>
             <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
             Atualizar
