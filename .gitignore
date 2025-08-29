@@ -11,43 +11,6 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-# Arquivos de ambiente
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-.env.production
-
-# Logs
-logs/
-*.log
-storage/logs/
-
-# Arquivos temporários
-.tmp/
-temp/
-storage/temp/
-
-# Gravações e mídia
-storage/recordings/
-storage/hls/
-*.mp4
-*.avi
-*.mkv
-*.mov
-*.m3u8
-*.ts
-*.webm
-
-# Cache
-.cache/
-.parcel-cache/
-.next/
-out/
-build/
-dist/
-
 # Runtime data
 pids/
 *.pid

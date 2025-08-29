@@ -1,0 +1,6 @@
+{"contentType":"application/json","id":"eabc33a3-c9e0-4c54-ac6d-422dc87eb2dd","ip":"::1","level":"http","message":"[RequestLogger] Requisição recebida","method":"GET","timestamp":"2025-08-25 19:45:10:4510","url":"/health","userAgent":"curl/8.12.1"}
+{"duration":"2ms","id":"eabc33a3-c9e0-4c54-ac6d-422dc87eb2dd","level":"http","message":"[RequestLogger] Resposta enviada","statusCode":200,"timestamp":"2025-08-25 19:45:10:4510"}
+{"id":"8060cbbb-e67c-44ee-9a45-cc4a3aa47fca","ip":"::1","level":"http","message":"[RequestLogger] Requisição recebida","method":"GET","timestamp":"2025-08-25 19:50:02:502","url":"/health","userAgent":"curl/8.12.1"}
+{"duration":"2ms","id":"8060cbbb-e67c-44ee-9a45-cc4a3aa47fca","level":"http","message":"[RequestLogger] Resposta enviada","statusCode":200,"timestamp":"2025-08-25 19:50:02:502"}
+{"id":"b3b11c58-2bbd-41ed-ab2f-c79282d1541f","ip":"::1","level":"http","message":"[RequestLogger] Requisição recebida","method":"GET","timestamp":"2025-08-25 19:50:08:508","url":"/api/health","userAgent":"curl/8.12.1"}
+{"contentType":"application/json","id":"0151e7ea-9d61-4928-97d0-fc16d45310af","ip":"::1","level":"http","message":"[RequestLogger] Requisição recebida","method":"GET","timestamp":"2025-08-25 19:50:16:5016","url":"/api/cameras","userAgent":"curl/8.12.1"}
