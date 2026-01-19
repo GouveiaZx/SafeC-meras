@@ -11,6 +11,29 @@ const router = express.Router();
 const logger = createModuleLogger('HealthRoutes');
 
 /**
+ * GET /api/health
+ * Simple health check endpoint
+ * Public endpoint for quick health verification
+ */
+router.get('/', async (req, res) => {
+  try {
+    res.json({
+      success: true,
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime()
+    });
+  } catch (error) {
+    logger.error('Health check failed', { error: error.message });
+    res.status(503).json({
+      success: false,
+      status: 'unhealthy',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
  * GET /api/health/auth
  * Obter métricas de saúde da autenticação
  * Requer role: admin

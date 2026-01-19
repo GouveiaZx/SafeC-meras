@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Menu, Search, LogOut, User, Settings, UserCircle, Shield } from 'lucide-react';
+import { Menu, Search, LogOut, UserCircle, Shield } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 

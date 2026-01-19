@@ -15,6 +15,7 @@ import Settings from "@/pages/Settings";
 import Profile from "@/pages/Profile";
 import Security from "@/pages/Security";
 import StreamViewPage from "@/pages/StreamViewPage";
+import RTMPPoolManager from "@/pages/RTMPPoolManager";
 
 export default function App() {
   return (
@@ -77,7 +78,15 @@ export default function App() {
           }>
             <Route index element={<Users />} />
           </Route>
-          
+
+          <Route path="/rtmp-pool" element={
+            <ProtectedRoute requiredUserType="ADMIN">
+              <MainLayout />
+            </ProtectedRoute>
+          }>
+            <Route index element={<RTMPPoolManager />} />
+          </Route>
+
           <Route path="/reports" element={
             <ProtectedRoute allowedUserTypes={['ADMIN', 'INTEGRATOR']}>
               <MainLayout />

@@ -25,9 +25,8 @@ export function setupSecurityMiddlewares(app) {
         styleSrc: ["'self'", "'unsafe-inline'"],
         scriptSrc: ["'self'"],
         imgSrc: ["'self'", "data:", "blob:"],
-        mediaSrc: ["'self'", "blob:", "data:", ...(process.env.CSP_MEDIA_SRC || "http://localhost:3010,http://127.0.0.1:3010,http://localhost:3002,http://127.0.0.1:3002,http://localhost:3000,http://127.0.0.1:3000").split(',')],
-        connectSrc: ["'self'", "ws:", "wss:", ...(process.env.CSP_CONNECT_SRC || "http://localhost:3010,http://127.0.0.1:3010,http://localhost:3002,http://127.0.0.1:3002").split(',')],
-      },
+	mediaSrc: ["'self'", "blob:", "data:", "https://s3.us-east-2.wasabisys.com", ...(process.env.CSP_MEDIA_SRC || "http://localhost:3010,http://127.0.0.1:3010,http://localhost:3002,http://127.0.0.1:3002,http://localhost:3000,http://127.0.0.1:3000").split(',')],
+        connectSrc: ["'self'", "ws:", "wss:", "https://s3.us-east-2.wasabisys.com", ...(process.env.CSP_CONNECT_SRC || "http://localhost:3010,http://127.0.0.1:3010,http://localhost:3002,http://127.0.0.1:3002").split(',')],      },
     },
   }));
   
@@ -39,10 +38,10 @@ export function setupSecurityMiddlewares(app) {
  */
 export function setupRateLimit(app) {
   const NODE_ENV = process.env.NODE_ENV || 'development';
-  
+
   const limiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutos
-    max: NODE_ENV === 'production' ? 100 : 10000, // Limite muito alto para desenvolvimento
+    max: process.env.RATE_LIMIT_MAX ? parseInt(process.env.RATE_LIMIT_MAX) : 100, // Configurável via env
     message: {
       error: 'Muitas requisições deste IP, tente novamente em 15 minutos.'
     },
@@ -69,14 +68,30 @@ export function setupRateLimit(app) {
 export function setupBasicMiddlewares(app) {
   // Compressão
   app.use(compression());
-  
+
   // Parsing de JSON e URL
-  app.use(express.json({ limit: '10mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-  
+  app.use(express.json({
+    limit: '1mb',
+    verify: (req, res, buf, encoding) => {
+      // This will trigger automatic 413 if payload exceeds limit
+      if (buf.length > 1024 * 1024) {
+        throw new Error('entity.too.large');
+      }
+    }
+  }));
+  app.use(express.urlencoded({
+    extended: true,
+    limit: '1mb',
+    verify: (req, res, buf, encoding) => {
+      if (buf.length > 1024 * 1024) {
+        throw new Error('entity.too.large');
+      }
+    }
+  }));
+
   // Logger de requisições
   app.use(requestLogger);
-  
+
   logger.info('Middlewares básicos configurados');
 }
 

@@ -176,6 +176,8 @@ const errorHandler = (error, req, res, next) => {
     err = handleMulterError(error);
   } else if (error.name === 'ValidationError') {
     err = handleValidationError(error);
+  } else if (error.message === 'entity.too.large' || error.type === 'entity.too.large') {
+    err = new AppError('Payload muito grande', 413, 'PAYLOAD_TOO_LARGE');
   } else if (error.code === 'ECONNREFUSED') {
     err = new AppError('Serviço indisponível', 503, 'SERVICE_UNAVAILABLE');
   } else if (error.code === 'ENOTFOUND') {

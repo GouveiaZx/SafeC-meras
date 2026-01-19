@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Card } from '../components/ui/card';
-import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import {
   Camera,
@@ -14,7 +13,8 @@ import AlertCard from '@/components/dashboard/AlertCard';
 import LineChart from '@/components/charts/LineChart';
 import BarChart from '@/components/charts/BarChart';
 import PieChart from '@/components/charts/PieChart';
-import { api, endpoints } from '@/lib/api';
+import { api } from '@/lib/api';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface SystemMetrics {
   cpu: number;
@@ -86,6 +86,10 @@ interface Metrics {
 }
 
 const Dashboard: React.FC = () => {
+  const { user } = useAuth();
+  // Verificar se é cliente - ocultar métricas de servidor para clientes
+  const isClient = user?.userType === 'CLIENT';
+
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [loading, setLoading] = useState(true);
@@ -108,17 +112,8 @@ const Dashboard: React.FC = () => {
       if (data.success && data.data) {
         setMetrics(data.data.metrics);
         
-        // Atualizar dados dos gráficos se disponíveis
-        console.log('📊 Dashboard charts data:', {
-          hasCharts: !!data.data.charts,
-          chartKeys: data.data.charts ? Object.keys(data.data.charts) : [],
-          cpuHistoryLength: data.data.charts?.cpu_history?.length || 0,
-          sampleCpuData: data.data.charts?.cpu_history?.[0]
-        });
-        
         if (data.data.charts) {
           if (data.data.charts.cpu_history) {
-            console.log('✅ Setting CPU history data:', data.data.charts.cpu_history.length, 'items');
             setCpuHistoryData(data.data.charts.cpu_history);
           }
           
@@ -300,40 +295,48 @@ const Dashboard: React.FC = () => {
       )}
 
       {/* Métricas Principais */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <MetricCard
-          title="CPU"
-          value={metrics?.system.cpu || 0}
-          unit="%"
-          icon={Cpu}
-          color="primary"
-          trend={{
-            value: 2.5,
-            isPositive: false,
-            period: 'última hora'
-          }}
-        />
-        
-        <MetricCard
-          title="Memória"
-          value={metrics?.system.memory.percentage || 0}
-          unit="%"
-          icon={MemoryStick}
-          color="green"
-          trend={{
-            value: 1.2,
-            isPositive: true,
-            period: 'última hora'
-          }}
-        />
-        
+      <div className={`grid grid-cols-1 md:grid-cols-2 ${!isClient ? 'lg:grid-cols-4' : ''} gap-6`}>
+        {/* CPU - Ocultar para cliente */}
+        {!isClient && (
+          <MetricCard
+            title="CPU"
+            value={metrics?.system.cpu || 0}
+            unit="%"
+            icon={Cpu}
+            color="primary"
+            trend={{
+              value: 2.5,
+              isPositive: false,
+              period: 'última hora'
+            }}
+          />
+        )}
+
+        {/* Memória - Ocultar para cliente */}
+        {!isClient && (
+          <MetricCard
+            title="Memória"
+            value={metrics?.system.memory.percentage || 0}
+            unit="%"
+            icon={MemoryStick}
+            color="green"
+            trend={{
+              value: 1.2,
+              isPositive: true,
+              period: 'última hora'
+            }}
+          />
+        )}
+
+        {/* Câmeras Ativas - Visível para todos */}
         <MetricCard
           title="Câmeras Ativas"
           value={`${metrics?.cameras.online || 0}/${metrics?.cameras.total || 0}`}
           icon={Camera}
           color="purple"
         />
-        
+
+        {/* Gravações Hoje - Visível para todos */}
         <MetricCard
           title="Gravações Hoje"
           value={metrics?.recordings.today || 0}
@@ -342,66 +345,71 @@ const Dashboard: React.FC = () => {
         />
       </div>
 
-      {/* Gráficos e Métricas Detalhadas */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
-        {/* Gráfico de CPU e Memória */}
-        <div className="xl:col-span-2">
-          <LineChart
-            data={cpuHistoryData}
+      {/* Gráficos e Métricas Detalhadas - Ocultar para cliente */}
+      {!isClient && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
+          {/* Gráfico de CPU e Memória */}
+          <div className="xl:col-span-2">
+            <LineChart
+              data={cpuHistoryData}
+              height={300}
+              title="Uso de CPU e Memória (Última Hora)"
+              xAxisKey="timestamp"
+              lines={[
+                { dataKey: 'cpu', name: 'CPU', color: '#3b82f6', unit: '%' },
+                { dataKey: 'memory', name: 'Memória', color: '#10b981', unit: '%' }
+              ]}
+            />
+          </div>
+
+          {/* Distribuição de Armazenamento */}
+          <PieChart
+            data={storageDistribution}
             height={300}
-            title="Uso de CPU e Memória (Última Hora)"
-            lines={[
-              { dataKey: 'cpu', name: 'CPU', color: '#3b82f6', unit: '%' },
-              { dataKey: 'memory', name: 'Memória', color: '#10b981', unit: '%' }
-            ]}
+            title="Distribuição de Armazenamento"
+            unit="GB"
           />
         </div>
-        
-        {/* Distribuição de Armazenamento */}
-        <PieChart
-          data={storageDistribution}
-          height={300}
-          title="Distribuição de Armazenamento"
-          unit="GB"
-        />
-      </div>
-      
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Status das Câmeras */}
+      )}
+
+      <div className={`grid grid-cols-1 ${!isClient ? 'lg:grid-cols-2' : ''} gap-6`}>
+        {/* Status das Câmeras - Visível para todos */}
         <BarChart
           data={cameraStats}
           height={250}
           title="Status das Câmeras"
           bars={[{ dataKey: 'value', name: 'Quantidade', color: '#8b5cf6' }]}
         />
-        
-        {/* Métricas de Sistema */}
-        <Card className="p-6">
-          <h3 className="text-lg font-semibold mb-4 flex items-center">
-            <Cpu className="w-5 h-5 mr-2 text-primary-500" />
-            Sistema
-          </h3>
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-600">Uptime</span>
-              <span className="font-medium">{formatUptime(metrics?.system.uptime || 0)}</span>
+
+        {/* Métricas de Sistema - Ocultar para cliente */}
+        {!isClient && (
+          <Card className="p-6">
+            <h3 className="text-lg font-semibold mb-4 flex items-center">
+              <Cpu className="w-5 h-5 mr-2 text-primary-500" />
+              Sistema
+            </h3>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-600">Uptime</span>
+                <span className="font-medium">{formatUptime(metrics?.system.uptime || 0)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-600">Conexões de Rede</span>
+                <span className="font-medium">{metrics?.network.connections || 0}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-600">Arquivos S3</span>
+                <span className="font-medium">{metrics?.storage.s3.files || 0}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-600">Tamanho S3</span>
+                <span className="font-medium">
+                  {formatBytes(metrics?.storage.s3.used || 0)}
+                </span>
+              </div>
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-600">Conexões de Rede</span>
-              <span className="font-medium">{metrics?.network.connections || 0}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-600">Arquivos S3</span>
-              <span className="font-medium">{metrics?.storage.s3.files || 0}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-600">Tamanho S3</span>
-              <span className="font-medium">
-                {formatBytes(metrics?.storage.s3.used || 0)}
-              </span>
-            </div>
-          </div>
-        </Card>
+          </Card>
+        )}
       </div>
 
       {/* Informações de Atualização */}

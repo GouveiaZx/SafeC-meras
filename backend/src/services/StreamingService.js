@@ -144,33 +144,65 @@ class StreamingService {
       logger.debug(`[DEBUG] activeStreams.has(${streamId}): ${this.activeStreams.has(streamId)}`);
       logger.debug(`[DEBUG] activeStreams keys: ${Array.from(this.activeStreams.keys()).join(', ')}`);
       
-      // Verificar se stream já está ativo
+      // Verificar se stream já está ativo - retornar existente (idempotente)
       if (this.activeStreams.has(streamId)) {
         const existingStream = this.activeStreams.get(streamId);
-        logger.error(`[DEBUG] Stream existente:`, existingStream);
-        throw new ValidationError('Stream já está ativo para esta câmera');
+        logger.info(`[startStream] Stream já ativo para ${camera.name}, retornando configuração existente`);
+        return {
+          ...existingStream,
+          alreadyActive: true,
+          message: 'Stream já estava ativo'
+        };
       }
 
       logger.info(`Iniciando stream ${streamId} para câmera ${camera.name}`);
 
-      // Usar servidor configurado
-      let streamConfig;
-      if (this.preferredServer === 'zlm') {
-        streamConfig = await this.startZLMStream(camera, { quality, format, audio, streamId, userToken });
-      } else if (this.preferredServer === 'srs') {
-        streamConfig = await this.startSRSStream(camera, { quality, format, audio, streamId, userToken });
-      } else {
-        throw new Error(`Servidor de streaming '${this.preferredServer}' não é suportado.`);
+      // Determinar servidor correto baseado na configuração da câmera
+      // Para câmeras RTMP com rtmp_server_type definido, usar o servidor especificado
+      let serverToUse = this.preferredServer;
+      if (camera.stream_type === 'rtmp' && camera.rtmp_server_type) {
+        serverToUse = camera.rtmp_server_type;
+        logger.info(`Câmera RTMP configurada para usar ${serverToUse.toUpperCase()}`);
       }
 
+      // Usar servidor determinado
+      let streamConfig;
+      if (serverToUse === 'zlm') {
+        streamConfig = await this.startZLMStream(camera, { quality, format, audio, streamId, userToken });
+      } else if (serverToUse === 'srs') {
+        streamConfig = await this.startSRSStream(camera, { quality, format, audio, streamId, userToken });
+      } else {
+        throw new Error(`Servidor de streaming '${serverToUse}' não é suportado.`);
+      }
+
+      // ===== CORREÇÃO: Verificar se status é PENDING antes de adicionar ao activeStreams =====
+      // Para câmeras RTMP Push sem transmissão ativa, retornamos PENDING
+      // e NÃO adicionamos ao activeStreams (evita erro HLS 404)
+      if (streamConfig.status === 'pending') {
+        logger.info(`⏳ Stream ${streamId} em status PENDING - aguardando transmissão RTMP`);
+
+        // Adicionar metadados básicos
+        streamConfig.id = streamId;
+        streamConfig.camera_id = camera.id;
+        streamConfig.camera_name = camera.name;
+        streamConfig.server = serverToUse;
+
+        // NÃO adicionar ao activeStreams - stream não está realmente ativo
+        // NÃO atualizar status da câmera para online
+
+        return streamConfig; // Retornar imediatamente sem adicionar ao Map
+      }
+      // ===== FIM CORREÇÃO PENDING =====
+
+      // Stream realmente ativo - continuar fluxo normal
       // Adicionar metadados do stream
       streamConfig.id = streamId;
       streamConfig.camera_id = camera.id;
       streamConfig.camera_name = camera.name;
-      streamConfig.status = 'active';
+      streamConfig.status = 'active';  // Garantir status active
       streamConfig.created_by = userId;
       streamConfig.viewers = 0;
-      streamConfig.server = this.preferredServer;
+      streamConfig.server = serverToUse;
 
       // Armazenar stream ativo
       this.activeStreams.set(streamId, streamConfig);
@@ -194,7 +226,7 @@ class StreamingService {
         // Não chamar startAutomaticRecording aqui para evitar duplicatas
       }
 
-      logger.info(`Stream ${streamId} iniciado com sucesso`);
+      logger.info(`✅ Stream ${streamId} iniciado com sucesso (status: active)`);
       return streamConfig;
     } catch (error) {
       logger.error(`Erro ao iniciar stream para câmera ${camera.id}:`, error);
@@ -209,35 +241,129 @@ class StreamingService {
    */
   async startZLMStream(camera, options) {
     const { quality, format, audio, streamId, userToken } = options;
-    
+
     logger.info(`Iniciando stream ZLM para câmera ${camera.id} (${camera.name})`);
     logger.debug(`Parâmetros do stream: quality=${quality}, format=${format}, audio=${audio}, streamId=${streamId}`);
     logger.debug(`Dados da câmera: stream_type=${camera.stream_type}, rtsp_url=${camera.rtsp_url}, rtmp_url=${camera.rtmp_url}`);
     logger.debug(`Objeto câmera completo:`, JSON.stringify(camera, null, 2));
     logger.debug(`URL RTSP da câmera: ${camera.rtsp_url}`);
     logger.debug(`ZLM API URL: ${this.zlmApiUrl}`);
-    
+
     try {
       // Determinar a URL correta baseada no tipo de stream
       // Usar 'rtsp' como padrão para câmeras existentes que não têm stream_type definido
       const streamType = camera.stream_type || 'rtsp';
       let streamUrl;
-      
+
+      // ===== CORREÇÃO: Tratar RTMP Push de forma diferente =====
+      // Para câmeras RTMP Push (encoder externo envia para o servidor),
+      // NÃO devemos usar addStreamProxy (que é para PULL).
+      // Devemos verificar se há transmissão ativa no ZLMediaKit.
       if (streamType === 'rtmp') {
         if (!camera.rtmp_url) {
           throw new AppError('URL RTMP da câmera não está configurada', 400);
         }
-        streamUrl = camera.rtmp_url;
-      } else if (streamType === 'rtsp') {
+
+        // Extrair stream key da URL RTMP (ex: rtmp://localhost:1935/live/stream001 -> stream001)
+        const rtmpMatch = camera.rtmp_url.match(/\/live\/([^/]+)$/);
+        const streamKey = rtmpMatch ? rtmpMatch[1] : camera.id;
+
+        logger.info(`📺 Câmera RTMP Push detectada. Stream key: ${streamKey}`);
+
+        // Verificar se há transmissão ativa no ZLMediaKit
+        try {
+          const mediaList = await this.getMediaList();
+          logger.debug(`Streams ativos no ZLMediaKit: ${JSON.stringify(mediaList.map(s => s.stream))}`);
+
+          const activeStream = mediaList.find(s =>
+            s.stream === streamKey || s.stream === camera.id || s.stream === streamId
+          );
+
+          if (!activeStream) {
+            // Não há transmissão ativa - retornar status PENDING
+            logger.info(`⏳ Nenhuma transmissão ativa para ${streamKey}. Retornando status PENDING.`);
+
+            const backendUrl = process.env.BACKEND_URL || 'http://localhost:3002';
+            return {
+              status: 'pending',  // ← IMPORTANTE: NÃO 'active'
+              format,
+              quality,
+              audio,
+              rtmp_url: camera.rtmp_url,
+              stream_key: streamKey,
+              urls: {
+                rtmp: camera.rtmp_url,
+                hls: null,  // Não disponível ainda
+                flv: null,
+                thumbnail: null
+              },
+              message: 'Aguardando transmissão RTMP do encoder. Configure seu encoder para transmitir para a URL RTMP.'
+            };
+          }
+
+          // Stream RTMP está ativo! Retornar URLs funcionais
+          logger.info(`✅ Transmissão RTMP ativa encontrada para ${streamKey}`);
+
+          const backendUrl = process.env.BACKEND_URL || 'http://localhost:3002';
+          const zlmBaseUrl = process.env.ZLM_BASE_URL || 'http://localhost:8000';
+
+          return {
+            status: 'active',
+            format,
+            quality,
+            audio,
+            urls: {
+              rtmp: camera.rtmp_url,
+              hls: `${backendUrl}/api/streams/${streamId}/hls`,
+              flv: `${backendUrl}/api/streams/${streamId}/flv`,
+              thumbnail: `${backendUrl}/api/streams/${streamId}/thumbnail`
+            },
+            directUrls: {
+              rtmp: camera.rtmp_url,
+              hls: `${zlmBaseUrl}/live/${streamKey}.m3u8`,
+              flv: `${zlmBaseUrl}/live/${streamKey}.live.flv`,
+              thumbnail: `${zlmBaseUrl}/live/${streamKey}.live.jpg`
+            },
+            bitrate: this.getQualityBitrate(quality),
+            resolution: this.getQualityResolution(quality, camera.resolution),
+            fps: camera.fps || 30,
+            stream_key: streamKey
+          };
+
+        } catch (err) {
+          logger.warn(`Erro ao verificar streams ativos: ${err.message}. Retornando PENDING.`);
+
+          // Em caso de erro, retornar pending para não bloquear o usuário
+          return {
+            status: 'pending',
+            format,
+            quality,
+            audio,
+            rtmp_url: camera.rtmp_url,
+            stream_key: streamKey,
+            urls: {
+              rtmp: camera.rtmp_url,
+              hls: null,
+              flv: null,
+              thumbnail: null
+            },
+            message: 'Aguardando transmissão RTMP do encoder.'
+          };
+        }
+      }
+      // ===== FIM CORREÇÃO RTMP Push =====
+
+      // Para RTSP: usar addStreamProxy (comportamento original)
+      if (streamType === 'rtsp') {
         if (!camera.rtsp_url) {
           throw new AppError('URL RTSP da câmera não está configurada', 400);
         }
         streamUrl = camera.rtsp_url;
-      } else {
+      } else if (streamType !== 'rtmp') {
         throw new AppError(`Tipo de stream '${streamType}' não suportado`, 400);
       }
-      
-      // Implementar estratégia robusta de limpeza e criação
+
+      // Implementar estratégia robusta de limpeza e criação (apenas para RTSP)
       logger.debug(`Iniciando limpeza e criação do stream ${streamId}`);
       await this.ensureStreamCleanAndCreate(camera, streamId);
       
@@ -359,39 +485,127 @@ class StreamingService {
    */
   async startSRSStream(camera, options) {
     const { quality, format, audio, streamId } = options;
-    
-    try {
-      // SRS não tem API para adicionar streams automaticamente
-      // Precisamos configurar o stream para aceitar push RTMP
-      
-      // Gerar URLs de streaming
-      const baseUrl = process.env.SRS_BASE_URL || 'http://localhost:8001';
-      const urls = {
-        rtmp: `rtmp://localhost:1935/live/${streamId}`,
-        hls: `${baseUrl}/live/${streamId}/index.m3u8`,
-        flv: `${baseUrl}/live/${streamId}.flv`
-      };
 
-      // Para SRS, lidar com diferentes tipos de stream
-      // Usar 'rtsp' como padrão para câmeras existentes que não têm stream_type definido
+    try {
+      // SRS nao tem API para adicionar streams automaticamente
+      // Precisamos configurar o stream para aceitar push RTMP
+
       const streamType = camera.stream_type || 'rtsp';
-      
+      const backendUrl = process.env.BACKEND_URL || 'http://localhost:3002';
+      const srsRtmpPort = process.env.SRS_RTMP_PORT || '1936';
+      const srsHttpPort = process.env.SRS_HTTP_PORT || '8081';
+      const normalizedSrsApi = this.srsApiUrl.endsWith('/api/v1')
+        ? this.srsApiUrl
+        : `${this.srsApiUrl.replace(/\/$/, '')}/api/v1`;
+      const resolvedSrsHlsBase = (() => {
+        const raw = process.env.SRS_HLS_URL || process.env.SRS_BASE_URL;
+        if (raw) return raw.replace(/\/$/, '');
+        const host = process.env.SRS_SERVER_HOST || 'localhost';
+        return `http://${host}:${srsHttpPort}`;
+      })();
+      const srsLiveBase = resolvedSrsHlsBase.endsWith('/live')
+        ? resolvedSrsHlsBase
+        : `${resolvedSrsHlsBase}/live`;
+
+      // Gerar URLs de streaming - usar proxy do backend para acesso externo
+      let urls;
+      let streamKey;
+
       if (streamType === 'rtmp') {
-        // Câmera RTMP - usar diretamente a URL RTMP
+        // Camera RTMP push - extrair stream key da URL configurada
         if (!camera.rtmp_url) {
-          throw new AppError('URL RTMP da câmera não está configurada', 400);
+          throw new AppError('URL RTMP da camera nao esta configurada', 400);
         }
-        // Configurar para aceitar push RTMP da câmera
-        logger.info(`Configurando SRS para câmera RTMP: ${camera.rtmp_url}`);
+
+        // Extrair stream key da URL RTMP (ex: rtmp://localhost:1936/live/stream001 -> stream001)
+        const rtmpMatch = camera.rtmp_url.match(/\/live\/([^/]+)$/);
+        streamKey = rtmpMatch ? rtmpMatch[1] : streamId;
+
+        logger.info(`Configurando SRS para camera RTMP push: ${camera.rtmp_url}`);
+        logger.info(`Stream key extraida: ${streamKey}`);
+
+        // URLs atraves do proxy do backend (acessivel externamente)
+        urls = {
+          rtmp: camera.rtmp_url, // URL de push para o encoder
+          hls: `${backendUrl}/api/streams/${streamId}/hls`,
+          flv: `${backendUrl}/api/streams/${streamId}/flv`,
+          thumbnail: `${backendUrl}/api/streams/${streamId}/thumbnail`
+        };
+
+        // Para RTMP push, nao precisamos fazer nada - so aguardar o encoder conectar
+        // Retornar status pendente se nao houver stream ativo
+        try {
+          const streamsResponse = await axios.get(`${normalizedSrsApi}/streams`, { timeout: 5000 });
+          const activeStream = streamsResponse.data?.streams?.find(s =>
+            s.name === streamKey || s.stream === streamKey
+          );
+
+          if (!activeStream) {
+            logger.info(`Nenhum stream ativo encontrado para ${streamKey}, aguardando encoder...`);
+            return {
+              status: 'pending',
+              format,
+              quality,
+              audio,
+              rtmp_url: camera.rtmp_url,
+              stream_key: streamKey,
+              urls: {
+                rtmp: camera.rtmp_url,
+                hls: null,
+                flv: null,
+                thumbnail: null
+              },
+              directUrls: {
+                rtmp: camera.rtmp_url,
+                hls: null,
+                flv: null,
+                thumbnail: null
+              },
+              message: 'Aguardando transmissao RTMP do encoder para SRS'
+            };
+          } else {
+            logger.info(`Stream ${streamKey} ja esta ativo no SRS`);
+          }
+        } catch (srsError) {
+          logger.warn(`Nao foi possivel verificar SRS: ${srsError.message}`);
+        }
+
+        return {
+          status: 'active',
+          format,
+          quality,
+          audio,
+          stream_key: streamKey,
+          urls,
+          directUrls: {
+            rtmp: camera.rtmp_url,
+            hls: `${srsLiveBase}/${streamKey}.m3u8`,
+            flv: `${srsLiveBase}/${streamKey}.flv`,
+            thumbnail: null
+          },
+          bitrate: this.getQualityBitrate(quality),
+          resolution: this.getQualityResolution(quality, camera.resolution),
+          fps: camera.fps || 30
+        };
       } else if (streamType === 'rtsp') {
-        // Câmera RTSP - precisa converter para RTMP
+        // Camera RTSP - precisa converter para RTMP
         if (!camera.rtsp_url) {
-          throw new AppError('URL RTSP da câmera não está configurada', 400);
+          throw new AppError('URL RTSP da camera nao esta configurada', 400);
         }
+
+        streamKey = streamId;
+        // URLs atraves do proxy do backend (acessivel externamente)
+        urls = {
+          rtmp: `rtmp://localhost:${srsRtmpPort}/live/${streamKey}`,
+          hls: `${backendUrl}/api/streams/${streamId}/hls`,
+          flv: `${backendUrl}/api/streams/${streamId}/flv`,
+          thumbnail: `${backendUrl}/api/streams/${streamId}/thumbnail`
+        };
+
         // Converter RTSP para RTMP usando relay
         await this.startRTSPToRTMPRelay(camera.rtsp_url, urls.rtmp);
       } else {
-        throw new AppError(`Tipo de stream '${streamType}' não suportado`, 400);
+        throw new AppError(`Tipo de stream '${streamType}' nao suportado`, 400);
       }
 
       return {
@@ -399,6 +613,14 @@ class StreamingService {
         quality,
         audio,
         urls,
+        status: 'active',
+        directUrls: {
+          rtmp: urls?.rtmp,
+          hls: `${srsLiveBase}/${streamKey}.m3u8`,
+          flv: `${srsLiveBase}/${streamKey}.flv`,
+          thumbnail: null
+        },
+        stream_key: streamKey,
         bitrate: this.getQualityBitrate(quality),
         resolution: this.getQualityResolution(quality, camera.resolution),
         fps: camera.fps || 30
@@ -410,7 +632,9 @@ class StreamingService {
   }
 
   /**
-   * Parar stream
+   * Parar um stream ativo
+   * @param {string} streamId - ID do stream
+   * @param {string} userId - ID do usuário que está parando o stream
    */
   async stopStream(streamId, userId) {
     try {
@@ -544,6 +768,26 @@ class StreamingService {
     } catch (error) {
       logger.debug(`Erro ao verificar existência do stream ${streamId}:`, error.message);
       return false;
+    }
+  }
+
+  /**
+   * Obter lista de streams ativos no ZLMediaKit
+   * @returns {Promise<Array>} Lista de streams ativos
+   */
+  async getMediaList() {
+    try {
+      const response = await axios.post(`${this.zlmApiUrl}/getMediaList`, {
+        secret: this.zlmSecret
+      }, { timeout: 5000 });
+
+      if (response.data?.code === 0) {
+        return response.data.data || [];
+      }
+      return [];
+    } catch (error) {
+      logger.warn('Erro ao consultar media list do ZLMediaKit:', error.message);
+      return [];
     }
   }
 
@@ -760,17 +1004,136 @@ class StreamingService {
 
   /**
    * Listar todos os streams ativos
+   * CORREÇÃO: Agora consulta diretamente SRS/ZLM ao invés de depender do Map volátil
    */
-  getActiveStreams() {
-    const streams = Array.from(this.activeStreams.values());
-    
-    // Atualizar contadores de viewers
-    streams.forEach(stream => {
-      const viewers = this.streamViewers.get(stream.id);
-      stream.viewers = viewers ? viewers.size : 0;
-    });
+  async getActiveStreams() {
+    try {
+      const streams = [];
+      const backendUrl = process.env.BACKEND_URL || 'http://localhost:3002';
+      const zlmBaseUrl = process.env.ZLM_BASE_URL || 'http://localhost:8000';
+      const srsHttpPort = process.env.SRS_HTTP_PORT || '8081';
+      const srsHost = process.env.SRS_SERVER_HOST || 'localhost';
 
-    return streams;
+      // 1. Buscar streams ativos do ZLMediaKit
+      try {
+        const zlmStreams = await this.getMediaList();
+
+        for (const stream of zlmStreams) {
+          const streamId = stream.stream;
+
+          // Filtrar apenas streams com dados (bytesSpeed > 0 para proxy streams)
+          if (stream.originType === 4 && stream.bytesSpeed <= 0) {
+            continue; // Proxy stream sem dados
+          }
+
+          // Verificar se é um UUID válido (ID de câmera)
+          if (this.isValidUUID(streamId)) {
+            streams.push({
+              id: streamId,
+              camera_id: streamId,
+              status: 'active',
+              server: 'zlm',
+              viewers: stream.totalReaderCount || 0,
+              bytesSpeed: stream.bytesSpeed || 0,
+              aliveSecond: stream.aliveSecond || 0,
+              urls: {
+                hls: `${backendUrl}/api/streams/${streamId}/hls`,
+                flv: `${backendUrl}/api/streams/${streamId}/flv`,
+                thumbnail: `${backendUrl}/api/streams/${streamId}/thumbnail`
+              },
+              directUrls: {
+                hls: `${zlmBaseUrl}/live/${streamId}/hls.m3u8`,
+                flv: `${zlmBaseUrl}/live/${streamId}.live.flv`,
+                thumbnail: `${zlmBaseUrl}/live/${streamId}.live.jpg`
+              }
+            });
+          }
+        }
+
+        logger.debug(`ZLM: Encontrados ${streams.length} streams ativos`);
+      } catch (zlmError) {
+        logger.warn('Erro ao buscar streams do ZLMediaKit:', zlmError.message);
+      }
+
+      // 2. Buscar streams ativos do SRS
+      try {
+        const srsResponse = await axios.get(`${this.srsApiUrl}/streams/`, { timeout: 5000 });
+        const srsStreams = srsResponse.data?.streams || [];
+
+        for (const stream of srsStreams) {
+          // Verificar se stream está ativo (publish.active = true)
+          if (!stream.publish?.active) continue;
+
+          const streamKey = stream.name;
+
+          // Buscar camera ID pelo stream_key no banco
+          const { supabaseAdmin } = await import('../config/database.js');
+          const { data: cameras } = await supabaseAdmin
+            .from('cameras')
+            .select('id, name')
+            .or(`stream_key.eq.${streamKey},rtmp_url.ilike.%${streamKey}%`)
+            .limit(1);
+
+          if (cameras && cameras.length > 0) {
+            const camera = cameras[0];
+            const streamId = camera.id;
+
+            // Evitar duplicatas (se já veio do ZLM)
+            if (streams.find(s => s.id === streamId)) continue;
+
+            streams.push({
+              id: streamId,
+              camera_id: streamId,
+              camera_name: camera.name,
+              status: 'active',
+              server: 'srs',
+              stream_key: streamKey,
+              viewers: stream.clients || 0,
+              urls: {
+                hls: `${backendUrl}/api/streams/${streamId}/hls`,
+                flv: `${backendUrl}/api/streams/${streamId}/flv`,
+                thumbnail: null
+              },
+              directUrls: {
+                hls: `http://${srsHost}:${srsHttpPort}/live/${streamKey}.m3u8`,
+                flv: `http://${srsHost}:${srsHttpPort}/live/${streamKey}.flv`,
+                thumbnail: null
+              }
+            });
+
+            logger.debug(`SRS: Stream ${streamKey} mapeado para camera ${streamId}`);
+          }
+        }
+
+        logger.debug(`SRS: Total de ${srsStreams.filter(s => s.publish?.active).length} streams ativos`);
+      } catch (srsError) {
+        if (srsError.code !== 'ECONNREFUSED') {
+          logger.warn('Erro ao buscar streams do SRS:', srsError.message);
+        }
+      }
+
+      // 3. Também incluir streams do Map local (para manter compatibilidade)
+      for (const [streamId, stream] of this.activeStreams) {
+        if (!streams.find(s => s.id === streamId)) {
+          const viewers = this.streamViewers.get(streamId);
+          stream.viewers = viewers ? viewers.size : 0;
+          streams.push(stream);
+        }
+      }
+
+      logger.debug(`Total de streams ativos: ${streams.length}`);
+      return streams;
+
+    } catch (error) {
+      logger.error('Erro ao obter streams ativos:', error);
+      // Fallback: retornar streams do Map local
+      const streams = Array.from(this.activeStreams.values());
+      streams.forEach(stream => {
+        const viewers = this.streamViewers.get(stream.id);
+        stream.viewers = viewers ? viewers.size : 0;
+      });
+      return streams;
+    }
   }
 
   /**
@@ -817,7 +1180,7 @@ class StreamingService {
    * Obter estatísticas de streaming
    */
   async getStreamingStats() {
-    const streams = this.getActiveStreams();
+    const streams = await this.getActiveStreams();
     const totalViewers = Array.from(this.streamViewers.values())
       .reduce((sum, viewers) => sum + viewers.size, 0);
 

@@ -208,7 +208,9 @@ router.get('/performance',
 router.get('/storage',
   requireRole(['admin', 'operator']),
   asyncHandler(async (req, res) => {
-    const storageStats = await getStorageOverview();
+    const isAdmin = req.user.role === 'admin';
+    const userCameras = isAdmin ? null : req.user.camera_access;
+    const storageStats = await getStorageOverview(userCameras);
 
     res.json({
       message: 'Estatísticas de armazenamento obtidas com sucesso',
@@ -233,19 +235,52 @@ router.get('/stats',
       // Importar MetricsService para obter métricas em tempo real
       const MetricsService = (await import('../services/MetricsService.js')).default;
       const metricsService = MetricsService;
-      
+
       // Coletar métricas atuais
       await metricsService.collectMetrics();
       const metrics = metricsService.getMetrics();
-      
+
+      // FILTRAR MÉTRICAS POR CAMERA_ACCESS DO USUÁRIO (se não for admin)
+      if (userCameras && userCameras.length > 0) {
+        // Buscar contagem de câmeras do usuário
+        const camerasOverview = await getCamerasOverview(userCameras);
+        metrics.cameras = {
+          ...metrics.cameras,
+          total: camerasOverview.total,
+          online: camerasOverview.online,
+          offline: camerasOverview.offline,
+          streaming: camerasOverview.online, // Aproximação
+          recording: camerasOverview.active
+        };
+
+        // Buscar contagem de gravações do usuário
+        const recordingsOverview = await getRecordingsOverview(userCameras);
+        metrics.recordings = {
+          ...metrics.recordings,
+          total: recordingsOverview.total,
+          today: recordingsOverview.today, // Gravações do DIA ATUAL (desde meia-noite)
+          totalSize: parseFloat(recordingsOverview.storage?.total_size_gb || 0) * 1024 * 1024 * 1024,
+          avgDuration: 0
+        };
+
+        // Buscar métricas S3 filtradas por câmeras do usuário
+        const s3MetricsFiltered = await getS3MetricsForUser(userCameras);
+        metrics.storage = {
+          ...metrics.storage,
+          s3: s3MetricsFiltered
+        };
+
+        logger.info(`📊 Dashboard filtrado: ${req.user.email} (${camerasOverview.online}/${camerasOverview.total} online, ${recordingsOverview.total} gravações, ${s3MetricsFiltered.files} arquivos S3)`);
+      }
+
       // Buscar alertas ativos
       const alerts = await getActiveAlerts(userCameras, null, 10);
-      
+
       // Dados para gráficos (últimas 24h)
       const cpuHistory = await getCpuHistoryData('24h');
-      const storageDistribution = await getStorageDistributionData();
+      const storageDistribution = await getStorageDistributionData(userCameras);
       const cameraStats = await getCameraStatsData(userCameras);
-      
+
       const response = {
         success: true,
         data: {
@@ -275,20 +310,32 @@ router.get('/stats',
 // Funções auxiliares
 
 async function getCamerasOverview(userCameras = null) {
-  let query = supabase.from('cameras').select('status, active');
-  
-  if (userCameras) {
+  // Incluir is_streaming para evitar timing issue após restart do backend
+  let query = supabase.from('cameras').select('id, name, status, active, is_streaming');
+
+  if (userCameras && userCameras.length > 0) {
     query = query.in('id', userCameras);
   }
 
-  const { data: cameras } = await query;
-  
-  if (!cameras) return { total: 0, online: 0, offline: 0, active: 0 };
+  const { data: cameras, error } = await query;
+
+  if (error) {
+    logger.error(`❌ getCamerasOverview - Supabase error: ${error.message}`);
+    return { total: 0, online: 0, offline: 0, active: 0 };
+  }
+
+  if (!cameras || cameras.length === 0) {
+    return { total: 0, online: 0, offline: 0, active: 0 };
+  }
+
+  // Considerar online: status='online' OU is_streaming=true (evita timing issue após restart)
+  const onlineCount = cameras.filter(c => c.status === 'online' || c.is_streaming === true).length;
+  const offlineCount = cameras.filter(c => c.status !== 'online' && c.is_streaming !== true).length;
 
   return {
     total: cameras.length,
-    online: cameras.filter(c => c.status === 'online').length,
-    offline: cameras.filter(c => c.status === 'offline').length,
+    online: onlineCount,
+    offline: offlineCount,
     error: cameras.filter(c => c.status === 'error').length,
     maintenance: cameras.filter(c => c.status === 'maintenance').length,
     active: cameras.filter(c => c.active).length,
@@ -321,7 +368,11 @@ async function getUsersOverview() {
 
 async function getRecordingsOverview(userCameras = null) {
   const last24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  
+
+  // Calcular início do dia atual (meia-noite no fuso local)
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+
   let query = supabase
     .from('recordings')
     .select('type, status, file_size, duration, created_at')
@@ -332,14 +383,18 @@ async function getRecordingsOverview(userCameras = null) {
   }
 
   const { data: recordings } = await query;
-  
+
   if (!recordings) return { total: 0, today: 0, size_gb: 0 };
+
+  // Filtrar gravações de HOJE (desde meia-noite)
+  const todayRecordings = recordings.filter(r => r.created_at >= startOfToday);
 
   const totalSize = recordings.reduce((sum, r) => sum + (r.file_size || 0), 0);
   const totalDuration = recordings.reduce((sum, r) => sum + (r.duration || 0), 0);
 
   return {
     total: recordings.length,
+    today: todayRecordings.length, // Gravações do DIA ATUAL
     completed: recordings.filter(r => r.status === 'completed').length,
     recording: recordings.filter(r => r.status === 'recording').length,
     failed: recordings.filter(r => r.status === 'failed').length,
@@ -352,6 +407,31 @@ async function getRecordingsOverview(userCameras = null) {
       total_size_gb: (totalSize / (1024 * 1024 * 1024)).toFixed(2),
       total_duration_hours: (totalDuration / 3600).toFixed(2)
     }
+  };
+}
+
+async function getS3MetricsForUser(userCameras = null) {
+  // Buscar gravações com upload para S3 completo
+  let query = supabase
+    .from('recordings')
+    .select('file_size')
+    .eq('upload_status', 'uploaded');
+
+  if (userCameras && userCameras.length > 0) {
+    query = query.in('camera_id', userCameras);
+  }
+
+  const { data: recordings } = await query;
+
+  if (!recordings || recordings.length === 0) {
+    return { used: 0, files: 0 };
+  }
+
+  const totalSize = recordings.reduce((sum, r) => sum + (r.file_size || 0), 0);
+
+  return {
+    used: totalSize,
+    files: recordings.length
   };
 }
 
@@ -1010,23 +1090,33 @@ async function getPerformanceMetrics(period) {
   };
 }
 
-async function getStorageOverview() {
+async function getStorageOverview(userCameras = null) {
   try {
     // Importar utilitários de storage
     const { getStorageStats: getLocalStorageStats } = await import('../config/storage.js');
-    
+
     // Obter estatísticas de armazenamento local
     const localStats = await getLocalStorageStats();
-    
+
     // Calcular estatísticas de gravações
-    const { data: recordings } = await supabase
+    // NOTA: Usar upload_status ao invés de storage_type (que não existe na tabela)
+    let recordingsQuery = supabase
       .from('recordings')
-      .select('file_size, file_path, storage_type')
+      .select('file_size, file_path, upload_status, camera_id')
       .not('file_size', 'is', null);
-    
-    const localRecordings = recordings?.filter(r => r.storage_type === 'local') || [];
-    const s3Recordings = recordings?.filter(r => r.storage_type === 's3') || [];
-    
+
+    // Filtrar por câmeras do usuário se especificado (não-admin)
+    if (userCameras && userCameras.length > 0) {
+      recordingsQuery = recordingsQuery.in('camera_id', userCameras);
+    }
+
+    const { data: recordings } = await recordingsQuery;
+
+    // Gravações locais: upload_status != 'uploaded' ou null
+    const localRecordings = recordings?.filter(r => r.upload_status !== 'uploaded') || [];
+    // Gravações no S3: upload_status === 'uploaded'
+    const s3Recordings = recordings?.filter(r => r.upload_status === 'uploaded') || [];
+
     const localRecordingsSize = localRecordings.reduce((sum, r) => sum + (r.file_size || 0), 0);
     const s3RecordingsSize = s3Recordings.reduce((sum, r) => sum + (r.file_size || 0), 0);
     
@@ -1281,23 +1371,51 @@ async function getCpuHistoryData(period) {
   }
 }
 
-async function getStorageDistributionData() {
+async function getStorageDistributionData(userCameras = null) {
   try {
-    // Calcular distribuição de armazenamento
-    const { data: recordings } = await supabase
-      .from('recordings')
-      .select('file_size, type');
-    
-    const { data: logs } = await supabase
+    // Calcular distribuição de armazenamento usando paginação para superar limite de 1000 registros
+    let recordingsSize = 0;
+    let page = 0;
+    const pageSize = 1000;
+    let hasMore = true;
+
+    while (hasMore) {
+      let query = supabase
+        .from('recordings')
+        .select('file_size, camera_id');
+
+      // Filtrar por câmeras do usuário se especificado
+      if (userCameras && userCameras.length > 0) {
+        query = query.in('camera_id', userCameras);
+      }
+
+      query = query.range(page * pageSize, (page + 1) * pageSize - 1);
+
+      const { data: recordings, error } = await query;
+
+      if (error) {
+        logger.error('Erro ao buscar gravações para storage:', error);
+        break;
+      }
+
+      if (!recordings || recordings.length === 0) {
+        hasMore = false;
+      } else {
+        recordingsSize += recordings.reduce((sum, r) => sum + (r.file_size || 0), 0);
+        hasMore = recordings.length === pageSize;
+        page++;
+      }
+    }
+
+    const { count: logsCount } = await supabase
       .from('system_logs')
-      .select('id')
+      .select('id', { count: 'exact', head: true })
       .gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString());
-    
-    const recordingsSize = recordings?.reduce((sum, r) => sum + (r.file_size || 0), 0) || 0;
-    const logsSize = (logs?.length || 0) * 1024; // Estimativa de 1KB por log
+
+    const logsSize = (logsCount || 0) * 1024; // Estimativa de 1KB por log
     const backupsSize = recordingsSize * 0.1; // Estimativa de 10% do tamanho das gravações
     const systemSize = 300 * 1024 * 1024; // 300MB para sistema
-    
+
     return [
       { name: 'Gravações', value: Math.round(recordingsSize / (1024 * 1024)), color: '#3b82f6' },
       { name: 'Backups', value: Math.round(backupsSize / (1024 * 1024)), color: '#10b981' },
@@ -1312,40 +1430,30 @@ async function getStorageDistributionData() {
 
 async function getCameraStatsData(userCameras) {
   try {
-    let query = supabase.from('cameras').select('status, active');
-    
+    // Buscar câmeras com is_streaming para considerar como online mesmo após restart
+    let query = supabase.from('cameras').select('status, active, is_streaming');
+
     if (userCameras) {
       query = query.in('id', userCameras);
     }
-    
+
     const { data: cameras } = await query;
-    
+
     if (!cameras) {
       return [
         { name: 'Online', value: 0 },
-        { name: 'Offline', value: 0 },
-        { name: 'Gravando', value: 0 },
-        { name: 'Standby', value: 0 }
+        { name: 'Offline', value: 0 }
       ];
     }
-    
-    const online = cameras.filter(c => c.status === 'online').length;
-    const offline = cameras.filter(c => c.status === 'offline' || c.status === 'error').length;
-    
-    // Buscar câmeras que estão gravando atualmente
-    const { data: activeRecordings } = await supabase
-      .from('recordings')
-      .select('camera_id')
-      .eq('status', 'recording');
-    
-    const recording = activeRecordings?.length || 0;
-    const standby = Math.max(0, online - recording);
-    
+
+    // Considerar online: status='online' OU is_streaming=true (evita timing issue após restart)
+    const online = cameras.filter(c => c.status === 'online' || c.is_streaming === true).length;
+    const offline = cameras.filter(c => c.status !== 'online' && c.is_streaming !== true).length;
+
+    // Retornar apenas Online e Offline (simplificado)
     return [
       { name: 'Online', value: online },
-      { name: 'Offline', value: offline },
-      { name: 'Gravando', value: recording },
-      { name: 'Standby', value: standby }
+      { name: 'Offline', value: offline }
     ];
   } catch (error) {
     logger.error('Erro ao obter estatísticas de câmeras:', error);

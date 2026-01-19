@@ -300,6 +300,9 @@ export const endpoints = {
     getStats: () => '/recordings/stats',
     getTrends: () => '/recordings/trends',
     stop: (id: string) => `/recordings/${id}/stop`,
+    retryUpload: (id: string) => `/recordings/${id}/retry-upload`,
+    retrySegmentUpload: (recordingId: string, segmentId: string) =>
+      `/recordings/${recordingId}/segments/${segmentId}/retry-upload`,
     cleanup: () => '/recordings/cleanup',
     export: () => '/recordings/export',
     exportStatus: (jobId: string) => `/recordings/export/${jobId}/status`,

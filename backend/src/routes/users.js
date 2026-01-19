@@ -37,6 +37,40 @@ import { createModuleLogger } from '../config/logger.js';
 const router = express.Router();
 const logger = createModuleLogger('UserRoutes');
 
+/**
+ * Garante que permissões necessárias sejam atribuídas automaticamente
+ * baseado no camera_access e role do usuário
+ * @param {Array} permissions - Permissões atuais
+ * @param {Array} cameraAccess - Acesso às câmeras
+ * @param {string} role - Role do usuário
+ * @returns {Array} Permissões com itens obrigatórios garantidos
+ */
+function ensureRequiredPermissions(permissions = [], cameraAccess = [], role = 'viewer') {
+  const result = new Set(permissions);
+
+  // Se tem acesso a câmeras, DEVE ter permissão view_cameras
+  if (cameraAccess && cameraAccess.length > 0) {
+    result.add('view_cameras');
+    result.add('view_recordings'); // Geralmente quem vê câmera também vê gravações
+  }
+
+  // Permissões padrão por role
+  const defaultPermissionsByRole = {
+    admin: ['view_cameras', 'view_recordings', 'manage_cameras', 'manage_users', 'system.logs'],
+    operator: ['view_cameras', 'view_recordings', 'manage_cameras'],
+    integrator: ['view_cameras', 'view_recordings', 'manage_cameras'],
+    client: ['view_cameras', 'view_recordings'],
+    viewer: ['view_cameras', 'view_recordings']
+  };
+
+  // Se não tem nenhuma permissão, adicionar padrão do role
+  if (result.size === 0 && defaultPermissionsByRole[role]) {
+    defaultPermissionsByRole[role].forEach(p => result.add(p));
+  }
+
+  return Array.from(result);
+}
+
 // Aplicar autenticação a todas as rotas
 router.use(authenticateToken);
 
@@ -63,11 +97,11 @@ router.get('/',
     // Validar parâmetros de paginação
     const pageNum = parseInt(page);
     const limitNum = parseInt(limit);
-    
+
     if (isNaN(pageNum) || pageNum < 1) {
       throw new ValidationError('Página deve ser um número maior que 0');
     }
-    
+
     if (isNaN(limitNum) || limitNum < 1 || limitNum > 100) {
       throw new ValidationError('Limite deve ser um número entre 1 e 100');
     }
@@ -85,12 +119,21 @@ router.get('/',
 
     const result = await User.findAll(options);
 
-    logger.info(`Lista de usuários solicitada por: ${req.user.email}`);
+    // Filtrar usuários admin se requisitante for operator
+    let filteredUsers = result.users;
+    if (req.user.role === 'operator') {
+      filteredUsers = filteredUsers.filter(user => user.role !== 'admin');
+    }
+
+    logger.info(`Lista de usuários solicitada por: ${req.user.email} (role: ${req.user.role})`);
 
     res.json({
       message: 'Usuários listados com sucesso',
-      data: result.users.map(user => user.toJSON()),
-      pagination: result.pagination
+      data: filteredUsers.map(user => user.toJSON()),
+      pagination: {
+        ...result.pagination,
+        total: req.user.role === 'operator' ? filteredUsers.length : result.pagination.total
+      }
     });
   })
 );
@@ -128,6 +171,43 @@ router.get('/stats',
       message: 'Estatísticas obtidas com sucesso',
       data: stats
     });
+  })
+);
+
+/**
+ * @route GET /api/users/export
+ * @desc Exportar lista de usuários em CSV
+ * @access Private (Admin)
+ */
+router.get('/export',
+  requireRole('admin'),
+  asyncHandler(async (req, res) => {
+    const result = await User.findAll({
+      limit: 1000 // Limite alto para exportar todos
+    });
+
+    const users = result.users;
+
+    // Converter para CSV
+    const csvHeader = 'ID,Username,Email,Nome Completo,Função,Status,Data Criação,Último Login\n';
+    const csvRows = users.map(user => [
+      user.id,
+      user.username || '',
+      user.email,
+      user.full_name || '',
+      user.role,
+      user.status,
+      user.created_at,
+      user.last_login_at || 'Nunca'
+    ].join(',')).join('\n');
+
+    const csvContent = csvHeader + csvRows;
+
+    logger.info(`Exportação de usuários realizada por: ${req.user.email}`);
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="usuarios_${new Date().toISOString().split('T')[0]}.csv"`);
+    res.send(csvContent);
   })
 );
 
@@ -177,6 +257,13 @@ router.post('/',
   asyncHandler(async (req, res) => {
     const { username, full_name, email, password, role, status, permissions, camera_access, two_factor_enabled } = req.body;
 
+    // Garantir permissões obrigatórias baseado no camera_access e role
+    const finalPermissions = ensureRequiredPermissions(
+      permissions || [],
+      camera_access || [],
+      role || 'viewer'
+    );
+
     // Criar usuário
     const user = new User({
       username,
@@ -185,7 +272,7 @@ router.post('/',
       password,
       role,
       status: status || 'pending',
-      permissions: permissions || [],
+      permissions: finalPermissions,
       camera_access: camera_access || [],
       two_factor_enabled: two_factor_enabled || false,
       created_by: req.user.id
@@ -193,7 +280,7 @@ router.post('/',
 
     await user.save();
 
-    logger.info(`Usuário criado: ${email} por ${req.user.email}`);
+    logger.info(`Usuário criado: ${email} por ${req.user.email} com permissões: ${finalPermissions.join(', ')}`);
 
     res.status(201).json({
       message: 'Usuário criado com sucesso',
@@ -252,14 +339,20 @@ router.put('/:id',
     if (isAdmin) {
       if (role !== undefined) user.role = role;
       if (status !== undefined) user.status = status;
-      if (permissions !== undefined) user.permissions = permissions;
       if (camera_access !== undefined) user.camera_access = camera_access;
       if (two_factor_enabled !== undefined) user.two_factor_enabled = two_factor_enabled;
+
+      // Garantir permissões obrigatórias quando permissions ou camera_access mudam
+      const finalCameraAccess = camera_access !== undefined ? camera_access : user.camera_access;
+      const finalRole = role !== undefined ? role : user.role;
+      const basePermissions = permissions !== undefined ? permissions : user.permissions;
+
+      user.permissions = ensureRequiredPermissions(basePermissions, finalCameraAccess, finalRole);
     }
 
     await user.save();
 
-    logger.info(`Usuário ${id} atualizado por: ${req.user.email}`);
+    logger.info(`Usuário ${id} atualizado por: ${req.user.email} - permissões: ${user.permissions?.join(', ')}`);
 
     res.json({
       message: 'Usuário atualizado com sucesso',
@@ -487,9 +580,13 @@ router.put('/:id/camera-access',
     }
 
     user.camera_access = camera_access;
+
+    // Garantir permissões obrigatórias quando camera_access é atualizado
+    user.permissions = ensureRequiredPermissions(user.permissions, camera_access, user.role);
+
     await user.save();
 
-    logger.info(`Acesso às câmeras do usuário ${id} atualizado por: ${req.user.email}`);
+    logger.info(`Acesso às câmeras do usuário ${id} atualizado por: ${req.user.email} - permissões: ${user.permissions?.join(', ')}`);
 
     res.json({
       message: 'Acesso às câmeras atualizado com sucesso',
@@ -889,43 +986,6 @@ router.post('/:id/activate',
       message: 'Usuário reativado com sucesso',
       data: user.toJSON()
     });
-  })
-);
-
-/**
- * @route GET /api/users/export
- * @desc Exportar lista de usuários em CSV
- * @access Private (Admin)
- */
-router.get('/export',
-  requireRole('admin'),
-  asyncHandler(async (req, res) => {
-    const result = await User.findAll({
-      limit: 1000 // Limite alto para exportar todos
-    });
-
-    const users = result.users;
-
-    // Converter para CSV
-    const csvHeader = 'ID,Username,Email,Nome Completo,Função,Status,Data Criação,Último Login\n';
-    const csvRows = users.map(user => [
-      user.id,
-      user.username || '',
-      user.email,
-      user.full_name || '',
-      user.role,
-      user.status,
-      user.created_at,
-      user.last_login_at || 'Nunca'
-    ].join(',')).join('\n');
-
-    const csvContent = csvHeader + csvRows;
-
-    logger.info(`Exportação de usuários realizada por: ${req.user.email}`);
-
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename="usuarios_${new Date().toISOString().split('T')[0]}.csv"`);
-    res.send(csvContent);
   })
 );
 

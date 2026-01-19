@@ -376,13 +376,13 @@ class SegmentationService {
           vhost: streamInfo.vhost || '__defaultVhost__',
           app: streamInfo.app,
           stream: streamInfo.stream,
-          max_second: 60 // 60 segundos por segmento
+          max_second: 1800 // 30 minutos por segmento
         },
         timeout: 10000
       });
 
       if (response.data.code === 0) {
-        logger.debug(`Gravação iniciada para stream: ${streamKey} (60 segundos)`);
+        logger.debug(`Gravação iniciada para stream: ${streamKey} (1800 segundos)`);
       } else {
         logger.warn(`Falha ao iniciar gravação para stream ${streamKey}:`, response.data.msg);
       }

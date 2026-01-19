@@ -1,18 +1,38 @@
-# NewCAM - Sistema de Vigilância IP Profissional
+# 📹 NewCAM - Sistema de Vigilância IP Profissional
+
+[![Status](https://img.shields.io/badge/Status-Active-success)](http://localhost:3002/health)
+[![Environment](https://img.shields.io/badge/Environment-Development-blue)](#)
+[![Node.js](https://img.shields.io/badge/Node.js-18%2B-green)](https://nodejs.org)
+[![React](https://img.shields.io/badge/React-18-blue)](https://reactjs.org)
 
 Sistema completo de monitoramento de câmeras IP com streaming em tempo real, interface web moderna, backend robusto e sistema de upload S3 assíncrono para vigilância profissional.
 
-## 🌐 Acesso à Aplicação
+## 🚀 Quick Start
 
-### 🚀 Produção (Servidor)
-- **URL Principal**: http://66.94.104.241
-- **API Health Check**: http://66.94.104.241/api/health
-- **Status**: ✅ Online e Funcional
+### Instalação Rápida
+```bash
+# 1. Instalar dependências
+npm install
+cd backend && npm install
+cd ../frontend && npm install  
+cd ../worker && npm install
 
-### 🔧 Desenvolvimento Local
-- **Frontend**: http://localhost:5174
+# 2. Iniciar containers Docker
+docker-compose up -d
+
+# 3. Executar aplicação
+npm run dev
+```
+
+### 🌐 Acessos Locais
+- **Frontend**: http://localhost:5173
 - **Backend API**: http://localhost:3002
 - **Health Check**: http://localhost:3002/health
+- **ZLMediaKit**: http://localhost:8000
+
+### 🔑 Credenciais Padrão
+- **Email**: gouveiarx@gmail.com
+- **Senha**: Teste123
 
 ## 🏗️ Arquitetura do Sistema
 
@@ -30,24 +50,27 @@ NewCAM/
 
 ## 🌐 Mapeamento de Portas
 
-### 📱 Servidor de Produção (66.94.104.241)
+### 📱 Servidor de Produção (186.233.4.8) - Janeiro 2025
 
 | Serviço | Porta | URL/Endpoint | Status | Descrição |
 |---------|-------|--------------|--------|-----------||
-| **Nginx** | `80` | http://66.94.104.241 | ✅ | Proxy reverso e frontend |
-| **Backend API** | `3002` | /api/* | ✅ | API REST + WebSocket |
-| **ZLMediaKit** | `8000` | /zlm/* | ✅ | Servidor de streaming |
-| **SRS** | `8080` | /srs/* | ✅ | Servidor de streaming alternativo |
+| **Nginx** | `80` | http://186.233.4.8 | 🆕 | Proxy reverso e frontend |
+| **Backend API** | `3002` | /api/* | 🆕 | API REST + WebSocket |
+| **ZLMediaKit** | `8000` | /zlm/* | 🆕 | Servidor de streaming |
+| **SRS** | `8080` | /srs/* | 🆕 | Servidor de streaming alternativo |
 | **PostgreSQL** | `5432` | localhost:5432 | ✅ | Banco de dados (Supabase) |
+
+> 📝 **Nota**: Servidor migrado em Janeiro 2025. Servidor anterior (66.94.104.241) descontinuado.
 
 ### 🖥️ Desenvolvimento Local
 
-| Serviço | Porta | URL | Descrição |
-|---------|-------|-----|----------|
-| **Frontend** | `5174` | http://localhost:5174 | Interface React + Vite |
-| **Backend** | `3002` | http://localhost:3002 | API REST + WebSocket |
-| **Worker** | `3001` | localhost:3001 | Monitoramento de câmeras |
-| **ZLMediaKit** | `8000` | localhost:8000 | Servidor de streaming |
+| Serviço | Porta | URL | Status | Descrição |
+|---------|-------|-----|--------|-----------|
+| **Frontend** | `5173` | http://localhost:5173 | ✅ | Interface React + TypeScript |
+| **Backend** | `3002` | http://localhost:3002 | ✅ | API REST + WebSocket |
+| **Worker** | `3001` | localhost:3001 | ✅ | Processamento background |
+| **ZLMediaKit** | `8000` | localhost:8000 | ✅ | Servidor de streaming |
+| **Redis** | `6379` | localhost:6379 | ✅ | Cache e sessões |
 | **SRS** | `8080` | localhost:8080 | Servidor de streaming alternativo |
 
 ## 🚀 Tecnologias
@@ -377,6 +400,59 @@ npm run dev          # Desenvolvimento
 - `info`: Informações gerais
 - `debug`: Depuração (apenas desenvolvimento)
 
+## 📚 Documentação
+
+### Guias Detalhados
+- **[📖 Documentação Completa](docs/README.md)** - Índice de toda documentação
+- **[🏗️ Arquitetura](docs/ARCHITECTURE.md)** - Detalhes da arquitetura
+- **[🚀 Deploy](docs/PRODUCTION_DEPLOYMENT_GUIDE.md)** - Guia de deploy
+- **[🔧 API Reference](docs/API_REFERENCE.md)** - Referência completa da API
+- **[❓ Troubleshooting](docs/TROUBLESHOOTING.md)** - Solução de problemas
+
+### Instalação Específica
+- **[🏠 Instalação Local](docs/INSTALACAO_LOCAL.md)**
+- **[🪟 Windows](docs/INSTALACAO_WINDOWS.md)**
+- **[🐧 Linux/macOS](docs/INSTALLATION.md)**
+
+### Configurações e Operações
+- **[⚙️ Variáveis de Ambiente](docs/ENVIRONMENT.md)**
+- **[🖥️ Comandos SSH](docs/COMANDOS_SSH_PRODUCAO.md)**
+- **[📋 Histórico de Correções](docs/CORREÇÕES_IMPLEMENTADAS.md)**
+
+## 🤝 Contribuição
+
+### Como Contribuir
+1. Fork o projeto
+2. Crie sua branch de feature (`git checkout -b feature/AmazingFeature`)
+3. Commit suas mudanças (`git commit -m 'Add some AmazingFeature'`)
+4. Push para a branch (`git push origin feature/AmazingFeature`)
+5. Abra um Pull Request
+
+### Padrões de Código
+- **Backend**: ESLint + Prettier
+- **Frontend**: ESLint + Prettier + TypeScript
+- **Commits**: Conventional Commits
+
+## 📄 Licença
+
+Este projeto está licenciado sob a Licença MIT - veja o arquivo [LICENSE](LICENSE) para detalhes.
+
+## 🆘 Suporte
+
+### Problemas Comuns
+- Verifique primeiro o [Troubleshooting](docs/TROUBLESHOOTING.md)
+- Consulte o [FAQ](docs/FAQ.md) se disponível
+
+### Contato
+- **Issues**: Use o sistema de issues do Git
+- **Documentação**: Consulte [docs/](docs/)
+- **Logs**: Verifique os logs em tempo real com `docker-compose logs -f`
+
+---
+
+**🚀 NewCAM** - Sistema de Vigilância Profissional  
+*Desenvolvido para fornecer monitoramento de câmeras IP confiável e escalável.*
+
 ## 🆘 Troubleshooting
 
 ### Problemas Comuns
@@ -425,7 +501,6 @@ docker-compose restart worker
 - **[API Reference](docs/API_REFERENCE.md)** - Documentação completa da API REST
 - **[Troubleshooting](docs/TROUBLESHOOTING.md)** - Soluções para problemas comuns
 - **[Deploy Guide](docs/DEPLOY_GUIDE.md)** - Guia de deploy em produção
-- **[CLAUDE.md](CLAUDE.md)** - Instruções técnicas para desenvolvimento com IA
 
 ### 🚀 Quick Start
 ```bash

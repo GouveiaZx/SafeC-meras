@@ -36,7 +36,7 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
     return <Navigate to="/unauthorized" replace />;
   }
 
-  if (allowedUserTypes && !allowedUserTypes.includes(user?.userType as any)) {
+  if (allowedUserTypes && user?.userType && !allowedUserTypes.includes(user.userType)) {
     return <Navigate to="/unauthorized" replace />;
   }
 

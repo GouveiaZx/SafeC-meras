@@ -135,15 +135,15 @@ const Security: React.FC = () => {
     try {
       setLoading(true);
       
-      // const params = new URLSearchParams();
-       // if (searchTerm) params.append('search', searchTerm);
-       // if (selectedSeverity) params.append('severity', selectedSeverity);
-       // if (selectedType) params.append('type', selectedType);
-       // if (dateRange.start) params.append('start_date', dateRange.start);
-       // if (dateRange.end) params.append('end_date', dateRange.end);
-       // params.append('page', currentPage.toString());
-       // params.append('limit', itemsPerPage.toString());
-      
+      const params: Record<string, any> = {};
+      // if (searchTerm) params.search = searchTerm;
+      // if (selectedSeverity) params.severity = selectedSeverity;
+      // if (selectedType) params.type = selectedType;
+      // if (dateRange.start) params.start_date = dateRange.start;
+      // if (dateRange.end) params.end_date = dateRange.end;
+      // params.page = currentPage.toString();
+      // params.limit = itemsPerPage.toString();
+
       const [eventsData, statsData, settingsData, sessionsData] = await Promise.all([
         api.get<SecurityEventsResponse>(endpoints.security.getEvents(), params),
         api.get<SecurityStatsResponse>(endpoints.security.getStats()),

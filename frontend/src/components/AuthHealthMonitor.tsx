@@ -12,9 +12,7 @@ import {
   XCircle, 
   Clock,
   Users,
-  RefreshCw,
-  TrendingUp,
-  TrendingDown
+  RefreshCw
 } from 'lucide-react';
 import { authHealthService } from '../services/authHealthService';
 import { toast } from 'sonner';
@@ -35,9 +33,10 @@ const AuthHealthMonitor: React.FC = () => {
       const data = await authHealthService.getAuthHealth();
       setHealthData(data);
       setError(null);
-    } catch (err: any) {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Erro ao carregar dados';
       console.error('Erro ao carregar saúde da autenticação:', err);
-      setError(err.message || 'Erro ao carregar dados');
+      setError(message);
       toast.error('Erro ao carregar métricas de saúde');
     } finally {
       setRefreshing(false);
@@ -49,7 +48,7 @@ const AuthHealthMonitor: React.FC = () => {
     try {
       const alertsData = await authHealthService.getAlerts();
       setAlerts(alertsData);
-    } catch (err: any) {
+    } catch (err) {
       console.error('Erro ao carregar alertas:', err);
     }
   };
@@ -60,7 +59,7 @@ const AuthHealthMonitor: React.FC = () => {
       toast.success('Alerta resolvido com sucesso');
       await fetchAlerts();
       await fetchHealthData();
-    } catch (err: any) {
+    } catch (err) {
       console.error('Erro ao resolver alerta:', err);
       toast.error('Erro ao resolver alerta');
     }

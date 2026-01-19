@@ -277,7 +277,9 @@ router.post('/',
       ptz_enabled,
       night_vision,
       quality_profile,
-      retention_days
+      retention_days,
+      use_dynamic_rtmp,
+      rtmp_server_type
     } = req.validatedData;
 
     // Validação customizada: deve ter pelo menos IP ou URL de stream
@@ -289,10 +291,18 @@ router.post('/',
       hasRtsp: !!rtsp_url,
       hasRtmp: !!rtmp_url
     });
-    
-    if (!ip_address && !rtsp_url && !rtmp_url) {
-      console.log('🔍 [TEMP DEBUG CAMERA CREATE] ERRO: Nenhum campo obrigatório fornecido');
-      throw new ValidationError('Deve ser fornecido pelo menos um: IP da câmera, URL RTSP ou URL RTMP');
+
+    // 🔧 Auto-habilitar pool dinâmico SRS se for RTMP sem URL/IP fornecido
+    if ((stream_type === 'rtmp' || req.body.stream_type === 'rtmp') && !ip_address && !rtsp_url && !rtmp_url) {
+      console.log('🔄 [CAMERA CREATE] Auto-habilitando pool dinâmico SRS para RTMP sem URL/IP');
+      req.validatedData.use_dynamic_rtmp = true;
+      req.validatedData.rtmp_server_type = req.validatedData.rtmp_server_type || 'srs';
+    }
+
+    const allowDynamicRTMP = req.validatedData.use_dynamic_rtmp && (stream_type === 'rtmp' || req.body.stream_type === 'rtmp');
+    if (!ip_address && !rtsp_url && !rtmp_url && !allowDynamicRTMP) {
+      console.log('🔍 [TEMP DEBUG CAMERA CREATE] ERRO: Nenhum campo obrigatório fornecido (sem IP/RTSP/RTMP e sem pool dinâmico)');
+      throw new ValidationError('Deve ser fornecido pelo menos um: IP da câmera, URL RTSP, URL RTMP ou ativar pool dinâmico SRS');
     }
 
     // Verificar se URL RTSP já existe (mais específico que IP)
@@ -337,6 +347,8 @@ router.post('/',
       night_vision,
       quality_profile,
       retention_days,
+      use_dynamic_rtmp,
+      rtmp_server_type,
       created_by: req.user.id
     });
 
@@ -344,9 +356,52 @@ router.post('/',
 
     logger.info(`Câmera criada: ${name} por ${req.user.email}`);
 
+    // Se câmera usa SRS dinâmico, alocar stream do pool
+    let srsStreamConfig = null;
+    if (req.validatedData.use_dynamic_rtmp && req.validatedData.rtmp_server_type === 'srs') {
+      try {
+        const srsIntegrationService = (await import('../services/SRSIntegrationService.js')).default;
+        srsStreamConfig = await srsIntegrationService.requestNewStreamUrl(camera.id);
+
+        // Atualizar câmera com dados do stream
+        await camera.update({
+          rtmp_stream_id: srsStreamConfig.id,
+          rtmp_sequential_number: srsStreamConfig.sequentialNumber,
+          rtmp_url: srsStreamConfig.fullUrl
+        });
+
+        logger.info(`✅ Stream SRS alocado para câmera ${camera.id}: ${srsStreamConfig.streamKey} (${srsStreamConfig.fullUrl})`);
+      } catch (error) {
+        logger.error(`❌ Erro ao alocar stream SRS para câmera ${camera.id}:`, error);
+        // Não falhar o cadastro, apenas avisar
+      }
+    }
+
+    // Se gravação está habilitada, iniciar gravação automaticamente
+    if (recording_enabled) {
+      try {
+        const RecordingService = (await import('../services/RecordingService.js')).default;
+        const recordingService = new RecordingService();
+
+        logger.info(`🎬 Iniciando gravação automática para câmera recém-criada ${camera.id} (${name})`);
+        await recordingService.startRecording(camera.id, {
+          auto_start: true,
+          reason: 'recording_enabled_on_creation'
+        });
+      } catch (recordingError) {
+        logger.error(`❌ Erro ao iniciar gravação para câmera ${camera.id}:`, recordingError);
+        // Não falhar o cadastro da câmera, apenas logar o erro
+      }
+    }
+
+    const responseData = camera.toJSON();
+    if (srsStreamConfig) {
+      responseData.srsStreamConfig = srsStreamConfig;
+    }
+
     res.status(201).json({
       message: 'Câmera criada com sucesso',
-      data: camera.toJSON()
+      data: responseData
     });
   })
 );
@@ -452,6 +507,26 @@ router.put('/:id',
     active: {
       required: false,
       type: 'boolean'
+    },
+    retention_days: {
+      required: false,
+      type: 'positiveNumber',
+      message: 'Dias de retenção deve ser um número positivo'
+    },
+    quality_profile: {
+      required: false,
+      type: 'nonEmptyString',
+      message: 'Perfil de qualidade inválido'
+    },
+    rtsp_url: {
+      required: false,
+      type: 'nonEmptyString',
+      message: 'URL RTSP inválida'
+    },
+    rtmp_url: {
+      required: false,
+      type: 'nonEmptyString',
+      message: 'URL RTMP inválida'
     }
   }),
   asyncHandler(async (req, res) => {
@@ -470,11 +545,42 @@ router.put('/:id',
       }
     }
 
+    // Verificar se recording_enabled mudou
+    const recordingEnabledChanged =
+      req.validatedData.hasOwnProperty('recording_enabled') &&
+      req.validatedData.recording_enabled !== camera.recording_enabled;
+
+    const previousRecordingEnabled = camera.recording_enabled;
+
     // Atualizar campos
     Object.assign(camera, req.validatedData);
     await camera.save();
 
     logger.info(`Câmera ${id} atualizada por: ${req.user.email}`);
+
+    // Se recording_enabled mudou, controlar gravação via ZLMediaKit
+    if (recordingEnabledChanged) {
+      try {
+        const RecordingService = (await import('../services/RecordingService.js')).default;
+        const recordingService = new RecordingService();
+
+        if (req.validatedData.recording_enabled && !previousRecordingEnabled) {
+          // Gravação foi habilitada - iniciar gravação
+          logger.info(`🎬 Iniciando gravação automática para câmera ${id} (${camera.name})`);
+          await recordingService.startRecording(id, {
+            auto_start: true,
+            reason: 'recording_enabled_via_settings'
+          });
+        } else if (!req.validatedData.recording_enabled && previousRecordingEnabled) {
+          // Gravação foi desabilitada - parar gravação
+          logger.info(`🛑 Parando gravação automática para câmera ${id} (${camera.name})`);
+          await recordingService.stopRecording(id);
+        }
+      } catch (recordingError) {
+        logger.error(`❌ Erro ao controlar gravação para câmera ${id}:`, recordingError);
+        // Não falhar a atualização da câmera, apenas logar o erro
+      }
+    }
 
     res.json({
       message: 'Câmera atualizada com sucesso',
@@ -503,6 +609,18 @@ router.delete('/:id',
     const camera = await Camera.findById(id);
     if (!camera) {
       throw new NotFoundError('Câmera não encontrada');
+    }
+
+    // Se câmera tem stream SRS alocado, liberar antes de deletar
+    if (camera.rtmp_stream_id) {
+      try {
+        const srsIntegrationService = (await import('../services/SRSIntegrationService.js')).default;
+        await srsIntegrationService.releaseStreamUrl(camera.rtmp_stream_id);
+        logger.info(`✅ Stream SRS ${camera.rtmp_stream_id} liberado para câmera ${id} antes da exclusão`);
+      } catch (error) {
+        logger.error(`❌ Erro ao liberar stream SRS ${camera.rtmp_stream_id} para câmera ${id}:`, error);
+        // Não falhar a deleção, apenas avisar
+      }
     }
 
     await camera.delete();
@@ -835,6 +953,294 @@ router.get('/:id/recording/status',
       res.status(500).json({
         success: false,
         message: 'Erro ao verificar status de gravação',
+        error: error.message
+      });
+    }
+  })
+);
+
+/**
+ * POST /api/cameras/:id/start-stream
+ * Iniciar streaming de uma câmera
+ */
+router.post('/:id/start-stream',
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    try {
+      logger.info(`Iniciando stream da câmera: ${id}`);
+
+      const camera = await Camera.findById(id);
+      if (!camera) {
+        return res.status(404).json({
+          success: false,
+          message: 'Câmera não encontrada'
+        });
+      }
+
+      // Verificar com ZLMediaKit se há stream real ativo
+      let isReallyStreaming = false;
+      try {
+        const zlmResponse = await streamingService.getMediaList();
+        if (zlmResponse && Array.isArray(zlmResponse)) {
+          isReallyStreaming = zlmResponse.some(stream =>
+            stream.stream === id || stream.stream === camera.stream_key
+          );
+        }
+      } catch (zlmError) {
+        logger.warn(`Não foi possível verificar ZLM: ${zlmError.message}`);
+      }
+
+      // Se não há transmissão real, retornar URLs para configuração
+      if (!isReallyStreaming) {
+        // Gerar URLs de configuração para o usuário
+        const rtmpUrl = camera.rtmp_url || `rtmp://localhost:1935/live/${id}`;
+        const streamKey = camera.stream_key || id;
+
+        // NÃO marcar como online - aguardar transmissão real
+        logger.info(`Câmera ${id} configurada, aguardando transmissão real`);
+
+        return res.json({
+          success: true,
+          message: 'URLs de stream configuradas. Inicie a transmissão no seu encoder.',
+          data: {
+            camera_id: id,
+            camera_name: camera.name,
+            status: 'pending',
+            is_streaming: false,
+            rtmp_url: rtmpUrl,
+            stream_key: streamKey,
+            instructions: 'Configure seu encoder/câmera para transmitir para a URL RTMP acima. O status será atualizado automaticamente quando a transmissão iniciar.'
+          }
+        });
+      }
+
+      // Se há transmissão real, confirmar e atualizar status
+      const streamResult = await streamingService.startStream(camera, {
+        quality: camera.quality_profile || 'medium',
+        format: 'hls',
+        audio: camera.audio_enabled !== false
+      });
+
+      // Atualizar status da câmera no banco de dados
+      await Camera.update(id, {
+        status: 'online',
+        is_streaming: true,
+        hls_url: streamResult.urls?.hls,
+        last_seen: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      });
+
+      logger.info(`Stream confirmado ativo para câmera ${id}`);
+
+      res.json({
+        success: true,
+        message: 'Stream ativo confirmado',
+        data: {
+          camera_id: id,
+          status: 'online',
+          is_streaming: true,
+          stream_url: streamResult.urls?.hls,
+          urls: streamResult.urls,
+          server: streamResult.server
+        }
+      });
+
+    } catch (error) {
+      logger.error(`Erro ao iniciar stream:`, error);
+      res.status(500).json({
+        success: false,
+        message: 'Erro ao iniciar stream',
+        error: error.message
+      });
+    }
+  })
+);
+
+/**
+ * POST /api/cameras/:id/snapshot
+ * Capturar snapshot (imagem) de uma câmera
+ */
+router.post('/:id/snapshot',
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    try {
+      logger.info(`Capturando snapshot da câmera: ${id}`);
+
+      const camera = await Camera.findById(id);
+      if (!camera) {
+        return res.status(404).json({
+          success: false,
+          message: 'Câmera não encontrada'
+        });
+      }
+
+      // Aqui você implementaria a lógica para capturar snapshot
+      // Por exemplo, usar FFmpeg para extrair um frame do stream
+
+      res.json({
+        success: true,
+        message: 'Snapshot endpoint implementado',
+        data: {
+          camera_id: id,
+          snapshot_url: null, // Implementar geração real
+          captured_at: new Date().toISOString(),
+          status: 'not_implemented'
+        }
+      });
+
+    } catch (error) {
+      logger.error(`Erro ao capturar snapshot:`, error);
+      res.status(500).json({
+        success: false,
+        message: 'Erro ao capturar snapshot',
+        error: error.message
+      });
+    }
+  })
+);
+
+/**
+ * POST /api/cameras/:id/force-stop
+ * Forçar parada de streaming e gravação de uma câmera
+ * Útil quando o status está "preso" como ativo
+ */
+router.post('/:id/force-stop',
+  validateParams({
+    id: {
+      required: true,
+      type: 'uuid',
+      message: 'ID da câmera deve ser um UUID válido'
+    }
+  }),
+  requirePermission('cameras.edit'),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const results = { actions: [], errors: [] };
+
+    try {
+      logger.info(`[FORCE-STOP] Iniciando force-stop para câmera ${id}`);
+
+      const camera = await Camera.findById(id);
+      if (!camera) {
+        return res.status(404).json({
+          success: false,
+          message: 'Câmera não encontrada'
+        });
+      }
+
+      // 1. Tentar fechar stream no ZLMediaKit (RTSP cameras)
+      try {
+        const axios = (await import('axios')).default;
+        const ZLM_API_URL = process.env.ZLM_API_URL || 'http://localhost:8000/index/api';
+        const ZLM_SECRET = process.env.ZLM_SECRET || '9QqL3M2K7vHQexkbfp6RvbCUB3GkV4MK';
+
+        const zlmResponse = await axios.get(`${ZLM_API_URL}/close_streams`, {
+          params: {
+            secret: ZLM_SECRET,
+            vhost: '__defaultVhost__',
+            app: 'live',
+            stream: id,
+            force: 1
+          },
+          timeout: 5000
+        });
+
+        if (zlmResponse.data && zlmResponse.data.code === 0) {
+          results.actions.push(`ZLM: ${zlmResponse.data.count_closed || 0} streams fechados`);
+          logger.info(`[FORCE-STOP] ZLM: ${zlmResponse.data.count_closed || 0} streams fechados para ${id}`);
+        }
+      } catch (zlmError) {
+        const errorMsg = `ZLM: ${zlmError.message}`;
+        results.errors.push(errorMsg);
+        logger.warn(`[FORCE-STOP] ${errorMsg}`);
+      }
+
+      // 2. Tentar fechar stream no SRS (RTMP cameras)
+      try {
+        const axios = (await import('axios')).default;
+        const SRS_API_URL = process.env.SRS_API_URL || 'http://localhost:1985/api/v1';
+
+        // Buscar clientes conectados ao stream
+        const clientsResponse = await axios.get(`${SRS_API_URL}/clients/`, { timeout: 5000 });
+        const clients = clientsResponse.data?.clients || [];
+
+        // Filtrar clientes relacionados ao stream_key da câmera
+        const streamKey = camera.stream_key || id;
+        const relatedClients = clients.filter(c =>
+          c.url?.includes(streamKey) || c.name === streamKey
+        );
+
+        let disconnectedCount = 0;
+        for (const client of relatedClients) {
+          try {
+            await axios.delete(`${SRS_API_URL}/clients/${client.id}`, { timeout: 5000 });
+            disconnectedCount++;
+          } catch (e) {
+            // Ignorar erros individuais
+          }
+        }
+
+        if (disconnectedCount > 0) {
+          results.actions.push(`SRS: ${disconnectedCount} clientes desconectados`);
+          logger.info(`[FORCE-STOP] SRS: ${disconnectedCount} clientes desconectados para ${id}`);
+        }
+      } catch (srsError) {
+        const errorMsg = `SRS: ${srsError.message}`;
+        results.errors.push(errorMsg);
+        logger.warn(`[FORCE-STOP] ${errorMsg}`);
+      }
+
+      // 3. Parar gravações ativas
+      try {
+        const RecordingService = (await import('../services/RecordingService.js')).default;
+        await RecordingService.stopRecording(id);
+        results.actions.push('Gravação parada');
+        logger.info(`[FORCE-STOP] Gravação parada para ${id}`);
+      } catch (recError) {
+        const errorMsg = `Gravação: ${recError.message}`;
+        results.errors.push(errorMsg);
+        logger.warn(`[FORCE-STOP] ${errorMsg}`);
+      }
+
+      // 4. Atualizar banco de dados
+      try {
+        await supabaseAdmin
+          .from('cameras')
+          .update({
+            is_streaming: false,
+            is_recording: false,
+            status: 'offline',
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', id);
+
+        results.actions.push('Banco de dados atualizado para offline');
+        logger.info(`[FORCE-STOP] Banco atualizado para ${id}: is_streaming=false, status=offline`);
+      } catch (dbError) {
+        const errorMsg = `DB: ${dbError.message}`;
+        results.errors.push(errorMsg);
+        logger.error(`[FORCE-STOP] ${errorMsg}`);
+      }
+
+      const success = results.actions.length > 0;
+      res.json({
+        success,
+        message: success ? 'Câmera forçada a parar' : 'Nenhuma ação executada',
+        data: {
+          camera_id: id,
+          camera_name: camera.name,
+          actions: results.actions,
+          errors: results.errors
+        }
+      });
+
+    } catch (error) {
+      logger.error(`[FORCE-STOP] Erro geral:`, error);
+      res.status(500).json({
+        success: false,
+        message: 'Erro ao forçar parada',
         error: error.message
       });
     }

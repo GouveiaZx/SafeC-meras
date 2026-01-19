@@ -21,6 +21,16 @@ function isValidUUID(uuid) {
   return uuidRegex.test(uuid);
 }
 
+// Lista de senhas comuns que devem ser rejeitadas
+const COMMON_PASSWORDS = [
+  'password', 'Password1', 'Pass1234', '12345678', '123456789',
+  'qwerty', 'abc123', 'monkey', '1234567890', 'letmein',
+  'trustno1', 'dragon', 'baseball', 'iloveyou', 'master',
+  'sunshine', 'ashley', 'bailey', 'passw0rd', 'shadow',
+  'superman', 'qazwsx', 'michael', 'football', 'admin',
+  'Admin123', 'welcome', 'Welcome1', 'password1', 'Password123'
+];
+
 // Validadores básicos
 const validators = {
   // Validar email
@@ -28,12 +38,24 @@ const validators = {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     return emailRegex.test(value);
   },
-  
+
   // Validar senha
   password: (value) => {
     // Mínimo 8 caracteres, pelo menos 1 letra maiúscula, 1 minúscula, 1 número
     const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z\d@$!%*?&]{8,}$/;
-    return passwordRegex.test(value);
+    if (!passwordRegex.test(value)) {
+      return false;
+    }
+
+    // Verificar se não é uma senha comum
+    const lowerPassword = value.toLowerCase();
+    for (const commonPassword of COMMON_PASSWORDS) {
+      if (lowerPassword === commonPassword.toLowerCase()) {
+        return false;
+      }
+    }
+
+    return true;
   },
   
   // Validar nome
@@ -77,8 +99,8 @@ const validators = {
   
   // Validar role
   role: (value) => {
-    const validRoles = ['admin', 'operator', 'viewer'];
-    return validRoles.includes(value);
+    const validRoles = ['admin', 'integrator', 'operator', 'client', 'viewer'];
+    return typeof value === 'string' && validRoles.includes(value.toLowerCase());
   },
   
   // Validar status de câmera
@@ -369,7 +391,7 @@ const validationSchemas = {
       maxLength: 100
     },
     type: {
-      required: true,
+      required: false,
       type: 'cameraType',
       message: 'Tipo deve ser ip, analog, usb ou virtual'
     },
@@ -465,9 +487,22 @@ const validationSchemas = {
     active: {
       required: false,
       type: 'boolean'
+    },
+    use_dynamic_rtmp: {
+      required: false,
+      type: 'boolean',
+      default: false,
+      message: 'Usar RTMP dinâmico deve ser verdadeiro ou falso'
+    },
+    rtmp_server_type: {
+      required: false,
+      type: 'nonEmptyString',
+      enum: ['srs', 'zlm', 'custom'],
+      default: 'srs',
+      message: 'Tipo de servidor RTMP deve ser srs, zlm ou custom'
     }
   },
-  
+
   // Validação para atualização de usuário
   userUpdate: {
     name: {

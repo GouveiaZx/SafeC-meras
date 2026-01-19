@@ -4,6 +4,7 @@
   "description": "Worker para monitoramento e ativação de câmeras NewCAM",
   "main": "src/worker.js",
   "type": "module",
+  "private": true,
   "scripts": {
     "start": "node src/worker.js",
     "dev": "nodemon src/worker.js",

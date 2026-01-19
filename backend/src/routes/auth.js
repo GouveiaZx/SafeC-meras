@@ -229,47 +229,34 @@ router.post('/register-public',
       throw new AppError('Erro interno do servidor');
     }
 
-    // Se já existe admin, não permitir registro público
-    if (adminExists && adminExists.length > 0) {
-      throw new AuthenticationError('Registro público não permitido. Entre em contato com o administrador.');
-    }
-
     // Verificar se email já existe
     const existingUser = await User.findByEmail(email);
     if (existingUser) {
       throw new ConflictError('Email já está em uso');
     }
 
-    // Mapear userType para role válido
+    // Determinar role e status baseado na existência de admins
     let role;
-    if (adminExists && adminExists.length === 0) {
-      // Primeiro usuário sempre é admin
+    let status;
+
+    if (!adminExists || adminExists.length === 0) {
+      // Primeiro usuário do sistema sempre é admin ativo
       role = 'admin';
+      status = 'active';
     } else {
-      // Mapear userType do frontend para role do backend
-      switch (userType?.toUpperCase()) {
-        case 'ADMIN':
-          role = 'admin';
-          break;
-        case 'INTEGRATOR':
-        case 'OPERATOR':
-          role = 'operator';
-          break;
-        case 'CLIENT':
-        default:
-          role = 'viewer';
-          break;
-      }
+      // Usuários subsequentes são viewers pendentes de aprovação
+      role = 'viewer';
+      status = 'pending';
     }
 
-    // Criar novo usuário (registro público = pendente)
+    // Criar novo usuário
     const user = new User({
       username: email.split('@')[0], // Usar parte do email como username inicial
       full_name: name,
       email,
       password,
       role,
-      status: 'pending' // Registro público requer aprovação
+      status
     });
 
     await user.save();

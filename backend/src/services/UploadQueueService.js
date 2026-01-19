@@ -7,6 +7,7 @@ import { createModuleLogger } from '../config/logger.js';
 import { supabaseAdmin } from '../config/database.js';
 import S3Service from './S3Service.js';
 import PathResolver from '../utils/PathResolver.js';
+import fs from 'fs/promises';
 import { notifyRecordingStatusChange, notifyUploadProgress, notifyUploadError } from '../controllers/socketController.js';
 
 const logger = createModuleLogger('UploadQueueService');
@@ -95,11 +96,13 @@ class UploadQueueService {
       logger.info(`Enqueueing recording for upload: ${recordingId}`, { priority, force });
 
       // Check if recording exists and is eligible for upload
-      const { data: recording, error: fetchError } = await this.supabase
+      const { data: recordings, error: fetchError } = await this.supabase
         .from('recordings')
-        .select('id, camera_id, filename, status, upload_status, local_path, file_path, s3_key')
+        .select('id, camera_id, filename, status, upload_status, local_path, file_path, s3_key, s3_url')
         .eq('id', recordingId)
-        .single();
+        .limit(1);
+
+      const recording = recordings?.[0];
 
       if (fetchError || !recording) {
         throw new Error(`Recording not found: ${recordingId}`);
@@ -130,22 +133,40 @@ class UploadQueueService {
       // Verify file exists locally
       const fileInfo = await PathResolver.findRecordingFile(recording);
       if (!fileInfo || !fileInfo.exists) {
+        // Check if file was already uploaded to S3 (file was deleted after upload)
+        if (recording.s3_url && recording.s3_url.trim() !== '') {
+          logger.info(`Local file not found but already uploaded to S3: ${recordingId}`, {
+            s3_url: recording.s3_url
+          });
+
+          // Ensure status is marked as uploaded
+          if (recording.upload_status !== 'uploaded') {
+            await this.updateStatus(recordingId, 'uploaded', {
+              error_code: null,
+              error_message: null
+            });
+          }
+
+          return { success: true, reason: 'already_uploaded_to_s3', s3_url: recording.s3_url };
+        }
+
+        // File not found and not in S3 - this is a real error
         logger.error(`Local file not found for recording: ${recordingId}`, {
           local_path: recording.local_path,
           file_path: recording.file_path
         });
-        
+
         // Mark as failed
         await this.updateStatus(recordingId, 'failed', {
           error_code: 'FILE_NOT_FOUND',
           error_message: 'Local file not found'
         });
-        
+
         return { success: false, reason: 'file_not_found' };
       }
 
       // Use optimistic locking to prevent race conditions
-      const { data: updated, error: updateError } = await this.supabase
+      const { data: updatedRows, error: updateError } = await this.supabase
         .from('recordings')
         .update({
           upload_status: 'queued',
@@ -156,8 +177,9 @@ class UploadQueueService {
         })
         .eq('id', recordingId)
         .neq('upload_status', 'uploading') // Prevent overriding active uploads
-        .select()
-        .single();
+        .select();
+
+      const updated = updatedRows?.[0];
 
       if (updateError) {
         logger.error(`Failed to enqueue recording: ${recordingId}`, updateError);
@@ -244,7 +266,7 @@ class UploadQueueService {
       }
 
       // Try to claim this recording for upload (optimistic locking)
-      const { data: claimed, error: claimError } = await this.supabase
+      const { data: claimedRows, error: claimError } = await this.supabase
         .from('recordings')
         .update({
           upload_status: 'uploading',
@@ -254,8 +276,9 @@ class UploadQueueService {
         })
         .eq('id', recording.id)
         .in('upload_status', ['pending', 'queued']) // Update if pending or queued
-        .select()
-        .single();
+        .select();
+
+      const claimed = claimedRows?.[0];
 
       if (claimError || !claimed) {
         logger.debug(`Failed to claim recording ${recording.id} (may have been claimed by another worker)`);
@@ -328,11 +351,13 @@ class UploadQueueService {
       });
 
       // Fetch updated recording to send complete notification
-      const { data: updatedRecording } = await this.supabase
+      const { data: updatedRecordings } = await this.supabase
         .from('recordings')
         .select('*')
         .eq('id', recordingId)
-        .single();
+        .limit(1);
+
+      const updatedRecording = updatedRecordings?.[0];
 
       if (updatedRecording) {
         this._notifyStatusChange(updatedRecording);
@@ -398,6 +423,19 @@ class UploadQueueService {
         duration_ms: duration,
         file_size: uploadResult.size
       });
+
+      // Delete local file after successful S3 upload if enabled
+      if (process.env.DELETE_LOCAL_AFTER_UPLOAD === 'true') {
+        try {
+          const fileInfo = await PathResolver.findRecordingFile(recording);
+          if (fileInfo && fileInfo.absolutePath) {
+            await fs.unlink(fileInfo.absolutePath);
+            logger.info(`Local file deleted after S3 upload: ${fileInfo.absolutePath}`);
+          }
+        } catch (deleteError) {
+          logger.warn(`Could not delete local file: ${deleteError.message}`);
+        }
+      }
 
       return {
         success: true,

@@ -98,7 +98,6 @@ remove_item ".gitignore" "arquivo gitignore"
 # 5. REMOVER DOCUMENTAÇÃO DESNECESSÁRIA
 # =========================================================
 echo -e "${BLUE}5. Removendo documentação de desenvolvimento...${NC}"
-remove_item "CLAUDE.md" "arquivo CLAUDE.md"
 remove_item "CORREÇÕES_IMPLEMENTADAS.md" "correções implementadas"
 remove_item "FIX_UPLOAD_SYSTEM.md" "fix upload system"
 remove_item "README.md" "README"

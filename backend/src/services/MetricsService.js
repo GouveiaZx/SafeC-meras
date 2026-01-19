@@ -457,12 +457,56 @@ class MetricsService {
         logger.warn('Não foi possível acessar diretório de gravações:', error.message);
       }
 
-      // Storage S3 (seria necessário fazer chamadas para a API do Wasabi)
-      // Por enquanto, mantemos valores zerados
-      this.metrics.storage.s3 = {
-        used: 0,
-        files: 0
-      };
+      // Storage S3 - calcular baseado em gravações com upload_status='uploaded'
+      // Usar count e paginação para evitar limite de 1000 registros do Supabase
+      try {
+        // 1. Contar total de arquivos S3
+        const { count: s3FileCount, error: countError } = await supabaseAdmin
+          .from('recordings')
+          .select('*', { count: 'exact', head: true })
+          .eq('upload_status', 'uploaded')
+          .not('file_size', 'is', null);
+
+        if (countError) {
+          logger.warn('Erro ao contar arquivos S3:', countError.message);
+          this.metrics.storage.s3 = { used: 0, files: 0 };
+        } else {
+          // 2. Calcular tamanho total com paginação
+          let s3TotalSize = 0;
+          let offset = 0;
+          const batchSize = 1000;
+          let hasMore = true;
+
+          while (hasMore) {
+            const { data: batch, error: batchError } = await supabaseAdmin
+              .from('recordings')
+              .select('file_size')
+              .eq('upload_status', 'uploaded')
+              .not('file_size', 'is', null)
+              .range(offset, offset + batchSize - 1);
+
+            if (batchError || !batch || batch.length === 0) {
+              hasMore = false;
+            } else {
+              s3TotalSize += batch.reduce((sum, r) => sum + (r.file_size || 0), 0);
+              if (batch.length < batchSize) {
+                hasMore = false;
+              } else {
+                offset += batchSize;
+              }
+            }
+          }
+
+          this.metrics.storage.s3 = {
+            used: s3TotalSize,
+            files: s3FileCount || 0
+          };
+          logger.info(`📊 S3 metrics: ${s3FileCount} files, ${(s3TotalSize / 1024 / 1024 / 1024).toFixed(2)} GB`);
+        }
+      } catch (s3Err) {
+        logger.warn('Erro ao calcular métricas S3:', s3Err.message);
+        this.metrics.storage.s3 = { used: 0, files: 0 };
+      }
 
     } catch (error) {
       logger.error('Erro ao coletar métricas de armazenamento:', error);

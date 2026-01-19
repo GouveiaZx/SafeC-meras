@@ -45,8 +45,23 @@ router.get('/:recordingId/stream', authenticateToken, async (req, res) => {
     // Try S3 first if available and not forced local
     if (!force_local && recording.s3_key && recording.upload_status === 'uploaded') {
       try {
+        // ✅ VALIDAÇÃO: Verificar se s3_key bate com filename
+        const s3Filename = recording.s3_key.split('/').pop();
+
+        if (recording.filename && s3Filename !== recording.filename) {
+          logger.warn(`⚠️ S3_KEY inconsistente para ${recordingId}:`, {
+            recording_filename: recording.filename,
+            s3_filename: s3Filename,
+            s3_key: recording.s3_key
+          });
+
+          // Forçar uso de arquivo local quando dados estão inconsistentes
+          logger.info(`💾 Forçando stream local devido a inconsistência de s3_key`);
+          return await serveLocalFile(req, res, recordingId, 'stream');
+        }
+
         logger.info(`🌐 Attempting S3 stream for: ${recordingId}`);
-        
+
         // Generate presigned URL for streaming
         const presignedUrl = await S3Service.getSignedUrl(recording.s3_key, {
           expiresIn: 3600, // 1 hour
@@ -57,10 +72,10 @@ router.get('/:recordingId/stream', authenticateToken, async (req, res) => {
         });
 
         logger.info(`✅ S3 presigned URL generated for: ${recordingId}`);
-        
+
         // Return 302 redirect to presigned URL
         return res.redirect(302, presignedUrl);
-        
+
       } catch (s3Error) {
         logger.warn(`⚠️ S3 streaming failed for ${recordingId}, falling back to local:`, s3Error.message);
         // Fall through to local streaming
@@ -100,8 +115,23 @@ router.get('/:recordingId/download', authenticateToken, async (req, res) => {
     // Try S3 first if available and not forced local
     if (!force_local && recording.s3_key && recording.upload_status === 'uploaded') {
       try {
+        // ✅ VALIDAÇÃO: Verificar se s3_key bate com filename
+        const s3Filename = recording.s3_key.split('/').pop();
+
+        if (recording.filename && s3Filename !== recording.filename) {
+          logger.warn(`⚠️ S3_KEY inconsistente para ${recordingId}:`, {
+            recording_filename: recording.filename,
+            s3_filename: s3Filename,
+            s3_key: recording.s3_key
+          });
+
+          // Forçar uso de arquivo local quando dados estão inconsistentes
+          logger.info(`💾 Forçando download local devido a inconsistência de s3_key`);
+          return await serveLocalFile(req, res, recordingId, 'download');
+        }
+
         logger.info(`🌐 Attempting S3 download for: ${recordingId}`);
-        
+
         // Generate presigned URL for download
         const presignedUrl = await S3Service.getSignedUrl(recording.s3_key, {
           expiresIn: 3600, // 1 hour
@@ -112,7 +142,7 @@ router.get('/:recordingId/download', authenticateToken, async (req, res) => {
         });
 
         logger.info(`✅ S3 presigned download URL generated for: ${recordingId}`);
-        
+
         // Return 302 redirect to presigned URL
         return res.redirect(302, presignedUrl);
         

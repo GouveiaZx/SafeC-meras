@@ -153,10 +153,20 @@ ssl/
 *.sql
 *.dump
 backups/
+archives/
 
 # ========================================
 # ESPECÍFICO DO PROJETO NEWCAM
 # ========================================
+# Resultados de testes
+test-results/
+*.test.log
+
+# Arquivos temporários do sistema
+nul
+storagelogswrite-test.txt
+*write-test.txt
+
 # Configurações locais de desenvolvimento
 config/local.json
 config/development.json
@@ -274,6 +284,70 @@ ml-data/processed/
 # Arquivos de configuração de AI
 ai-models/
 ai-training-data/
+
+# ========================================
+# RELATÓRIOS TEMPORÁRIOS E ARQUIVOS DE TESTE
+# ========================================
+# Relatórios de diagnóstico e análise (temporários)
+RELATORIO_*.md
+DIAGNOSTICO_*.md
+CORRECAO*.md
+CORRECOES_*.md
+VALIDACAO_*.md
+RESUMO_*.md
+ANALISE_*.md
+GUIA_*.md
+FLUXO_*.md
+
+# Arquivos de teste e debug
+admin_token.txt
+admin_login.json
+*_base64.txt
+streams*.txt
+test-results/*.json
+test-results/*.txt
+
+# Archives de build na raiz (devem estar em releases/)
+/*.tar.gz
+/*.zip
+
+# Arquivos de instruções temporárias
+INSTRUCOES_*.md
+CHECKLIST_*.md
+TEST_SYSTEM.md
+
+# Deployment temporário
+DEPLOY_*.md
+IMPLEMENTACAO_*.md
+NEWCAM_PLANO_*.md
+
+# ========================================
+# ARQUIVOS TEMPORÁRIOS DE DESENVOLVIMENTO
+# ========================================
+# Base64 encoded files (deployment artifacts)
+*.b64
+
+# PowerShell scripts de deploy/encoding
+encode_*.ps1
+upload_*.ps1
+
+# Patches one-time
+patch_hooks.js
+
+# Build archives no frontend
+frontend/*.tar.gz
+
+# ========================================
+# LOG FILES (não devem ser versionados)
+# ========================================
+storage/logs/
+backend/storage/logs/
+worker/*.log
+
+# ========================================
+# DESENVOLVIMENTO LOCAL
+# ========================================
+.claude/
 
 # ========================================
 # FIM DO ARQUIVO .gitignore

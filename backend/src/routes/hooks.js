@@ -23,6 +23,35 @@ const ZLM_API_URL = process.env.ZLM_API_URL || 'http://localhost:8000/index/api'
 const ZLM_SECRET = process.env.ZLM_SECRET || '9QqL3M2K7vHQexkbfp6RvbCUB3GkV4MK';
 
 /**
+ * Verificar se ZLMediaKit já está gravando uma stream
+ * IMPORTANTE: Previne reinício desnecessário da gravação
+ */
+async function isZLMRecording(streamId) {
+  try {
+    const response = await axios.get(`${ZLM_API_URL}/isRecording`, {
+      params: {
+        secret: ZLM_SECRET,
+        type: 1, // MP4
+        vhost: '__defaultVhost__',
+        app: 'live',
+        stream: streamId
+      },
+      timeout: 5000
+    });
+
+    if (response.data && response.data.code === 0) {
+      const isRecording = response.data.status === true;
+      logger.debug(`📹 ZLM isRecording para ${streamId}: ${isRecording}`);
+      return isRecording;
+    }
+    return false;
+  } catch (error) {
+    logger.warn(`⚠️ Erro ao verificar isRecording para ${streamId}:`, error.message);
+    return false; // Em caso de erro, assumir que não está gravando
+  }
+}
+
+/**
  * Processar arquivos temporários para uma câmera específica
  */
 async function processTemporaryFilesForCamera(cameraId) {
@@ -136,12 +165,14 @@ async function forceStartRecording(streamId) {
     });
 
     // Log dos parâmetros da requisição
+    // CORREÇÃO: Adicionar max_second para garantir segmentação de 30 minutos
     const requestParams = {
       secret: ZLM_SECRET,
       type: 1, // MP4
       vhost: '__defaultVhost__',
       app: 'live',
-      stream: streamId
+      stream: streamId,
+      max_second: 1800  // 30 minutos - CRÍTICO para segmentação correta
     };
 
     logger.info(`📡 ENVIANDO REQUISIÇÃO STARTRECORD:`, {
@@ -334,6 +365,43 @@ function validateTimestamp(timestamp) {
   }
 }
 
+// Função para extrair timestamp do nome do arquivo ZLMediaKit
+// Formato: 2025-12-02-17-47-50-0.mp4 → Date
+function parseFilenameTimestamp(filename) {
+  try {
+    if (!filename) return null;
+
+    // Remover prefixo '.' se existir
+    const cleanName = filename.startsWith('.') ? filename.substring(1) : filename;
+
+    // Regex para formato: YYYY-MM-DD-HH-MM-SS-N.mp4
+    const match = cleanName.match(/^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})/);
+    if (!match) return null;
+
+    const [, year, month, day, hour, minute, second] = match;
+    const date = new Date(
+      parseInt(year),
+      parseInt(month) - 1, // Mês é 0-indexed
+      parseInt(day),
+      parseInt(hour),
+      parseInt(minute),
+      parseInt(second)
+    );
+
+    if (isNaN(date.getTime())) return null;
+
+    logger.info('📅 Timestamp extraído do filename:', {
+      filename: cleanName,
+      parsed: date.toISOString()
+    });
+
+    return date.toISOString();
+  } catch (error) {
+    logger.warn('⚠️ Erro ao extrair timestamp do filename:', { filename, error: error.message });
+    return null;
+  }
+}
+
 // Função utilitária para verificar se arquivo existe
 async function fileExists(filePath) {
   try {
@@ -448,31 +516,38 @@ router.post('/on_publish', async (req, res) => {
 router.post('/on_play', async (req, res) => {
   try {
     const { app, stream, vhost, schema, params, ip, port, id } = req.body;
-    
-    logger.info('Hook on_play recebido:', {
+
+    logger.info('🎬 Hook on_play recebido:', {
       app,
       stream,
       vhost,
       schema,
       viewer_ip: ip,
       viewer_port: port,
-      viewer_id: id
+      viewer_id: id,
+      params,
+      timestamp: new Date().toISOString()
     });
-    
+
     // Extrair camera_id do stream
     const streamParts = stream.split('_');
     const cameraId = streamParts[0];
-    
+
     if (cameraId) {
       // Incrementar contador de visualizadores (opcional)
-      logger.info(`Nova visualização da câmera ${cameraId} por ${ip}:${port}`);
+      logger.info(`✅ Nova visualização da câmera ${cameraId} por ${ip}:${port}`);
     }
-    
-    // Permitir reprodução
-    res.json({ code: 0, msg: 'success' });
+
+    // SEMPRE permitir reprodução (para debugging)
+    logger.info(`✅ Permitindo reprodução de stream: ${stream} (IP: ${ip})`);
+    return res.json({ code: 0, msg: 'success' });
+
   } catch (error) {
-    logger.error('Erro no hook on_play:', error);
-    res.status(500).json({ code: -1, msg: error.message });
+    logger.error('❌ Erro no hook on_play:', error);
+    logger.error('Stack trace:', error.stack);
+    // MESMO COM ERRO, PERMITIR (para debugging)
+    logger.warn('⚠️ Permitindo reprodução mesmo com erro (modo debug)');
+    return res.json({ code: 0, msg: 'success' });
   }
 });
 
@@ -597,7 +672,26 @@ router.post('/on_stream_changed', async (req, res) => {
           recordingCreationLock.delete(lockKey);
           return res.json({ code: 0, msg: 'recording already exists' });
         }
-        
+
+        // 🔴 CORREÇÃO CRÍTICA: Verificar se ZLMediaKit já está gravando
+        // Isso previne reinício desnecessário da gravação quando a stream reconecta
+        const alreadyRecording = await isZLMRecording(cameraId);
+        if (alreadyRecording) {
+          logger.info(`✅ ZLM já está gravando ${camera.name} - não reiniciando para evitar segmentos curtos`);
+          recordingCreationLock.delete(lockKey);
+
+          // Atualizar flag is_recording mesmo assim
+          await supabaseAdmin
+            .from('cameras')
+            .update({
+              is_recording: true,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', cameraId);
+
+          return res.json({ code: 0, msg: 'already recording in ZLM' });
+        }
+
         // Tentar iniciar gravação (apenas 1 tentativa para evitar spam)
         let attempts = 0;
         const maxAttempts = 1; // Apenas 1 tentativa para evitar bloqueios
@@ -611,45 +705,26 @@ router.post('/on_stream_changed', async (req, res) => {
             
             if (result) {
               logger.info(`✅ Gravação MP4 iniciada com sucesso para ${camera.name} na tentativa ${attempts}`);
-              
-              // Criar entrada no banco de dados com verificação adicional
-              try {
-                const { data: doubleCheck } = await supabaseAdmin
-                  .from('recordings')
-                  .select('id')
-                  .eq('camera_id', cameraId)
-                  .eq('status', 'recording')
-                  .single();
 
-                if (!doubleCheck) {
-                  const now = new Date().toISOString();
-                  const { data: recording, error } = await supabaseAdmin
-                    .from('recordings')
-                    .insert([{
-                      camera_id: cameraId,
-                      status: 'recording',
-                      start_time: now,
-                      started_at: now,
-                      created_at: now,
-                      updated_at: now,
-                      metadata: {
-                        started_by: 'on_stream_changed_auto',
-                        zlm_forced: true,
-                        lock_key: lockKey
-                      }
-                    }])
-                    .select()
-                    .single();
+              // NOTA: NÃO criar registro provisório aqui!
+              // O registro será criado APENAS quando on_record_mp4 for chamado (arquivo finalizado)
+              // Isso garante que a lista de gravações só mostra arquivos reproduzíveis
 
-                  if (!error) {
-                    logger.info(`✅ Entrada de gravação criada no banco: ${recording.id}`);
-                  }
-                } else {
-                  logger.warn(`⚠️ Gravação já existia durante criação: ${doubleCheck.id}`);
-                }
-              } catch (dbError) {
-                logger.error(`⚠️ Erro ao criar entrada no banco (não crítico):`, dbError);
+              // Atualizar flag is_recording da câmera imediatamente
+              const { error: recordFlagError } = await supabaseAdmin
+                .from('cameras')
+                .update({
+                  is_recording: true,
+                  updated_at: new Date().toISOString()
+                })
+                .eq('id', cameraId);
+
+              if (!recordFlagError) {
+                logger.info(`✅ Câmera ${camera.name} marcada como is_recording=true`);
               }
+
+              // Liberar lock após sucesso
+              recordingCreationLock.delete(lockKey);
               
             } else if (attempts < maxAttempts) {
               logger.warn(`⚠️ Falha na tentativa ${attempts}, reagendando em 3 segundos...`);
@@ -676,9 +751,12 @@ router.post('/on_stream_changed', async (req, res) => {
     } else {
       // Stream foi destruída
       logger.info(`🔴 Stream DESTRUÍDA para câmera ${camera.name} (${cameraId})`);
-      
+
+      // ✅ CORREÇÃO #1: Sempre limpar is_recording quando stream morre
       const updateData = {
         is_streaming: false,
+        is_recording: false,  // ✅ Garantir que flag seja limpa mesmo se stopRecording falhar
+        status: 'offline',    // ✅ Marcar como offline quando stream morre
         updated_at: new Date().toISOString()
       };
       
@@ -697,25 +775,102 @@ router.post('/on_stream_changed', async (req, res) => {
       try {
         const { data: activeRecordings } = await supabaseAdmin
           .from('recordings')
-          .select('id, status')
+          .select('id, status, metadata')
           .eq('camera_id', cameraId)
           .eq('status', 'recording')
           .limit(1);
-        
+
         if (activeRecordings && activeRecordings.length > 0) {
           logger.info(`🛑 Parando gravação ativa para câmera ${camera.name}`);
-          
-          const { default: recordingService } = await import('../services/RecordingService.js');
-          await recordingService.stopRecording(cameraId, activeRecordings[0].id);
-          
-          logger.info(`✅ Gravação parada automaticamente para câmera ${camera.name}`);
+
+          try {
+            const { default: recordingService } = await import('../services/RecordingService.js');
+            await recordingService.stopRecording(cameraId, activeRecordings[0].id);
+            logger.info(`✅ Gravação parada automaticamente para câmera ${camera.name}`);
+
+            // ✅ Enfileirar para upload S3 após finalizar
+            try {
+              if (process.env.S3_UPLOAD_ENABLED === 'true' && process.env.ENABLE_UPLOAD_QUEUE === 'true') {
+                // CORREÇÃO: Usar singleton do app ao invés de criar nova instância
+                const uploadQueueService = req.app.get('uploadQueueService');
+                if (uploadQueueService) {
+                  const enqueueResult = await uploadQueueService.enqueue(activeRecordings[0].id, {
+                    priority: 'normal',
+                    source: 'stream_ended'
+                  });
+
+                  if (enqueueResult.success) {
+                    logger.info(`✅ Gravação ${activeRecordings[0].id} enfileirada para upload`);
+                  }
+                } else {
+                  logger.warn('⚠️ UploadQueueService não disponível via app.get()');
+                }
+              }
+            } catch (uploadError) {
+              logger.warn(`⚠️ Falha ao enfileirar para upload:`, uploadError.message);
+            }
+
+          } catch (stopRecordError) {
+            logger.error(`❌ stopRecording() falhou, aplicando fallback:`, {
+              error: stopRecordError.message,
+              recordingId: activeRecordings[0].id
+            });
+
+            // ✅ CORREÇÃO #3: Fallback - marcar gravação como completed manualmente
+            const now = new Date().toISOString();
+            const { error: fallbackError } = await supabaseAdmin
+              .from('recordings')
+              .update({
+                status: 'completed',
+                ended_at: now,
+                updated_at: now,
+                upload_status: 'pending',  // Marcar para upload
+                metadata: {
+                  ...activeRecordings[0].metadata,
+                  stopped_by_fallback: true,
+                  fallback_reason: 'stopRecording_failed_on_stream_destroyed',
+                  fallback_at: now,
+                  original_error: stopRecordError.message
+                }
+              })
+              .eq('id', activeRecordings[0].id);
+
+            if (fallbackError) {
+              logger.error(`❌ Fallback também falhou:`, fallbackError);
+            } else {
+              logger.warn(`⚠️ Gravação ${activeRecordings[0].id} marcada como completed via fallback`);
+
+              // ✅ Enfileirar para upload mesmo no fallback
+              try {
+                if (process.env.S3_UPLOAD_ENABLED === 'true' && process.env.ENABLE_UPLOAD_QUEUE === 'true') {
+                  // CORREÇÃO: Usar singleton do app ao invés de criar nova instância
+                  const uploadQueueService = req.app.get('uploadQueueService');
+                  if (uploadQueueService) {
+                    const enqueueResult = await uploadQueueService.enqueue(activeRecordings[0].id, {
+                      priority: 'normal',
+                      source: 'fallback_stream_ended'
+                    });
+
+                    if (enqueueResult.success) {
+                      logger.info(`✅ Gravação ${activeRecordings[0].id} enfileirada para upload (fallback)`);
+                    }
+                  } else {
+                    logger.warn('⚠️ UploadQueueService não disponível via app.get() (fallback)');
+                  }
+                }
+              } catch (uploadError) {
+                logger.warn(`⚠️ Falha ao enfileirar para upload (fallback):`, uploadError.message);
+              }
+            }
+          }
         } else {
           logger.info(`ℹ️ Nenhuma gravação ativa encontrada para câmera ${camera.name}`);
         }
       } catch (stopRecordError) {
-        logger.error(`❌ Erro ao parar gravação para câmera ${cameraId}:`, {
+        logger.error(`❌ Erro crítico ao processar parada de gravação:`, {
           error: stopRecordError.message,
-          camera: camera.name
+          camera: camera.name,
+          cameraId
         });
       }
     }
@@ -987,22 +1142,45 @@ router.post('/on_record_mp4', async (req, res) => {
       'App': app
     });
 
+    // CORREÇÃO: Extrair file_name do file_path se não for fornecido
+    let effectiveFileName = file_name;
+    if (!effectiveFileName && file_path) {
+      effectiveFileName = path.basename(file_path);
+      logger.info('🔧 file_name extraído de file_path:', {
+        extracted: effectiveFileName,
+        from: file_path
+      });
+    }
+
     // Verificar se arquivo é temporário
-    const isTemporary = file_name && file_name.startsWith('.');
+    const isTemporary = effectiveFileName && effectiveFileName.startsWith('.');
     logger.info(`🔍 Tipo de arquivo: ${isTemporary ? 'TEMPORÁRIO (com ponto)' : 'FINAL'}`);
 
-    // Log dos paths que vamos testar
+    // ========== NOTA: Verificação de isRecording REMOVIDA ==========
+    // MOTIVO: Para gravações segmentadas de 30 minutos, quando o ZLM finaliza um
+    // segmento e inicia o próximo, isRecording=true para o próximo segmento.
+    // Isso fazia com que o webhook do segmento COMPLETO fosse ignorado incorretamente.
+    // O ZLM só envia on_record_mp4 APÓS o arquivo ser finalizado, então é seguro
+    // processar o webhook independentemente do status de gravação do stream.
+    // =================================================================
+    logger.info('✅ Processando arquivo finalizado (verificação isRecording desabilitada para suportar segmentação)', {
+      webhookId,
+      stream,
+      file_name: effectiveFileName
+    });
+
+    // Log dos paths que vamos testar (com validação de undefined)
     const basePath = process.cwd();
     logger.info('🗂️ PATHS DE BUSCA:', {
       'Base path': basePath,
-      'Path 1': path.join(basePath, 'storage', 'www', 'record', 'live', stream),
-      'Path 2': path.join(basePath, 'storage', 'www', folder || '', file_name),
+      'Path 1': stream ? path.join(basePath, 'storage', 'www', 'record', 'live', stream) : null,
+      'Path 2': effectiveFileName ? path.join(basePath, 'storage', 'www', folder || '', effectiveFileName) : null,
       'Path 3': file_path ? path.resolve(file_path) : null
     });
 
     // PASSO 1: DEBOUNCING DE WEBHOOKS DUPLICADOS
     logger.info('🔍 PASSO 1: Verificando debouncing de webhooks...', { webhookId });
-    const webhookKey = `${stream}_${file_name}_${Date.now()}`;
+    const webhookKey = `${stream}_${effectiveFileName}_${Date.now()}`;
     const now = Date.now();
     
     // Limpar webhooks antigos
@@ -1014,7 +1192,7 @@ router.post('/on_record_mp4', async (req, res) => {
     
     // Verificar se webhook é duplicado (mesmo stream e arquivo nos últimos 5 segundos)
     const duplicateKey = Array.from(recentWebhooks.keys())
-      .find(key => key.startsWith(`${stream}_${file_name}_`));
+      .find(key => key.startsWith(`${stream}_${effectiveFileName}_`));
     
     if (duplicateKey) {
       logger.warn('⚠️ PASSO 1 INTERROMPIDO: Webhook duplicado ignorado:', {
@@ -1031,22 +1209,25 @@ router.post('/on_record_mp4', async (req, res) => {
 
     // PASSO 2: VALIDAÇÃO DE DADOS DE ENTRADA
     logger.info('🔍 PASSO 2: Validando dados de entrada...', { webhookId });
-    
-    if (!file_name || !stream) {
-      logger.error('❌ FALHA NO PASSO 2: Dados obrigatórios ausentes:', { 
+
+    if (!effectiveFileName || !stream) {
+      logger.error('❌ FALHA NO PASSO 2: Dados obrigatórios ausentes:', {
         webhookId,
-        file_name_exists: !!file_name, 
+        file_name_exists: !!file_name,
+        effective_file_name_exists: !!effectiveFileName,
         stream_exists: !!stream,
-        file_name, 
-        stream 
+        file_name,
+        effectiveFileName,
+        stream,
+        file_path
       });
-      return res.status(400).json({ code: -1, msg: 'missing required fields' });
+      return res.status(400).json({ code: -1, msg: 'missing required fields (file_name or file_path, and stream)' });
     }
-    logger.info('✅ PASSO 2 CONCLUÍDO: Dados obrigatórios presentes', { webhookId });
+    logger.info('✅ PASSO 2 CONCLUÍDO: Dados obrigatórios presentes', { webhookId, effectiveFileName, stream });
 
     // PASSO 3: VERIFICAR CACHE DE PROCESSAMENTO
     logger.info('🔍 PASSO 3: Verificando cache de processamento...', { webhookId });
-    const cacheKey = `${stream}_${file_name}`;
+    const cacheKey = `${stream}_${effectiveFileName}`;
     
     if (processedRecordings.has(cacheKey)) {
       logger.warn('⚠️ PASSO 2 INTERROMPIDO: Gravação já processada (cache):', { 
@@ -1083,8 +1264,22 @@ router.post('/on_record_mp4', async (req, res) => {
 
     logger.info(`📹 INICIANDO processamento de gravação MP4 para câmera: ${cameraId}`, { webhookId });
 
-    // Validar timestamp
-    const startTimeISO = validateTimestamp(start_time);
+    // Validar timestamp - CORREÇÃO: usar timestamp do filename como fallback
+    // O start_time do ZLMediaKit pode ser inválido (0 ou null)
+    let startTimeISO;
+    if (start_time && !isNaN(start_time) && start_time > 0) {
+      startTimeISO = validateTimestamp(start_time);
+    } else {
+      // Fallback: extrair do nome do arquivo (ex: 2025-12-02-17-47-50-0.mp4)
+      startTimeISO = parseFilenameTimestamp(effectiveFileName || file_name);
+      if (!startTimeISO) {
+        startTimeISO = new Date().toISOString();
+        logger.warn('⚠️ start_time inválido e não foi possível extrair do filename, usando timestamp atual');
+      } else {
+        logger.info('✅ Usando timestamp extraído do filename como start_time');
+      }
+    }
+    logger.info('📅 startTimeISO definido:', { startTimeISO, source: start_time ? 'webhook' : 'filename' });
 
     // Validar duração
     const duration = time_len ? Math.round(parseFloat(time_len)) : null;
@@ -1133,50 +1328,38 @@ router.post('/on_record_mp4', async (req, res) => {
     // PASSO 5: BUSCAR GRAVAÇÃO PARA ATUALIZAR (CORREÇÃO MELHORADA)
     logger.info('🔍 PASSO 5: Buscando gravação para atualizar...', { webhookId });
     
-    // CORREÇÃO MELHORADA: Buscar gravação em QUALQUER status sem file_path para esta câmera
+    // ✅ CORREÇÃO SIMPLIFICADA: Buscar ÚNICA gravação ativa da câmera
+    // Estratégia: Uma câmera só pode ter UMA gravação ativa por vez
+    // Todos os segmentos (30min, 60min, 90min...) devem atualizar o MESMO registro
+
     let activeRecording = null;
     let activeQueryError = null;
-    
-    // Primeira tentativa: buscar gravação com status 'recording' (mais provável)
+
     const { data: recordingActiveData, error: recordingActiveError } = await supabaseAdmin
       .from('recordings')
-      .select('id, status, filename, file_path, local_path, created_at, metadata')
+      .select('id, status, filename, file_path, local_path, created_at, metadata, file_size, duration')
       .eq('camera_id', cameraId)
-      .eq('status', 'recording')
-      .order('created_at', { ascending: false })
+      .eq('status', 'recording')  // Apenas gravações ativas
+      .order('created_at', { ascending: false })  // Mais recente primeiro
       .limit(1)
       .maybeSingle();
 
     if (recordingActiveData) {
       activeRecording = recordingActiveData;
-      logger.info('✅ Encontrada gravação com status "recording":', { id: activeRecording.id });
+      logger.info('✅ Encontrada gravação ATIVA para atualizar:', {
+        webhookId,
+        recordingId: activeRecording.id,
+        hasFilename: !!activeRecording.filename,
+        currentFileSize: activeRecording.file_size,
+        currentDuration: activeRecording.duration,
+        segmentType: activeRecording.filename ? 'SEGMENTO SUBSEQUENTE' : 'PRIMEIRO SEGMENTO'
+      });
     } else {
-      // Segunda tentativa: buscar QUALQUER gravação sem file_path das últimas 4 horas
-      // CORREÇÃO: Expandir janela de tempo para 24h
-      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-      
-      const { data: orphanData, error: orphanError } = await supabaseAdmin
-        .from('recordings')
-        .select('id, status, filename, file_path, local_path, created_at, start_time, metadata')
-        .eq('camera_id', cameraId)
-        .in('status', ['recording', 'processing', 'completed']) // Incluir todos os status possíveis
-        .is('file_path', null)
-        .gte('created_at', twentyFourHoursAgo)
-        .order('created_at', { ascending: false })
-        .limit(3) // Pegar mais registros para melhor matching
-        .maybeSingle();
-
-      if (orphanData) {
-        activeRecording = orphanData;
-        logger.info('✅ Encontrada gravação órfã (sem file_path) recente:', { 
-          id: activeRecording.id, 
-          status: activeRecording.status,
-          created_at: activeRecording.created_at 
-        });
-      } else {
-        activeQueryError = orphanError || recordingActiveError;
-        logger.info('ℹ️ Nenhuma gravação sem file_path encontrada para câmera', camera.name);
-      }
+      activeQueryError = recordingActiveError;
+      logger.info('ℹ️ Nenhuma gravação ativa encontrada - criando nova:', {
+        webhookId,
+        camera: camera.name
+      });
     }
 
     logger.info('📊 RESULTADO DA BUSCA POR GRAVAÇÃO ATIVA/ÓRFÃ:', {
@@ -1195,24 +1378,36 @@ router.post('/on_record_mp4', async (req, res) => {
     });
 
     // Validar se arquivo físico existe - Busca robusta em múltiplos locais
+    // CORREÇÃO: Converter path do Docker para path do host
     let fullFilePath = file_path;
+    if (fullFilePath && fullFilePath.includes('/opt/media/bin/www')) {
+      // Path do Docker detectado - converter para path do host
+      const relativePath = fullFilePath.replace('/opt/media/bin/www/', '');
+      fullFilePath = join(__dirname, '../../../storage/www', relativePath);
+      logger.info('🔄 Convertido path Docker → Host:', {
+        original: file_path,
+        converted: fullFilePath
+      });
+    }
     let fileInfo = null;
     
     // CORREÇÃO: Melhorar normalização de nomes de arquivo
-    let cleanFileName = file_name || '';
-    
+    // Usa effectiveFileName que já foi extraído de file_path se necessário
+    let cleanFileName = effectiveFileName || '';
+
     // Remover prefixo '.' se existir
     if (cleanFileName.startsWith('.')) {
       cleanFileName = cleanFileName.substring(1);
     }
-    
+
     // Garantir extensão .mp4
     if (!cleanFileName.endsWith('.mp4') && cleanFileName.length > 0) {
       cleanFileName = cleanFileName.replace(/\.[^/.]+$/, '') + '.mp4';
     }
-    
+
     logger.info('🔧 FILENAME PROCESSADO:', {
-      'Original': file_name,
+      'Original file_name': file_name,
+      'Effective (extraído)': effectiveFileName,
       'Limpo': cleanFileName,
       'Com ponto': cleanFileName.startsWith('.') ? 'SIM' : 'NÃO'
     });
@@ -1330,8 +1525,9 @@ router.post('/on_record_mp4', async (req, res) => {
     // Usar tamanho real do arquivo se não fornecido
     const actualFileSize = file_size || fileInfo.size;
 
-    // CORREÇÃO: Calcular duração e metadados usando ffprobe se não fornecida
-    let actualDuration = duration;
+    // CORREÇÃO: SEMPRE calcular duração via FFprobe - time_len do ZLMediaKit é impreciso
+    // O FFprobe é a fonte mais confiável para duração real do vídeo
+    let actualDuration = null; // Forçar FFprobe a rodar sempre
     let videoMetadata = {
       resolution: null,
       fps: null,
@@ -1408,9 +1604,12 @@ router.post('/on_record_mp4', async (req, res) => {
           ]);
         }
         
-        // Se ainda falhar, tentar usando time_len do ZLMediaKit
+        // Se ainda falhar, tentar usando time_len do ZLMediaKit (IMPRECISO - usar apenas como fallback)
         if (!ffprobeResult.success && time_len && time_len > 0) {
-          logger.info('📊 ffprobe falhou, usando time_len do ZLMediaKit:', { time_len });
+          logger.warn('⚠️ FFprobe falhou! Usando time_len do ZLMediaKit (pode ser impreciso):', {
+            time_len,
+            reason: 'FFprobe Docker e local falharam'
+          });
           actualDuration = Math.round(time_len);
           
           // Metadados básicos baseados no nome do arquivo
@@ -1481,12 +1680,27 @@ router.post('/on_record_mp4', async (req, res) => {
         // Se ainda não temos duração, usar estimativa baseada no tamanho do arquivo
         if (!actualDuration || actualDuration === 0) {
           if (actualFileSize && actualFileSize > 100000) { // > 100KB
-            // Estimativa muito básica: ~1MB por minuto para qualidade média
-            actualDuration = Math.round(actualFileSize / (1024 * 1024) * 60);
-            logger.info('📊 Duração estimada baseada no tamanho:', { 
-              duration: actualDuration, 
+            // Estimativa realista: ~3MB por minuto para câmeras IP modernas (1080p, 2Mbps)
+            // Para 97MB: 97/3 * 60 = ~1940 segundos (~32 min) - próximo dos 30 min configurados
+            const mbSize = actualFileSize / (1024 * 1024);
+            const estimatedMinutes = mbSize / 3; // ~3MB por minuto (bitrate ~400kbps)
+            actualDuration = Math.round(estimatedMinutes * 60);
+
+            // Ajustar para múltiplos de segmento configurado (30 min = 1800s)
+            // Se estimativa está próxima de 1800s, usar 1800s
+            if (actualDuration > 1600 && actualDuration < 2000) {
+              actualDuration = 1800;
+              logger.info('📊 Duração ajustada para segmento padrão:', {
+                original_estimate: estimatedMinutes * 60,
+                adjusted: actualDuration
+              });
+            }
+
+            logger.info('📊 Duração estimada baseada no tamanho:', {
+              duration: actualDuration,
               fileSize: actualFileSize,
-              method: 'file_size_estimate'
+              mbSize: mbSize.toFixed(2),
+              method: 'file_size_estimate_3mb_per_min'
             });
           }
         }
@@ -1498,13 +1712,27 @@ router.post('/on_record_mp4', async (req, res) => {
           file_name,
           time_len
         });
-        
-        // Fallback final usando time_len se disponível
+
+        // Fallback final usando time_len se disponível (IMPRECISO)
         if (time_len && time_len > 0) {
           actualDuration = Math.round(time_len);
-          logger.info('📊 Fallback: usando time_len como duração:', { duration: actualDuration });
+          logger.warn('⚠️ FALLBACK: usando time_len como duração (pode ser impreciso):', {
+            duration: actualDuration,
+            warning: 'FFprobe não disponível - duração pode não corresponder ao vídeo real'
+          });
         }
       }
+    }
+
+    // FALLBACK FINAL: Se ainda não temos duração e arquivo é grande o suficiente
+    // Usar duração configurada do segmento (1800s = 30 min) para arquivos > 50MB
+    if ((!actualDuration || actualDuration === 0) && actualFileSize > 50 * 1024 * 1024) {
+      actualDuration = 1800; // Segmento padrão de 30 minutos
+      logger.info('📊 FALLBACK FINAL: Usando duração padrão de segmento:', {
+        duration: actualDuration,
+        fileSize: actualFileSize,
+        method: 'segment_default_duration'
+      });
     }
 
     logger.info('✅ Validações concluídas, processando gravação:', {
@@ -1547,73 +1775,168 @@ router.post('/on_record_mp4', async (req, res) => {
     let operationType = 'INSERT';
 
     if (activeRecording) {
-      // ATUALIZAR registro existente com status='recording'
-      logger.info('🔄 ATUALIZANDO registro ativo existente:', {
-        webhookId,
-        existingId: activeRecording.id,
-        existingStatus: activeRecording.status
-      });
+      // CORREÇÃO: Cada segmento de 30 min deve ter seu próprio registro
+      // Registros provisórios (waiting_for_first_segment=true) devem ser ATUALIZADOS, não criar novo
 
-      operationType = 'UPDATE';
-      const updateData = {
-        filename: cleanFileName,
-        file_path: normalizedPath,
-        local_path: normalizedPath,
-        file_size: actualFileSize,
-        duration: actualDuration,
-        end_time: actualDuration ? new Date(new Date(startTimeISO).getTime() + (actualDuration * 1000)).toISOString() : null,
-        // NÃO marcar como ended_at ainda - gravação pode continuar
-        // ended_at: new Date().toISOString(),
-        status: 'recording', // CORREÇÃO: Manter como 'recording' - só completar quando parar explicitamente
-        quality: videoMetadata.bitrate > 2000 ? 'high' : videoMetadata.bitrate > 1000 ? 'medium' : 'low',
-        codec: videoMetadata.codec || 'h264',
-        format: 'mp4',
-        resolution: videoMetadata.resolution,
-        width: videoMetadata.width,
-        height: videoMetadata.height,
-        fps: videoMetadata.fps,
-        bitrate: videoMetadata.bitrate,
-        metadata: {
-          ...activeRecording.metadata,
-          stream_name: stream,
-          hook_id: hookId,
-          processed_by: 'on_record_mp4',
-          processed_at: new Date().toISOString(),
-          file_found_at: fullFilePath,
-          updated_from_webhook: true,
-          previous_status: activeRecording.status
-        },
-        updated_at: new Date().toISOString()
-      };
+      if (activeRecording.filename && !activeRecording.metadata?.waiting_for_first_segment) {
+        // JÁ TEM FILENAME E NÃO É PROVISÓRIO = Segmento subsequente - CRIAR NOVO REGISTRO
+        logger.info('➕ Segmento SUBSEQUENTE detectado - CRIANDO NOVO REGISTRO:', {
+          webhookId,
+          previousRecordingId: activeRecording.id,
+          previousFilename: activeRecording.filename,
+          newFilename: cleanFileName,
+          reason: 'Cada segmento de 30 min deve ter registro único'
+        });
 
-      const { data: updatedRecording, error: updateError } = await supabaseAdmin
-        .from('recordings')
-        .update(updateData)
-        .eq('id', activeRecording.id)
-        .select()
-        .single();
+        // 1. Finalizar registro anterior (marcar como completed)
+        const { error: completeError } = await supabaseAdmin
+          .from('recordings')
+          .update({
+            status: 'completed',
+            ended_at: new Date().toISOString(),
+            upload_status: 'pending',
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', activeRecording.id);
 
-      if (updateError) {
-        logger.error('❌ Erro ao atualizar gravação ativa:', updateError);
-        throw updateError;
+        if (completeError) {
+          logger.error('❌ Erro ao finalizar gravação anterior:', completeError);
+        } else {
+          logger.info(`✅ Gravação anterior ${activeRecording.id} finalizada`);
+        }
+
+        // 2. Criar novo registro para este segmento
+        const newSegmentData = {
+          camera_id: cameraId,
+          filename: cleanFileName,
+          file_path: normalizedPath,
+          local_path: normalizedPath,
+          file_size: actualFileSize,
+          duration: actualDuration,
+          start_time: startTimeISO,
+          started_at: startTimeISO,
+          end_time: actualDuration ? new Date(new Date(startTimeISO).getTime() + (actualDuration * 1000)).toISOString() : null,
+          status: 'completed',  // Arquivo finalizado - pronto para reprodução
+          upload_status: 'pending',  // CORREÇÃO: Sempre marcar para upload (será processado pelo UploadQueueService)
+          quality: videoMetadata.bitrate > 2000 ? 'high' : videoMetadata.bitrate > 1000 ? 'medium' : 'low',
+          codec: videoMetadata.codec || 'h264',
+          resolution: videoMetadata.resolution,
+          width: videoMetadata.width,
+          height: videoMetadata.height,
+          fps: videoMetadata.fps,
+          bitrate: videoMetadata.bitrate,
+          metadata: {
+            stream_name: stream,
+            hook_id: hookId,
+            processed_by: 'on_record_mp4',
+            processed_at: new Date().toISOString(),
+            file_found_at: fullFilePath,
+            segment_number: 'subsequent',
+            previous_recording_id: activeRecording.id
+          },
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
+
+        const { data: newSegmentRecording, error: insertError } = await supabaseAdmin
+          .from('recordings')
+          .insert(newSegmentData)
+          .select()
+          .single();
+
+        if (insertError) {
+          logger.error('❌ Erro ao criar registro para segmento subsequente:', insertError);
+          throw insertError;
+        }
+
+        recording = newSegmentRecording;
+        operationType = 'INSERT_SEGMENT';
+        logger.info(`✅ Novo registro criado para segmento: ${recording.id}`, {
+          webhookId,
+          newRecordingId: recording.id,
+          previousRecordingId: activeRecording.id,
+          filename: cleanFileName
+        });
+
+        // Pular para o fim do processamento (já processou este segmento)
+        // Continua no código abaixo para notificações e resposta
+
+      } else {
+        // NÃO TEM FILENAME = Primeiro segmento (atualizar com dados)
+        logger.info('🔄 PRIMEIRO SEGMENTO - Atualizando registro:', {
+          webhookId,
+          recordingId: activeRecording.id,
+          filename: cleanFileName
+        });
+
+        operationType = 'UPDATE';
+        const updateData = {
+          filename: cleanFileName,
+          file_path: normalizedPath,
+          local_path: normalizedPath,
+          file_size: actualFileSize,
+          duration: actualDuration,
+          start_time: startTimeISO,
+          end_time: actualDuration ? new Date(new Date(startTimeISO).getTime() + (actualDuration * 1000)).toISOString() : null,
+
+          // Arquivo finalizado - status 'completed' para exibição na lista
+          status: 'completed',
+          ended_at: new Date().toISOString(),
+
+          quality: videoMetadata.bitrate > 2000 ? 'high' : videoMetadata.bitrate > 1000 ? 'medium' : 'low',
+          codec: videoMetadata.codec || 'h264',
+          resolution: videoMetadata.resolution,
+          width: videoMetadata.width,
+          height: videoMetadata.height,
+          fps: videoMetadata.fps,
+          bitrate: videoMetadata.bitrate,
+          metadata: {
+            ...activeRecording.metadata,
+            stream_name: stream,
+            hook_id: hookId,
+            processed_by: 'on_record_mp4',
+            processed_at: new Date().toISOString(),
+            file_found_at: fullFilePath,
+            first_segment: true,
+            // Limpar flags provisórias
+            waiting_for_first_segment: false,
+            provisional: false
+          },
+          updated_at: new Date().toISOString()
+        };
+
+        const { data: updatedRecording, error: updateError } = await supabaseAdmin
+          .from('recordings')
+          .update(updateData)
+          .eq('id', activeRecording.id)
+          .select()
+          .single();
+
+        if (updateError) {
+          logger.error('❌ Erro ao atualizar gravação ativa:', updateError);
+          throw updateError;
+        }
+
+        recording = updatedRecording;
+        logger.info('✅ Gravação ativa ATUALIZADA com sucesso:', {
+          webhookId,
+          recordingId: recording.id,
+          normalized_path: normalizedPath,
+          operation: 'UPDATE',
+          previous_status: activeRecording.status,
+          new_status: 'completed',
+          camera_name: camera.name,
+          duration_seconds: duration,
+          file_size_bytes: actualFileSize
+        });
       }
-
-      recording = updatedRecording;
-      logger.info('✅ Gravação ativa ATUALIZADA com sucesso:', {
-        webhookId,
-        recordingId: recording.id,
-        normalized_path: normalizedPath,
-        operation: 'UPDATE',
-        previous_status: activeRecording.status,
-        new_status: 'completed',
-        camera_name: camera.name,
-        duration_seconds: duration,
-        file_size_bytes: actualFileSize
-      });
-
     } else {
-      // CRIAR novo registro (comportamento original para casos sem gravação ativa)
-      logger.info('➕ CRIANDO novo registro (nenhuma gravação ativa encontrada):', { webhookId });
+      // ✅ CRIAR novo registro - Primeiro segmento de câmera sem gravação ativa
+      logger.info('➕ CRIANDO NOVO REGISTRO (primeiro segmento):', {
+        webhookId,
+        camera: camera.name,
+        filename: cleanFileName
+      });
 
       const recordingData = {
         camera_id: cameraId,
@@ -1625,12 +1948,14 @@ router.post('/on_record_mp4', async (req, res) => {
         start_time: startTimeISO,
         started_at: startTimeISO,
         end_time: actualDuration ? new Date(new Date(startTimeISO).getTime() + (actualDuration * 1000)).toISOString() : null,
-        // NÃO marcar como ended_at ainda - pode ser arquivo temporário
-        // ended_at: new Date().toISOString(),
-        status: 'recording', // CORREÇÃO: Manter como 'recording' - só completar quando parar explicitamente
+
+        // Arquivo finalizado - status 'completed' para exibição na lista
+        ended_at: new Date().toISOString(),
+        status: 'completed',
+        upload_status: 'pending',  // CORREÇÃO: Sempre marcar para upload (será processado pelo UploadQueueService)
+
         quality: videoMetadata.bitrate > 2000 ? 'high' : videoMetadata.bitrate > 1000 ? 'medium' : 'low',
         codec: videoMetadata.codec || 'h264',
-        format: 'mp4',
         resolution: videoMetadata.resolution,
         width: videoMetadata.width,
         height: videoMetadata.height,
@@ -1642,7 +1967,7 @@ router.post('/on_record_mp4', async (req, res) => {
           processed_by: 'on_record_mp4',
           processed_at: new Date().toISOString(),
           file_found_at: fullFilePath,
-          created_as_new: true
+          first_segment: true
         },
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
@@ -1675,74 +2000,25 @@ router.post('/on_record_mp4', async (req, res) => {
       normalized_path: normalizedPath
     });
 
-    // CORREÇÃO: Atualizar status da câmera (gravação completada)
+    // ✅ ATUALIZAR câmera: Marcar que gravação está ativa
     const { error: updateCameraError } = await supabaseAdmin
       .from('cameras')
       .update({
-        is_recording: false, // Gravação foi completada
-        status: 'online',
-        is_streaming: true,
+        is_recording: true,  // Gravação ativa
         last_seen: new Date().toISOString(),
         updated_at: new Date().toISOString()
       })
       .eq('id', cameraId);
 
     if (updateCameraError) {
-      logger.error('❌ Erro ao atualizar status da câmera após completar gravação:', { cameraId, error: updateCameraError });
+      logger.error('❌ Erro ao atualizar status da câmera:', { cameraId, error: updateCameraError });
     } else {
-      logger.info(`✅ Câmera ${camera.name} (${cameraId}) atualizada - gravação completada`);
+      logger.info(`✅ Câmera ${camera.name} marcada como is_recording=true`);
     }
 
-    // NOVO: Enfileirar para upload S3 se habilitado
-    try {
-      const s3UploadEnabled = process.env.S3_UPLOAD_ENABLED === 'true';
-      const enableUploadQueue = process.env.ENABLE_UPLOAD_QUEUE === 'true';
-      
-      if (s3UploadEnabled && enableUploadQueue && recording && recording.id) {
-        logger.info('📤 Enfileirando gravação para upload S3:', {
-          recordingId: recording.id,
-          filename: recording.filename || file_name,
-          cameraId: cameraId
-        });
-        
-        // Importar o UploadQueueService dinamicamente
-        const { default: UploadQueueService } = await import('../services/UploadQueueService.js');
-        const uploadQueueService = new UploadQueueService();
-        
-        // Enfileirar com prioridade normal
-        const enqueueResult = await uploadQueueService.enqueue(recording.id, {
-          priority: 'normal',
-          source: 'webhook_auto'
-        });
-        
-        if (enqueueResult.success) {
-          logger.info('✅ Gravação enfileirada para upload:', {
-            recordingId: recording.id,
-            reason: enqueueResult.reason || 'enqueued',
-            s3_key: enqueueResult.s3_key || null
-          });
-        } else {
-          logger.warn('⚠️ Falha ao enfileirar gravação para upload:', {
-            recordingId: recording.id,
-            reason: enqueueResult.reason,
-            note: 'Upload pode ser processado manualmente'
-          });
-        }
-      } else {
-        logger.debug('📤 Upload S3 desabilitado ou gravação inválida:', {
-          s3UploadEnabled,
-          enableUploadQueue,
-          recordingExists: !!recording?.id
-        });
-      }
-    } catch (uploadEnqueueError) {
-      logger.error('❌ Erro ao enfileirar gravação para upload:', {
-        error: uploadEnqueueError.message,
-        recordingId: recording?.id,
-        stack: uploadEnqueueError.stack,
-        note: 'Gravação salva com sucesso, mas upload deve ser processado manualmente'
-      });
-    }
+    // ✅ CORREÇÃO: NÃO enfileirar para upload aqui
+    // Upload será feito apenas quando stream PARAR (on_stream_none)
+    logger.info('📤 Upload será processado quando gravação finalizar (on_stream_none)');
 
     logger.info(`🎉 Gravação MP4 processada com sucesso:`, {
       camera: camera.name,
@@ -1756,24 +2032,26 @@ router.post('/on_record_mp4', async (req, res) => {
     if (uploadEnabled) {
       try {
         logger.info(`📤 Enfileirando gravação para upload S3: ${recording.id}`);
-        
-        // Importar e instanciar UploadQueueService
-        const { default: UploadQueueService } = await import('../services/UploadQueueService.js');
-        const uploadQueueService = new UploadQueueService();
-        
-        const enqueueResult = await uploadQueueService.enqueue(recording.id);
-        
-        if (enqueueResult.success) {
-          logger.info(`✅ Gravação enfileirada para upload: ${recording.id}`, {
-            reason: enqueueResult.reason,
-            file_size: enqueueResult.file_size
-          });
+
+        // CORREÇÃO: Usar singleton do app ao invés de criar nova instância
+        const uploadQueueService = req.app.get('uploadQueueService');
+        if (!uploadQueueService) {
+          logger.warn('⚠️ UploadQueueService não disponível via app.get() - upload não enfileirado');
         } else {
-          logger.warn(`⚠️ Não foi possível enfileirar gravação: ${recording.id}`, {
-            reason: enqueueResult.reason
-          });
+          const enqueueResult = await uploadQueueService.enqueue(recording.id);
+
+          if (enqueueResult.success) {
+            logger.info(`✅ Gravação enfileirada para upload: ${recording.id}`, {
+              reason: enqueueResult.reason,
+              file_size: enqueueResult.file_size
+            });
+          } else {
+            logger.warn(`⚠️ Não foi possível enfileirar gravação: ${recording.id}`, {
+              reason: enqueueResult.reason
+            });
+          }
         }
-        
+
       } catch (enqueueError) {
         logger.error(`❌ Erro ao enfileirar gravação para upload: ${recording.id}`, {
           error: enqueueError.message

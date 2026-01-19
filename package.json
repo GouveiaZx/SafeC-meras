@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Sistema de Vigilância por Câmeras IP com RTSP/RTMP, gravação contínua e transmissão HLS",
   "main": "index.js",
+  "private": true,
   "scripts": {
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\" \"npm run dev:worker\"",
     "dev:frontend": "cd frontend && npm run dev",

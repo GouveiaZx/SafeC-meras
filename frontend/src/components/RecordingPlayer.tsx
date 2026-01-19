@@ -1,10 +1,9 @@
-import React, { useState, useEffect } from 'react';
-import { Play, Download, ExternalLink, AlertCircle, Clock, HardDrive, Monitor } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Download, ExternalLink, AlertCircle, Clock, HardDrive, Monitor } from 'lucide-react';
 import AuthenticatedVideoPlayer from './AuthenticatedVideoPlayer';
 import Modal from './ui/modal';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
-import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
 import { buildAuthenticatedVideoUrl } from '@/utils/videoUrl';
@@ -19,9 +18,9 @@ interface Recording {
   duration: number;
   size: number;
   file_size?: number;
-  status: 'recording' | 'completed' | 'uploading' | 'uploaded' | 'failed';
-  uploadStatus: 'pending' | 'queued' | 'uploading' | 'uploaded' | 'failed' | 'cancelled' | 'retrying' | 'completed';
-  upload_status?: string; // Backend field name
+  status: string;
+  uploadStatus: string;
+  upload_status?: string;
   uploadProgress?: number;
   localPath?: string;
   s3Key?: string;
@@ -54,19 +53,7 @@ const RecordingPlayer: React.FC<RecordingPlayerProps> = ({
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const { token } = useAuth();
 
-  useEffect(() => {
-    if (isOpen && recording) {
-      console.log('🎬 RecordingPlayer aberto para gravação:', {
-        recordingId: recording.id,
-        filename: recording.filename,
-        cameraName: recording.cameraName,
-        uploadStatus: recording.status
-      });
-      loadPlaybackUrl();
-    }
-  }, [isOpen, recording]);
-
-  const loadPlaybackUrl = async () => {
+  const loadPlaybackUrl = useCallback(async () => {
     setLoading(true);
     setError(null);
     
@@ -76,8 +63,6 @@ const RecordingPlayer: React.FC<RecordingPlayerProps> = ({
       const downloadEndpoint = `/api/recording-files/${recording.id}/download`;
       
       // First check if stream endpoint returns JSON (S3) or direct stream (local)
-      console.log('🔍 Checking stream endpoint response type:', streamEndpoint);
-      
       const response = await fetch(streamEndpoint, {
         method: 'HEAD',
         headers: {
@@ -86,12 +71,9 @@ const RecordingPlayer: React.FC<RecordingPlayerProps> = ({
       });
       
       const contentType = response.headers.get('content-type');
-      console.log('📋 Stream endpoint content type:', contentType);
       
       if (contentType?.includes('application/json')) {
         // S3 source - endpoint returns JSON with presigned URL
-        console.log('🌐 Stream source is S3, fetching presigned URL...');
-        
         const jsonResponse = await fetch(streamEndpoint, {
           headers: {
             'Authorization': `Bearer ${token}`,
@@ -103,27 +85,17 @@ const RecordingPlayer: React.FC<RecordingPlayerProps> = ({
         }
         
         const streamData = await jsonResponse.json();
-        console.log('✅ S3 stream data received:', {
-          source: streamData.source,
-          s3_key: streamData.s3_key,
-          expires_at: streamData.expires_at
-        });
         
         // Use the presigned URL directly for S3
         setPlaybackUrl(streamData.url);
         
       } else {
         // Local source - endpoint streams directly
-        console.log('💾 Stream source is local, using endpoint directly');
         setPlaybackUrl(streamEndpoint);
       }
       
       // Download endpoint can always be used directly (handles redirects)
       setDownloadUrl(downloadEndpoint);
-      
-      console.log('🎥 Playback URL configured successfully');
-      console.log('📥 Download URL configured:', downloadEndpoint);
-      
     } catch (err) {
       console.error('Erro ao carregar URL de reprodução:', err);
       setError(err instanceof Error ? err.message : 'Erro ao carregar gravação');
@@ -131,7 +103,13 @@ const RecordingPlayer: React.FC<RecordingPlayerProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, [recording.id, token]);
+
+  useEffect(() => {
+    if (isOpen) {
+      loadPlaybackUrl();
+    }
+  }, [isOpen, loadPlaybackUrl]);
 
   const handleDownload = () => {
     if (downloadUrl) {

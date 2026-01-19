@@ -72,6 +72,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [refreshToken, setRefreshToken] = useState<string | null>(initialState.refreshToken);
   const [isLoading, setIsLoading] = useState(true);
   const refreshTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const isRefreshingRef = useRef<boolean>(false);
 
   // Função para verificar se o token está expirado
   const isTokenExpired = useCallback((): boolean => {
@@ -90,13 +91,20 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   }, [token]);
 
   // Função para refresh do token
-  const refreshAuthToken = useCallback(async (): Promise<boolean> => {
+  const refreshAuthToken = useCallback(async (silent: boolean = false): Promise<boolean> => {
+    // Prevenir múltiplas chamadas simultâneas
+    if (isRefreshingRef.current) {
+      console.log('🔄 Refresh já em andamento, aguardando...');
+      return false;
+    }
+
     if (!refreshToken) {
       console.log('🔄 Sem refresh token disponível');
       return false;
     }
 
     try {
+      isRefreshingRef.current = true;
       console.log('🔄 Tentando refresh do token...');
       const response = await api.post<{ tokens: { accessToken: string } }>(endpoints.auth.refresh(), {
         refreshToken
@@ -105,19 +113,32 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       const newToken = response.tokens.accessToken;
       setToken(newToken);
       localStorage.setItem('token', newToken);
-      
+
       console.log('✅ Token refreshed com sucesso');
-      authNotifications.showTokenRefreshSuccess();
+      if (!silent) {
+        authNotifications.showTokenRefreshSuccess();
+      }
       scheduleTokenRefresh(newToken);
       return true;
     } catch (error: any) {
       console.error('❌ Erro ao fazer refresh do token:', error);
-      
-      const errorMessage = error.response?.data?.message || error.message || 'Erro na renovação do token';
-      authNotifications.showTokenRefreshError(errorMessage);
-      
-      logout();
+
+      // Não mostrar erro se for refresh silencioso (verificação inicial)
+      if (!silent) {
+        const errorMessage = error.response?.data?.message || error.message || 'Erro na renovação do token';
+        authNotifications.showTokenRefreshError(errorMessage);
+      }
+
+      // Limpar tokens sem fazer logout completo
+      setToken(null);
+      setRefreshToken(null);
+      setUser(null);
+      localStorage.removeItem('token');
+      localStorage.removeItem('refreshToken');
+      localStorage.removeItem('user');
       return false;
+    } finally {
+      isRefreshingRef.current = false;
     }
   }, [refreshToken]);
 
@@ -156,9 +177,17 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         if (token && user) {
           // Verificar se o token está expirado
           if (isTokenExpired()) {
-            console.log('🔄 Token expirado, tentando refresh...');
+            console.log('🔄 Token expirado no mount, tentando refresh...');
             const refreshSuccess = await refreshAuthToken();
             if (!refreshSuccess) {
+              // Limpar estado mas NÃO fazer logout completo para permitir novo login
+              console.log('⚠️ Refresh falhou, limpando tokens antigos silenciosamente');
+              setToken(null);
+              setRefreshToken(null);
+              setUser(null);
+              localStorage.removeItem('token');
+              localStorage.removeItem('refreshToken');
+              localStorage.removeItem('user');
               setIsLoading(false);
               return;
             }
@@ -181,24 +210,34 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
             };
             setUser(mappedUser);
             localStorage.setItem('user', JSON.stringify(mappedUser));
-          } catch (error) {
-            // Token is invalid, try refresh first
-            console.log('❌ Token inválido no backend, tentando refresh...');
-            const refreshSuccess = await refreshAuthToken();
-            if (!refreshSuccess) {
-              logout();
-            }
+          } catch (error: any) {
+            // Token is invalid, limpar silenciosamente sem mostrar erro
+            console.log('⚠️ Token inválido, limpando sessão para permitir novo login');
+            setToken(null);
+            setRefreshToken(null);
+            setUser(null);
+            localStorage.removeItem('token');
+            localStorage.removeItem('refreshToken');
+            localStorage.removeItem('user');
           }
         }
       } catch (error) {
         console.error('Error verifying auth:', error);
+        // Em caso de erro, limpar tudo silenciosamente
+        setToken(null);
+        setRefreshToken(null);
+        setUser(null);
+        localStorage.removeItem('token');
+        localStorage.removeItem('refreshToken');
+        localStorage.removeItem('user');
       } finally {
         setIsLoading(false);
       }
     };
 
     verifyAuth();
-  }, [isTokenExpired, refreshAuthToken, scheduleTokenRefresh]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Executar apenas UMA vez no mount - dependências removidas para prevenir loop
 
   // Cleanup timeout on unmount
   useEffect(() => {
@@ -216,19 +255,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       setIsLoading(true);
       const response = await api.post<{ tokens: { accessToken: string; refreshToken: string }, user: any }>(endpoints.auth.login(), { email, password });
       
-      console.log('🔍 [AuthContext] Login response completa:', response);
-      
       const { tokens, user: userData } = response;
       const newToken = tokens.accessToken;
       const newRefreshToken = tokens.refreshToken;
-      
-      console.log('🔍 [AuthContext] Tokens extraídos:', {
-        newToken: typeof newToken === 'string' ? newToken.substring(0, 50) + '...' : newToken,
-        newRefreshToken: typeof newRefreshToken === 'string' ? newRefreshToken.substring(0, 50) + '...' : newRefreshToken,
-        tokenType: typeof newToken,
-        refreshTokenType: typeof newRefreshToken
-      });
-      
       // Validar que o token é realmente uma string
       if (typeof newToken !== 'string' || !newToken) {
         throw new Error(`Token inválido recebido do servidor. Tipo: ${typeof newToken}, Valor: ${newToken}`);
@@ -248,8 +277,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         createdAt: userData.created_at
       };
       
-      console.log('🔍 [AuthContext] Usuário mapeado:', mappedUser);
-      
       // Store in state
       setToken(newToken);
       setRefreshToken(newRefreshToken);
@@ -259,12 +286,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       localStorage.setItem('token', newToken);
       localStorage.setItem('refreshToken', newRefreshToken);
       localStorage.setItem('user', JSON.stringify(mappedUser));
-      
-      console.log('🔍 [AuthContext] Dados salvos no localStorage:', {
-        tokenSaved: localStorage.getItem('token')?.substring(0, 50) + '...',
-        refreshTokenSaved: localStorage.getItem('refreshToken')?.substring(0, 50) + '...',
-        userSaved: localStorage.getItem('user')
-      });
       
       // Show success notification
       authNotifications.showLoginSuccess(mappedUser.name);

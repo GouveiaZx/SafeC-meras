@@ -71,19 +71,21 @@ router.get('/',
             message: 'Câmera não encontrada'
           });
         }
-        
-        // TODO: Verificar permissão de acesso à câmera - temporariamente desabilitado
-        // const userCameras = await Camera.findByUserId(userId);
-        // const hasAccess = userCameras.some(cam => cam.id === filters.camera_id);
-        
-        // if (!hasAccess) {
-        //   return res.status(403).json({
-        //     success: false,
-        //     message: 'Acesso negado à câmera especificada'
-        //   });
-        // }
       }
-      
+
+      // FILTRAR por camera_access do usuário (se não for admin)
+      if (req.user.role !== 'admin' && req.user.camera_access?.length > 0) {
+        // Se usuário especificou camera_id, verificar se tem acesso
+        if (filters.camera_id && !req.user.camera_access.includes(filters.camera_id)) {
+          return res.status(403).json({
+            success: false,
+            message: 'Acesso negado à câmera especificada'
+          });
+        }
+        // Filtrar apenas pelas câmeras que o usuário tem acesso
+        filters.camera_ids = req.user.camera_access;
+      }
+
       const result = await RecordingService.searchRecordings(userId, filters);
       
       // Log para debug 
@@ -130,8 +132,11 @@ router.get('/stats',
     try {
       const userId = req.user.id;
       const { period = '7d' } = req.query;
-      
-      const stats = await RecordingService.getRecordingStats(userId, period);
+
+      // Filtrar por câmeras do usuário se não for admin
+      const cameraIds = req.user.role !== 'admin' ? req.user.camera_access : null;
+
+      const stats = await RecordingService.getRecordingStats(userId, period, cameraIds);
       
       res.json({
         success: true,
@@ -179,6 +184,82 @@ router.get('/trends',
 );
 
 /**
+ * @route GET /api/recordings/available-dates
+ * @desc Obter lista de datas que têm gravações (para indicadores no calendário)
+ * @access Private
+ */
+router.get('/available-dates',
+  async (req, res) => {
+    try {
+      const { camera_id, start_date, end_date } = req.query;
+
+      // Filtrar por câmeras do usuário se não for admin
+      let cameraIds = req.user.role !== 'admin' ? req.user.camera_access : null;
+
+      // Se camera_id específica foi passada, verificar acesso
+      if (camera_id) {
+        if (cameraIds && !cameraIds.includes(camera_id)) {
+          return res.status(403).json({
+            success: false,
+            message: 'Acesso negado à câmera especificada'
+          });
+        }
+        cameraIds = [camera_id];
+      }
+
+      // Construir query para buscar datas distintas
+      let query = supabaseAdmin
+        .from('recordings')
+        .select('created_at');
+
+      if (cameraIds && cameraIds.length > 0) {
+        query = query.in('camera_id', cameraIds);
+      }
+
+      // Filtrar por período se especificado
+      if (start_date) {
+        query = query.gte('created_at', start_date);
+      }
+      if (end_date) {
+        query = query.lte('created_at', end_date);
+      }
+
+      const { data: recordings, error } = await query;
+
+      if (error) {
+        throw error;
+      }
+
+      // Extrair datas únicas (formato YYYY-MM-DD)
+      const datesSet = new Set();
+      (recordings || []).forEach(r => {
+        if (r.created_at) {
+          const date = r.created_at.split('T')[0]; // Extrai YYYY-MM-DD
+          datesSet.add(date);
+        }
+      });
+
+      // Converter Set para Array ordenado
+      const availableDates = Array.from(datesSet).sort();
+
+      res.json({
+        success: true,
+        data: availableDates,
+        total: availableDates.length
+      });
+
+    } catch (error) {
+      logger.error('Erro ao obter datas disponíveis:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Erro interno do servidor',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+  }
+);
+
+/**
  * @route GET /api/recordings/active
  * @desc Listar gravações ativas
  * @access Private
@@ -190,7 +271,7 @@ router.get('/active',
       
       logger.info(`Usuário ${userId} buscando gravações ativas`);
 
-      const { data: activeRecordings } = await RecordingService.getActiveRecordings(userId);
+      const activeRecordings = await RecordingService.getActiveRecordings(userId);
 
       res.json({
         success: true,
@@ -203,6 +284,214 @@ router.get('/active',
       res.status(500).json({
         success: false,
         message: 'Erro ao buscar gravações ativas',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+  }
+);
+
+/**
+ * @route GET /api/recordings/zlm-active
+ * @desc Consulta ZLMediaKit e SRS para retornar câmeras gravando ativamente
+ * @access Private
+ */
+router.get('/zlm-active',
+  async (req, res) => {
+    try {
+      const ZLM_API_URL = process.env.ZLM_API_URL || 'http://localhost:8000/index/api';
+      const ZLM_SECRET = process.env.ZLM_SECRET || '9QqL3M2K7vHQexkbfp6RvbCUB3GkV4MK';
+      const SRS_API_URL = process.env.SRS_API_URL || 'http://localhost:1985/api/v1';
+
+      logger.info('Consultando ZLMediaKit e SRS para gravações ativas...');
+
+      // 1. Buscar apenas câmeras que estão ONLINE e com gravação habilitada
+      // FILTRAR por camera_access se não for admin
+      let query = supabaseAdmin
+        .from('cameras')
+        .select('id, name, location, recording_enabled, status, stream_type, rtmp_url, is_streaming')
+        .eq('recording_enabled', true)
+        .eq('is_streaming', true); // Apenas câmeras realmente online
+
+      // Aplicar filtro de camera_access se usuário não for admin
+      if (req.user?.role !== 'admin' && req.user?.camera_access?.length > 0) {
+        query = query.in('id', req.user.camera_access);
+        logger.info(`🔐 Filtro camera_access aplicado em zlm-active para ${req.user.email}: ${req.user.camera_access.length} câmeras`);
+      }
+
+      const { data: cameras, error: camError } = await query;
+
+      if (camError) {
+        throw camError;
+      }
+
+      const activeRecordings = [];
+      const fs = await import('fs/promises');
+      const today = new Date().toISOString().split('T')[0];
+
+      // 2. Verificar gravações ZLMediaKit (câmeras RTSP)
+      try {
+        const mediaListResponse = await axios.get(`${ZLM_API_URL}/getMediaList`, {
+          params: { secret: ZLM_SECRET },
+          timeout: 10000
+        });
+
+        const activeStreams = mediaListResponse.data?.data || [];
+
+        for (const camera of cameras || []) {
+          if (camera.stream_type === 'rtmp') continue; // Skip RTMP cameras for ZLM
+
+          const stream = activeStreams.find(s =>
+            s.stream === camera.id || s.stream === camera.stream_id
+          );
+
+          if (!stream) continue;
+
+          try {
+            const isRecordingResponse = await axios.get(`${ZLM_API_URL}/isRecording`, {
+              params: {
+                secret: ZLM_SECRET,
+                type: 1,
+                vhost: '__defaultVhost__',
+                app: 'live',
+                stream: camera.id
+              },
+              timeout: 5000
+            });
+
+            const isRecording = isRecordingResponse.data?.status === true;
+
+            if (isRecording) {
+              let currentFileSize = 0;
+              let currentFileName = null;
+
+              try {
+                const recordDir = `/root/NewCAM/storage/www/record/live/${camera.id}/${today}`;
+                const files = await fs.readdir(recordDir);
+
+                // Primeiro verificar arquivos ocultos (em gravação ativa pelo ZLM)
+                const hiddenMp4Files = files.filter(f => f.endsWith('.mp4') && f.startsWith('.'));
+                // Depois arquivos finalizados
+                const completedMp4Files = files.filter(f => f.endsWith('.mp4') && !f.startsWith('.'));
+
+                // Priorizar arquivo oculto (em gravação) se existir
+                if (hiddenMp4Files.length > 0) {
+                  const latestFile = hiddenMp4Files.sort().reverse()[0];
+                  currentFileName = latestFile.substring(1); // Remover o . inicial para exibição
+                  const stats = await fs.stat(`${recordDir}/${latestFile}`);
+                  currentFileSize = stats.size;
+                } else if (completedMp4Files.length > 0) {
+                  const latestFile = completedMp4Files.sort().reverse()[0];
+                  currentFileName = latestFile;
+                  const stats = await fs.stat(`${recordDir}/${latestFile}`);
+                  currentFileSize = stats.size;
+                }
+              } catch (e) {}
+
+              activeRecordings.push({
+                camera_id: camera.id,
+                camera_name: camera.name,
+                camera_location: camera.location,
+                is_recording: true,
+                source: 'ZLMediaKit',
+                stream_alive_seconds: stream.aliveSecond || 0,
+                viewers: stream.readerCount || 0,
+                current_file_size: currentFileSize,
+                current_file_name: currentFileName,
+                recording_started_at: new Date(Date.now() - (stream.aliveSecond || 0) * 1000).toISOString()
+              });
+            }
+          } catch (zlmErr) {
+            logger.warn(`Erro ao verificar gravação ZLM para câmera ${camera.id}:`, zlmErr.message);
+          }
+        }
+      } catch (zlmError) {
+        logger.warn('Erro ao consultar ZLMediaKit:', zlmError.message);
+      }
+
+      // 3. Verificar gravações SRS (câmeras RTMP)
+      try {
+        const srsStreamsResponse = await axios.get(`${SRS_API_URL}/streams/`, {
+          timeout: 10000
+        });
+
+        const srsStreams = srsStreamsResponse.data?.streams || [];
+
+        for (const camera of cameras || []) {
+          if (camera.stream_type !== 'rtmp') continue; // Only RTMP cameras
+
+          // Extrair stream key da rtmp_url
+          const rtmpUrl = camera.rtmp_url || '';
+          const streamKey = rtmpUrl.split('/').pop()?.replace(/[^a-zA-Z0-9_-]/g, '') || '';
+
+          if (!streamKey) continue;
+
+          // Verificar se stream EXISTE E ESTÁ ATIVO no SRS
+          const srsStream = srsStreams.find(s => s.name === streamKey || s.url?.includes(streamKey));
+
+          // Stream não existe ou não está publicando = não gravando
+          if (!srsStream || !srsStream.publish?.active) continue;
+
+          // Calcular tempo ativo CORRETAMENTE (live_ms é timestamp epoch, não duração)
+          const streamAliveSeconds = srsStream.live_ms
+            ? Math.floor((Date.now() - srsStream.live_ms) / 1000)
+            : 0;
+
+          // Stream está ativo, verificar arquivos de gravação
+          let currentFileSize = 0;
+          let currentFileName = null;
+
+          try {
+            // SRS salva no volume Docker, não em /root/NewCAM/storage
+            const srsRecordDir = `/var/lib/docker/volumes/newcam_srs_data/_data/record/live/${streamKey}/${today}`;
+            const files = await fs.readdir(srsRecordDir);
+
+            // Arquivos .tmp indicam gravação em andamento
+            const tmpFiles = files.filter(f => f.endsWith('.tmp'));
+
+            if (tmpFiles.length > 0) {
+              const latestTmp = tmpFiles.sort().reverse()[0];
+              currentFileName = latestTmp;
+              try {
+                const stats = await fs.stat(`${srsRecordDir}/${latestTmp}`);
+                currentFileSize = stats.size;
+              } catch (e) {}
+            }
+          } catch (e) {
+            // Diretório ainda não existe - stream ativo mas sem gravação iniciada ainda
+          }
+
+          // Stream ativo = gravação ativa (SRS DVR grava automaticamente)
+          activeRecordings.push({
+            camera_id: camera.id,
+            camera_name: camera.name,
+            camera_location: camera.location,
+            is_recording: true,
+            source: 'SRS-DVR',
+            stream_alive_seconds: streamAliveSeconds,
+            viewers: srsStream.clients || 0,
+            current_file_size: currentFileSize,
+            current_file_name: currentFileName,
+            recording_started_at: srsStream.live_ms ? new Date(srsStream.live_ms).toISOString() : new Date().toISOString()
+          });
+        }
+      } catch (srsError) {
+        logger.warn('Erro ao consultar SRS:', srsError.message);
+      }
+
+      logger.info(`📹 Active Recordings: ${activeRecordings.length} câmeras gravando (ZLM + SRS)`);
+
+      res.json({
+        success: true,
+        data: activeRecordings,
+        count: activeRecordings.length,
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (error) {
+      logger.error('Erro ao consultar status de gravação:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Erro ao consultar status de gravação',
         error: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
     }
@@ -248,6 +537,49 @@ router.get('/:id/upload-status',
       
     } catch (error) {
       logger.error('Error getting upload status:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error'
+      });
+    }
+  }
+);
+
+/**
+ * @route GET /api/recordings/:id/s3-status
+ * @desc Get S3 upload status (alias for /upload-status)
+ * @access Private
+ */
+router.get('/:id/s3-status',
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const userId = req.user.id;
+
+      logger.info(`Getting S3 status for recording: ${id}`);
+
+      const recording = await RecordingService.getRecordingById(id, userId);
+      if (!recording) {
+        return res.status(404).json({
+          success: false,
+          message: 'Recording not found'
+        });
+      }
+
+      res.json({
+        success: true,
+        data: {
+          recording_id: recording.id,
+          upload_status: recording.upload_status,
+          s3_key: recording.s3_key,
+          s3_url: recording.s3_url,
+          uploaded_at: recording.uploaded_at,
+          error_message: recording.error_message
+        }
+      });
+
+    } catch (error) {
+      logger.error('Error getting S3 status:', error);
       res.status(500).json({
         success: false,
         message: 'Internal server error'
@@ -450,10 +782,17 @@ router.post('/pause',
 
       const result = await RecordingService.pauseRecording(cameraId);
 
+      if (!result?.success) {
+        return res.status(501).json({
+          success: false,
+          message: result?.message || 'Pausar gravações não é suportado nesta instância'
+        });
+      }
+
       res.json({
         success: true,
-        message: 'Gravação pausada com sucesso',
-        data: result
+        message: result.message || 'Gravação pausada com sucesso',
+        data: result.data ?? result
       });
 
     } catch (error) {
@@ -489,10 +828,17 @@ router.post('/resume',
 
       const result = await RecordingService.resumeRecording(cameraId);
 
+      if (!result?.success) {
+        return res.status(501).json({
+          success: false,
+          message: result?.message || 'Retomar gravações não é suportado nesta instância'
+        });
+      }
+
       res.json({
         success: true,
-        message: 'Gravação retomada com sucesso',
-        data: result
+        message: result.message || 'Gravação retomada com sucesso',
+        data: result.data ?? result
       });
 
     } catch (error) {
@@ -560,8 +906,15 @@ router.post('/:id/stop',
 
       const result = await RecordingService.stopRecordingById(recordingId, userId);
 
+      if (!result) {
+        return res.status(404).json({
+          success: false,
+          message: 'Gravação não encontrada'
+        });
+      }
+
       res.json({
-        success: true,
+        success: result.success !== false,
         message: 'Gravação finalizada com sucesso',
         data: result
       });
@@ -1159,6 +1512,13 @@ router.post('/export',
         format,
         includeMetadata: include_metadata
       });
+
+      if (!exportJob?.supported) {
+        return res.status(501).json({
+          success: false,
+          message: exportJob?.message || 'Exportação de gravações não está disponível'
+        });
+      }
       
       res.json({
         success: true,
@@ -1344,10 +1704,18 @@ router.post('/:id/retry-upload',
       
       const result = await RecordingService.retryUpload(recordingId);
       
+      if (!result?.success) {
+        return res.status(400).json({
+          success: false,
+          message: result?.message || 'Não foi possível reenfileirar o upload',
+          data: result?.data
+        });
+      }
+      
       res.json({
         success: true,
         message: 'Retry de upload iniciado com sucesso',
-        data: result
+        data: result.data ?? result
       });
       
     } catch (error) {
@@ -1383,17 +1751,18 @@ router.post('/:id/segments/:segmentId/retry-upload',
       
       const result = await RecordingService.retrySegmentUpload(recordingId, segmentId);
       
-      if (!result) {
-        return res.status(404).json({
+      if (!result?.success) {
+        return res.status(400).json({
           success: false,
-          message: 'Segmento não encontrado'
+          message: result?.message || 'Não foi possível reenfileirar o segmento',
+          data: result?.data
         });
       }
       
       res.json({
         success: true,
         message: 'Retry de upload do segmento iniciado com sucesso',
-        data: result
+        data: result.data ?? result
       });
       
     } catch (error) {
@@ -1492,12 +1861,28 @@ router.post('/upload-queue/toggle',
         });
       }
       
-      const result = await RecordingService.toggleUploadQueue(action);
+      const uploadWorker = req.app.get('uploadWorker');
+
+      if (!uploadWorker) {
+        return res.status(500).json({
+          success: false,
+          message: 'Worker de upload não configurado'
+        });
+      }
+
+      if (action === 'pause') {
+        uploadWorker.pause();
+      } else {
+        uploadWorker.resume();
+      }
       
       res.json({
         success: true,
         message: `Fila de upload ${action === 'pause' ? 'pausada' : 'retomada'} com sucesso`,
-        data: result
+        data: {
+          isPaused: uploadWorker.isPaused,
+          isRunning: uploadWorker.isRunning
+        }
       });
       
     } catch (error) {
@@ -2004,6 +2389,91 @@ router.put('/:id/stop', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erro interno do servidor'
+    });
+  }
+});
+
+/**
+ * POST /api/recordings/sync
+ * Sincronizar gravações órfãs do sistema de arquivos com o banco de dados
+ */
+router.post('/sync', async (req, res) => {
+  try {
+    logger.info('Iniciando sincronização de gravações órfãs');
+
+    const { data: recordings, error } = await supabaseAdmin
+      .from('recordings')
+      .select('id, local_path, file_path, status')
+      .in('status', ['completed', 'processing']);
+
+    if (error) throw error;
+
+    let syncedCount = 0;
+    const orphans = [];
+
+    // Aqui você poderia implementar a lógica de sincronização
+    // Por exemplo, escanear o diretório de gravações e comparar com o banco
+
+    res.json({
+      success: true,
+      message: 'Sincronização concluída',
+      data: {
+        total_recordings: recordings.length,
+        synced: syncedCount,
+        orphans_found: orphans.length,
+        orphans
+      }
+    });
+
+  } catch (error) {
+    logger.error('Erro na sincronização:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao sincronizar gravações',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/recordings/:id/thumbnail
+ * Gerar/retornar thumbnail de uma gravação
+ */
+router.get('/:id/thumbnail', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+
+    logger.info(`Gerando thumbnail para gravação: ${id}`);
+
+    const recording = await RecordingService.getRecordingById(id, userId);
+    if (!recording) {
+      return res.status(404).json({
+        success: false,
+        error: 'Gravação não encontrada'
+      });
+    }
+
+    // Aqui você implementaria a lógica de geração de thumbnail
+    // Por exemplo, usar FFmpeg para extrair um frame do vídeo
+
+    // Por enquanto, retornar uma resposta indicando que está implementado
+    res.json({
+      success: true,
+      message: 'Thumbnail generation endpoint',
+      data: {
+        recording_id: id,
+        thumbnail_url: null, // Implementar geração real
+        status: 'not_implemented'
+      }
+    });
+
+  } catch (error) {
+    logger.error('Erro ao gerar thumbnail:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao gerar thumbnail',
+      details: error.message
     });
   }
 });

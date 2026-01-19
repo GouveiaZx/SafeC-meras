@@ -10,6 +10,8 @@ import path from 'path';
 import axios from 'axios';
 import { createModuleLogger } from '../config/logger.js';
 import { supabaseAdmin } from '../config/database.js';
+import UploadQueueService from './UploadQueueService.js';
+import S3Service from './S3Service.js';
 
 const logger = createModuleLogger('RecordingService');
 
@@ -260,12 +262,14 @@ class RecordingService {
         .insert([{
           camera_id: cameraId,
           status: 'recording',
+          upload_status: null, // ✅ Não definir upload_status até gravação completar
           start_time: now,
           started_at: now,
           created_at: now,
           updated_at: now,
           metadata: {
             started_by: 'api',
+            started_via: 'RecordingService.startRecording',
             options: options
           }
         }])
@@ -362,15 +366,16 @@ class RecordingService {
    */
   async startZLMRecording(streamId, app = 'live', duration = 1800) {
     try {
-      this.logger.info(`📡 Iniciando gravação ZLM para stream: ${streamId}`);
-      
+      this.logger.info(`📡 Iniciando gravação ZLM para stream: ${streamId} (duração: ${duration}s)`);
+
       const response = await axios.post(`${this.zlmApiUrl}/startRecord`, null, {
         params: {
           secret: this.zlmSecret,
           type: 1, // MP4
           vhost: '__defaultVhost__',
           app: app,
-          stream: streamId
+          stream: streamId,
+          max_second: duration  // CORREÇÃO: Adicionar max_second para segmentação de 30 minutos
         },
         timeout: 10000
       });
@@ -431,16 +436,27 @@ class RecordingService {
         countQuery = countQuery.eq('camera_id', filters.camera_id);
       }
 
+      // Filtrar por múltiplas câmeras (camera_ids de camera_access)
+      if (filters.camera_ids && filters.camera_ids.length > 0) {
+        countQuery = countQuery.in('camera_id', filters.camera_ids);
+      }
+
       if (filters.status) {
         countQuery = countQuery.eq('status', filters.status);
       }
 
-      if (filters.date_from) {
-        countQuery = countQuery.gte('created_at', filters.date_from);
+      // Aceitar ambos formatos: date_from/date_to e start_date/end_date
+      const dateFrom = filters.date_from || filters.start_date;
+      const dateTo = filters.date_to || filters.end_date;
+
+      if (dateFrom) {
+        countQuery = countQuery.gte('created_at', dateFrom);
       }
 
-      if (filters.date_to) {
-        countQuery = countQuery.lte('created_at', filters.date_to);
+      if (dateTo) {
+        // Adicionar 23:59:59.999 se não tiver hora especificada para incluir o dia inteiro
+        const endOfDay = dateTo.includes('T') ? dateTo : `${dateTo}T23:59:59.999Z`;
+        countQuery = countQuery.lte('created_at', endOfDay);
       }
 
       const { count, error: countError } = await countQuery;
@@ -468,16 +484,24 @@ class RecordingService {
         query = query.eq('camera_id', filters.camera_id);
       }
 
+      // Filtrar por múltiplas câmeras (camera_ids de camera_access)
+      if (filters.camera_ids && filters.camera_ids.length > 0) {
+        query = query.in('camera_id', filters.camera_ids);
+      }
+
       if (filters.status) {
         query = query.eq('status', filters.status);
       }
 
-      if (filters.date_from) {
-        query = query.gte('created_at', filters.date_from);
+      // Usar as mesmas variáveis de data já normalizadas
+      if (dateFrom) {
+        query = query.gte('created_at', dateFrom);
       }
 
-      if (filters.date_to) {
-        query = query.lte('created_at', filters.date_to);
+      if (dateTo) {
+        // Adicionar 23:59:59.999 se não tiver hora especificada para incluir o dia inteiro
+        const endOfDay = dateTo.includes('T') ? dateTo : `${dateTo}T23:59:59.999Z`;
+        query = query.lte('created_at', endOfDay);
       }
 
       // Ordenar por data de criação (mais recente primeiro)
@@ -822,78 +846,194 @@ class RecordingService {
 
   /**
    * Get recording statistics (comprehensive implementation)
+   * @param {string} userId - ID do usuário
+   * @param {string} period - Período de análise (default: 7d)
+   * @param {Array} cameraIds - Lista de IDs de câmeras para filtrar (para usuários não-admin)
    */
-  async getRecordingStats(userId = null, period = '7d') {
+  async getRecordingStats(userId = null, period = '7d', cameraIds = null) {
     try {
-      this.logger.info(`📊 Calculando estatísticas de gravações...`);
-      
-      // Buscar estatísticas gerais
-      const { data: generalStats, error: generalError } = await this.supabase
-        .from('recordings')
-        .select('id, file_size, duration, status, created_at');
+      this.logger.info(`📊 Calculando estatísticas de gravações...`, { userId, period, cameraIds });
 
-      if (generalError) {
-        this.logger.error('Erro ao buscar estatísticas gerais:', generalError);
-        throw generalError;
+      // Usar queries de contagem do Supabase para evitar limite de 1000 registros
+      // Query 1: Count total de gravações
+      let totalQuery = this.supabase
+        .from('recordings')
+        .select('*', { count: 'exact', head: true });
+
+      if (cameraIds && cameraIds.length > 0) {
+        totalQuery = totalQuery.in('camera_id', cameraIds);
       }
 
-      const recordings = generalStats || [];
-      this.logger.info(`📊 Total de registros encontrados: ${recordings.length}`);
+      const { count: total, error: totalError } = await totalQuery;
+
+      if (totalError) {
+        this.logger.error('Erro ao contar total:', totalError);
+        throw totalError;
+      }
 
       // Calcular data de hoje
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       const todayISO = today.toISOString();
 
-      // Estatísticas básicas
-      const total = recordings.length;
-      const today_count = recordings.filter(r => new Date(r.created_at) >= today).length;
-      const totalSize = recordings.reduce((sum, r) => sum + (r.file_size || 0), 0);
-      
-      // Calcular duração média (apenas de gravações com duração)
-      const recordingsWithDuration = recordings.filter(r => r.duration && r.duration > 0);
-      const avgDuration = recordingsWithDuration.length > 0 
-        ? recordingsWithDuration.reduce((sum, r) => sum + r.duration, 0) / recordingsWithDuration.length 
-        : 0;
+      // Query 2: Count gravações de hoje
+      let todayQuery = this.supabase
+        .from('recordings')
+        .select('*', { count: 'exact', head: true })
+        .gte('created_at', todayISO);
 
-      // Buscar gravações ativas
-      const { data: activeRecordings, error: activeError } = await this.supabase
+      if (cameraIds && cameraIds.length > 0) {
+        todayQuery = todayQuery.in('camera_id', cameraIds);
+      }
+
+      const { count: today_count } = await todayQuery;
+
+      // Query 3: Counts por status de upload (executar em paralelo)
+      const uploadStatusQueries = ['pending', 'uploading', 'uploaded', 'failed'].map(async (status) => {
+        let query = this.supabase
+          .from('recordings')
+          .select('*', { count: 'exact', head: true })
+          .eq('upload_status', status);
+
+        if (cameraIds && cameraIds.length > 0) {
+          query = query.in('camera_id', cameraIds);
+        }
+
+        const { count } = await query;
+        return { status, count: count || 0 };
+      });
+
+      const uploadStatusResults = await Promise.all(uploadStatusQueries);
+      const uploadCounts = uploadStatusResults.reduce((acc, { status, count }) => {
+        acc[status] = count;
+        return acc;
+      }, {});
+
+      // Query 4: Counts por status de gravação
+      const recordingStatusQueries = ['completed', 'failed', 'error', 'processing', 'recording'].map(async (status) => {
+        let query = this.supabase
+          .from('recordings')
+          .select('*', { count: 'exact', head: true })
+          .eq('status', status);
+
+        if (cameraIds && cameraIds.length > 0) {
+          query = query.in('camera_id', cameraIds);
+        }
+
+        const { count } = await query;
+        return { status, count: count || 0 };
+      });
+
+      const recordingStatusResults = await Promise.all(recordingStatusQueries);
+      const statusCounts = recordingStatusResults.reduce((acc, { status, count }) => {
+        acc[status] = count;
+        return acc;
+      }, {});
+
+      // Query 5: Somas de file_size (usando RPC ou buscar com range maior)
+      // Para somas, precisamos buscar os dados - usar paginação para evitar limite
+      let s3Size = 0;
+      let totalSize = 0;
+      let totalDuration = 0;
+      let durationCount = 0;
+
+      // Buscar em lotes de 1000 para calcular somas
+      let offset = 0;
+      const batchSize = 1000;
+      let hasMore = true;
+
+      while (hasMore) {
+        let sizeQuery = this.supabase
+          .from('recordings')
+          .select('file_size, duration, upload_status')
+          .range(offset, offset + batchSize - 1);
+
+        if (cameraIds && cameraIds.length > 0) {
+          sizeQuery = sizeQuery.in('camera_id', cameraIds);
+        }
+
+        const { data: batch, error: batchError } = await sizeQuery;
+
+        if (batchError) {
+          this.logger.error('Erro ao buscar batch de somas:', batchError);
+          break;
+        }
+
+        if (!batch || batch.length === 0) {
+          hasMore = false;
+        } else {
+          batch.forEach(r => {
+            totalSize += r.file_size || 0;
+            if (r.upload_status === 'uploaded') {
+              s3Size += r.file_size || 0;
+            }
+            if (r.duration && r.duration > 0) {
+              totalDuration += r.duration;
+              durationCount++;
+            }
+          });
+
+          if (batch.length < batchSize) {
+            hasMore = false;
+          } else {
+            offset += batchSize;
+          }
+        }
+      }
+
+      const localSize = totalSize - s3Size;
+      const avgDuration = durationCount > 0 ? totalDuration / durationCount : 0;
+
+      this.logger.info(`📊 Total de registros: ${total}`);
+      this.logger.info(`📦 Storage calculado: S3=${s3Size} bytes, Local=${localSize} bytes`);
+
+      // Query 6: Gravações ativas (para lista de câmeras)
+      let activeQuery = this.supabase
         .from('recordings')
         .select('camera_id')
         .eq('status', 'recording');
+
+      if (cameraIds && cameraIds.length > 0) {
+        activeQuery = activeQuery.in('camera_id', cameraIds);
+      }
+
+      const { data: activeRecordings, error: activeError } = await activeQuery;
 
       if (activeError) {
         this.logger.warn('Erro ao buscar gravações ativas:', activeError);
       }
 
-      const activeRecordingsCount = activeRecordings?.length || 0;
+      const activeRecordingsCount = statusCounts['recording'] || 0;
       const activeCameras = activeRecordings ? [...new Set(activeRecordings.map(r => r.camera_id))] : [];
 
       const stats = {
         // Compatibilidade com frontend RecordingsPage.tsx
-        totalRecordings: total,
+        totalRecordings: total || 0,
         activeRecordings: activeRecordingsCount,
-        pendingUploads: recordings.filter(r => r.status === 'processing' || r.status === 'uploading').length,
+        pendingUploads: (uploadCounts['pending'] || 0) + (uploadCounts['uploading'] || 0),
         storageUsed: {
-          s3: 0, // Placeholder - seria calculado do S3
-          local: totalSize
+          s3: s3Size,
+          local: localSize
         },
         uploadQueue: {
-          pending: recordings.filter(r => r.status === 'processing').length,
-          processing: recordings.filter(r => r.status === 'uploading').length,
-          failed: recordings.filter(r => r.status === 'failed' || r.status === 'error').length
+          pending: uploadCounts['pending'] || 0,
+          processing: uploadCounts['uploading'] || 0,
+          failed: uploadCounts['failed'] || 0
         },
-        totalSegments: total, // Simplificação - cada gravação é um segmento
-        
+        totalSegments: total || 0, // Simplificação - cada gravação é um segmento
+
         // Campos originais para compatibilidade com Recordings.tsx
-        total,
-        today: today_count,
+        total: total || 0,
+        today: today_count || 0,
         totalSize,
         avgDuration: Math.round(avgDuration),
         activeCameras: activeCameras,
-        completed: recordings.filter(r => r.status === 'completed').length,
-        failed: recordings.filter(r => r.status === 'failed' || r.status === 'error').length,
-        processing: recordings.filter(r => r.status === 'processing').length
+        completed: statusCounts['completed'] || 0,
+        failed: (statusCounts['failed'] || 0) + (statusCounts['error'] || 0),
+        processing: statusCounts['processing'] || 0,
+        // Adicionar contadores de upload
+        uploaded: uploadCounts['uploaded'] || 0,
+        uploadedSize: s3Size
       };
 
       this.logger.info(`📊 Estatísticas calculadas:`, JSON.stringify(stats, null, 2));
@@ -1051,9 +1191,88 @@ class RecordingService {
       this.checkRecordingTimeouts().catch(error => {
         this.logger.error('[RecordingService] Erro no verificador de timeout:', error);
       });
+
+      // ✅ CORREÇÃO #4: Também verificar gravações órfãs
+      this.checkOrphanedRecordings().catch(error => {
+        this.logger.error('[RecordingService] Erro no limpador de órfãs:', error);
+      });
     }, 5 * 60 * 1000); // 5 minutos
 
-    this.logger.info('[RecordingService] Verificador de timeout iniciado (5min)');
+    this.logger.info('[RecordingService] Verificador de timeout e órfãs iniciado (5min)');
+  }
+
+  /**
+   * ✅ CORREÇÃO #4: Limpar gravações órfãs (stuck em 'recording' com câmera offline)
+   * Executa a cada 5 minutos junto com checkRecordingTimeouts
+   */
+  async checkOrphanedRecordings() {
+    try {
+      // Buscar gravações com status='recording'
+      const { data: recordings, error } = await this.supabase
+        .from('recordings')
+        .select('id, camera_id, created_at, started_at, metadata')
+        .eq('status', 'recording');
+
+      if (error || !recordings || recordings.length === 0) {
+        return;
+      }
+
+      this.logger.info(`🔍 Verificando ${recordings.length} gravações ativas para órfãs...`);
+
+      for (const recording of recordings) {
+        // Verificar status da câmera
+        const { data: camera, error: cameraError } = await this.supabase
+          .from('cameras')
+          .select('is_streaming, is_recording, status, name')
+          .eq('id', recording.camera_id)
+          .single();
+
+        if (cameraError) {
+          this.logger.warn(`⚠️ Erro ao verificar câmera ${recording.camera_id}:`, cameraError);
+          continue;
+        }
+
+        // Se câmera NÃO está streaming E gravação tem mais de 5 minutos
+        const startTime = recording.started_at || recording.created_at;
+        const age = Date.now() - new Date(startTime).getTime();
+        const fiveMinutes = 5 * 60 * 1000;
+
+        const isCameraOffline = !camera.is_streaming;
+        const isOldEnough = age > fiveMinutes;
+
+        if (isCameraOffline && isOldEnough) {
+          const ageMinutes = Math.round(age / 60000);
+          this.logger.warn(`🧹 Limpando gravação órfã ${recording.id} (câmera ${camera.name} offline há ${ageMinutes}min)`);
+
+          const now = new Date().toISOString();
+          const { error: updateError } = await this.supabase
+            .from('recordings')
+            .update({
+              status: 'completed',
+              ended_at: now,
+              updated_at: now,
+              metadata: {
+                ...recording.metadata,
+                orphaned_cleanup: true,
+                cleanup_reason: 'camera_offline_5min',
+                cleaned_at: now,
+                camera_was_streaming: camera.is_streaming,
+                camera_status: camera.status,
+                age_minutes: ageMinutes
+              }
+            })
+            .eq('id', recording.id);
+
+          if (updateError) {
+            this.logger.error(`❌ Erro ao limpar gravação órfã ${recording.id}:`, updateError);
+          } else {
+            this.logger.info(`✅ Gravação órfã ${recording.id} marcada como completed (câmera offline)`);
+          }
+        }
+      }
+    } catch (error) {
+      this.logger.error('[RecordingService] Erro no limpador de órfãs:', error);
+    }
   }
 
   /**
@@ -1203,6 +1422,448 @@ class RecordingService {
 
     } catch (error) {
       this.logger.error('[RecordingService] Erro geral no verificador de timeout:', error);
+    }
+  }
+
+  /**
+   * Parar gravação com base apenas no ID
+   */
+  async stopRecordingById(recordingId, userId = null) {
+    try {
+      const recording = await this.getRecordingById(recordingId, userId);
+      if (!recording) {
+        return null;
+      }
+      return await this.stopRecording(recording.camera_id, recordingId);
+    } catch (error) {
+      this.logger.error(`Erro ao parar gravação por ID ${recordingId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Pause recording - not supported in simplified service
+   */
+  async pauseRecording(cameraId) {
+    this.logger.warn(`PauseRecording chamado para ${cameraId}, funcionalidade indisponível`);
+    return {
+      success: false,
+      message: 'Pausar gravações não é suportado nesta versão'
+    };
+  }
+
+  /**
+   * Resume recording - not supported in simplified service
+   */
+  async resumeRecording(cameraId) {
+    this.logger.warn(`ResumeRecording chamado para ${cameraId}, funcionalidade indisponível`);
+    return {
+      success: false,
+      message: 'Retomar gravações não é suportado nesta versão'
+    };
+  }
+
+  /**
+   * Retry upload by re-enqueuing recording
+   */
+  async retryUpload(recordingId, options = {}) {
+    try {
+      const enqueueResult = await UploadQueueService.enqueue(recordingId, {
+        force: true,
+        ...options
+      });
+
+      return {
+        success: enqueueResult?.success === undefined ? true : enqueueResult.success,
+        data: enqueueResult
+      };
+    } catch (error) {
+      this.logger.error(`Erro ao reenfileirar upload ${recordingId}:`, error);
+      return {
+        success: false,
+        message: error.message
+      };
+    }
+  }
+
+  /**
+   * Retry upload for a specific recording segment
+   * Falls back to retrying the provided segment or recording ID
+   */
+  async retrySegmentUpload(recordingId, segmentId) {
+    const targetId = segmentId || recordingId;
+    return this.retryUpload(targetId, { force: true });
+  }
+
+  /**
+   * Retrieve upload queue statistics
+   */
+  async getUploadQueue() {
+    return UploadQueueService.getQueueStats();
+  }
+
+  /**
+   * Validate bulk access to recordings
+   */
+  async checkBulkAccess(recordingIds = [], userId = null) {
+    if (!Array.isArray(recordingIds) || recordingIds.length === 0) {
+      return { allAccessible: true, inaccessibleIds: [] };
+    }
+
+    const { data, error } = await this.supabase
+      .from('recordings')
+      .select('id')
+      .in('id', recordingIds);
+
+    if (error) {
+      this.logger.error('Erro ao verificar acesso em massa:', error);
+      throw error;
+    }
+
+    const foundIds = new Set((data || []).map(record => record.id));
+    const inaccessibleIds = recordingIds.filter(id => !foundIds.has(id));
+
+    return {
+      allAccessible: inaccessibleIds.length === 0,
+      inaccessibleIds
+    };
+  }
+
+  /**
+   * Delete multiple recordings sequentially
+   */
+  async deleteRecordings(recordingIds = [], userId = null) {
+    const result = {
+      deletedCount: 0,
+      failedCount: 0,
+      freedSpace: 0,
+      errors: []
+    };
+
+    for (const id of recordingIds) {
+      try {
+        const downloadInfo = await this.preparePlayback(id);
+        const fileSize = downloadInfo?.fileSize || 0;
+
+        const deleteResult = await this.deleteRecording(id, userId);
+
+        if (deleteResult?.success) {
+          result.deletedCount += 1;
+          result.freedSpace += fileSize;
+        } else {
+          result.failedCount += 1;
+        }
+      } catch (error) {
+        result.failedCount += 1;
+        result.errors.push({ id, message: error.message });
+        this.logger.error(`Erro ao deletar gravação ${id}:`, error);
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Create file stream with optional range support
+   */
+  getFileStream(filePath, range = null) {
+    try {
+      const stats = fsSync.statSync(filePath);
+
+      if (range) {
+        const parsedRange = range.replace(/bytes=/, '').split('-');
+        let start = parseInt(parsedRange[0], 10);
+        let end = parsedRange[1] ? parseInt(parsedRange[1], 10) : stats.size - 1;
+
+        if (Number.isNaN(start) || start < 0) {
+          start = 0;
+        }
+
+        if (Number.isNaN(end) || end >= stats.size) {
+          end = stats.size - 1;
+        }
+
+        if (start > end) {
+          throw new Error(`Invalid range: ${range}`);
+        }
+
+        const stream = fsSync.createReadStream(filePath, { start, end });
+        return {
+          stream,
+          contentLength: end - start + 1,
+          contentRange: `bytes ${start}-${end}/${stats.size}`
+        };
+      }
+
+      return {
+        stream: fsSync.createReadStream(filePath),
+        contentLength: stats.size
+      };
+    } catch (error) {
+      this.logger.error(`Erro ao criar stream para ${filePath}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Convenience helper to fetch single active recording per camera
+   */
+  async getActiveRecording(cameraId, userId = null) {
+    const active = await this.getActiveRecordings(userId);
+    return active.find(recording => recording.camera_id === cameraId) || null;
+  }
+
+  /**
+   * Update statistics for all recordings missing metadata
+   */
+  async updateRecordingStatistics() {
+    try {
+      const { data, error } = await this.supabase
+        .from('recordings')
+        .select('id')
+        .or('file_size.is.null,duration.is.null')
+        .limit(200);
+
+      if (error) {
+        throw error;
+      }
+
+      let updated = 0;
+      for (const record of data || []) {
+        const result = await this.updateSingleRecordingStatistics(record.id);
+        if (result?.updated) {
+          updated += 1;
+        }
+      }
+
+      return { updated };
+    } catch (error) {
+      this.logger.error('Erro ao atualizar estatísticas em lote:', error);
+      return { updated: 0, error: error.message };
+    }
+  }
+
+  /**
+   * Update statistics for a single recording
+   */
+  async updateSingleRecordingStatistics(recordingId) {
+    const recording = await this.getRecordingById(recordingId);
+    if (!recording) {
+      return null;
+    }
+
+    const updates = {};
+
+    // Atualizar tamanho do arquivo se disponível
+    const playbackInfo = await this.preparePlayback(recordingId);
+    if (playbackInfo?.fileSize && (!recording.file_size || recording.file_size !== playbackInfo.fileSize)) {
+      updates.file_size = playbackInfo.fileSize;
+    }
+
+    // Calcular duração se possível
+    if (!recording.duration && recording.start_time && recording.end_time) {
+      const start = new Date(recording.start_time).getTime();
+      const end = new Date(recording.end_time).getTime();
+      if (!Number.isNaN(start) && !Number.isNaN(end) && end > start) {
+        updates.duration = Math.round((end - start) / 1000);
+      }
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return {
+        id: recordingId,
+        updated: false,
+        file_size: recording.file_size,
+        duration: recording.duration
+      };
+    }
+
+    updates.updated_at = new Date().toISOString();
+
+    const { error } = await this.supabase
+      .from('recordings')
+      .update(updates)
+      .eq('id', recordingId);
+
+    if (error) {
+      this.logger.error(`Erro ao atualizar estatísticas da gravação ${recordingId}:`, error);
+      throw error;
+    }
+
+    return {
+      id: recordingId,
+      updated: true,
+      ...updates
+    };
+  }
+
+  /**
+   * Export job placeholder - feature disabled in simplified build
+   */
+  async createExportJob() {
+    return {
+      id: null,
+      estimatedTime: 0,
+      supported: false,
+      message: 'Exportação de gravações não está habilitada nesta configuração'
+    };
+  }
+
+  /**
+   * Export status placeholder
+   */
+  async getExportStatus() {
+    return null;
+  }
+
+  /**
+   * Limpar gravações antigas do sistema
+   * Usa o campo retention_days de cada câmera para determinar o período de retenção
+   * @returns {Promise<{deletedCount: number, deletedFiles: number, deletedS3: number, errors: Array, byCameraStats: Object}>}
+   */
+  async cleanupOldRecordings() {
+    try {
+      this.logger.info(`[cleanupOldRecordings] Iniciando limpeza de gravações baseada em retention_days por câmera`);
+
+      // 1. Buscar todas as câmeras com seus retention_days
+      const { data: cameras, error: cameraError } = await this.supabase
+        .from('cameras')
+        .select('id, name, retention_days');
+
+      if (cameraError) {
+        this.logger.error('[cleanupOldRecordings] Erro ao buscar câmeras:', cameraError);
+        throw cameraError;
+      }
+
+      if (!cameras || cameras.length === 0) {
+        this.logger.info('[cleanupOldRecordings] Nenhuma câmera encontrada');
+        return { deletedCount: 0, deletedFiles: 0, deletedS3: 0, errors: [], message: 'Nenhuma câmera encontrada' };
+      }
+
+      let totalDeletedCount = 0;
+      let totalDeletedFiles = 0;
+      let totalDeletedS3 = 0;
+      const allErrors = [];
+      const byCameraStats = {};
+
+      // 2. Para cada câmera, calcular cutoff e deletar gravações antigas
+      for (const camera of cameras) {
+        const retentionDays = camera.retention_days || 30; // Default 30 dias se não configurado
+        const cutoffDate = new Date();
+        cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+        const cutoffISO = cutoffDate.toISOString();
+
+        this.logger.info(`[cleanupOldRecordings] Processando câmera "${camera.name}" (${camera.id}): retenção ${retentionDays} dias, cutoff ${cutoffISO}`);
+
+        // 3. Buscar gravações antigas desta câmera
+        const { data: oldRecordings, error: fetchError } = await this.supabase
+          .from('recordings')
+          .select('id, local_path, file_path, filename, s3_key, created_at')
+          .eq('camera_id', camera.id)
+          .lt('created_at', cutoffISO)
+          .order('created_at', { ascending: true });
+
+        if (fetchError) {
+          this.logger.error(`[cleanupOldRecordings] Erro ao buscar gravações da câmera ${camera.id}:`, fetchError);
+          allErrors.push({ camera_id: camera.id, error: fetchError.message });
+          continue;
+        }
+
+        if (!oldRecordings || oldRecordings.length === 0) {
+          this.logger.debug(`[cleanupOldRecordings] Câmera "${camera.name}": nenhuma gravação antiga`);
+          byCameraStats[camera.id] = { name: camera.name, deleted: 0, retentionDays };
+          continue;
+        }
+
+        this.logger.info(`[cleanupOldRecordings] Câmera "${camera.name}": ${oldRecordings.length} gravações para deletar`);
+
+        let cameraDeletedFiles = 0;
+        let cameraDeletedS3 = 0;
+        const deletedIds = [];
+
+        // 4. Deletar arquivos físicos e do S3
+        for (const recording of oldRecordings) {
+          try {
+            // Deletar arquivo local
+            const filePath = recording.local_path || recording.file_path;
+            if (filePath) {
+              const fullPath = path.join(process.cwd(), '..', filePath);
+              if (fsSync.existsSync(fullPath)) {
+                await fs.unlink(fullPath);
+                cameraDeletedFiles++;
+                this.logger.debug(`[cleanupOldRecordings] Arquivo local deletado: ${fullPath}`);
+              }
+            }
+
+            // Deletar do S3
+            if (recording.s3_key && S3Service.isConfigured) {
+              try {
+                await S3Service.deleteFile(recording.s3_key);
+                cameraDeletedS3++;
+                this.logger.debug(`[cleanupOldRecordings] Arquivo S3 deletado: ${recording.s3_key}`);
+              } catch (s3Error) {
+                this.logger.warn(`[cleanupOldRecordings] Erro ao deletar S3 ${recording.s3_key}:`, s3Error.message);
+                // Não bloquear - continuar mesmo se S3 falhar
+              }
+            }
+
+            deletedIds.push(recording.id);
+          } catch (fileError) {
+            this.logger.error(`[cleanupOldRecordings] Erro ao deletar arquivo ${recording.filename}:`, fileError);
+            allErrors.push({
+              recordingId: recording.id,
+              camera_id: camera.id,
+              filename: recording.filename,
+              error: fileError.message
+            });
+          }
+        }
+
+        // 5. Deletar registros do banco
+        if (deletedIds.length > 0) {
+          const { data: deleted, error: deleteError } = await this.supabase
+            .from('recordings')
+            .delete()
+            .in('id', deletedIds)
+            .select('id');
+
+          if (deleteError) {
+            this.logger.error(`[cleanupOldRecordings] Erro ao deletar registros da câmera ${camera.id}:`, deleteError);
+            allErrors.push({ camera_id: camera.id, error: deleteError.message });
+          } else {
+            const count = deleted ? deleted.length : 0;
+            totalDeletedCount += count;
+            this.logger.info(`[cleanupOldRecordings] Câmera "${camera.name}": ${count} registros deletados`);
+          }
+        }
+
+        totalDeletedFiles += cameraDeletedFiles;
+        totalDeletedS3 += cameraDeletedS3;
+
+        byCameraStats[camera.id] = {
+          name: camera.name,
+          retentionDays,
+          deleted: deletedIds.length,
+          filesDeleted: cameraDeletedFiles,
+          s3Deleted: cameraDeletedS3
+        };
+      }
+
+      const result = {
+        deletedCount: totalDeletedCount,
+        deletedFiles: totalDeletedFiles,
+        deletedS3: totalDeletedS3,
+        errors: allErrors.length > 0 ? allErrors : undefined,
+        byCameraStats,
+        message: `Limpeza concluída: ${totalDeletedCount} registros, ${totalDeletedFiles} arquivos locais, ${totalDeletedS3} arquivos S3 deletados`
+      };
+
+      this.logger.info(`[cleanupOldRecordings] Limpeza concluída:`, result);
+      return result;
+
+    } catch (error) {
+      this.logger.error('[cleanupOldRecordings] Erro geral na limpeza:', error);
+      throw error;
     }
   }
 }

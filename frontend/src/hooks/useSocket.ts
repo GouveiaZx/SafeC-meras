@@ -10,6 +10,7 @@ interface SocketEvents {
   upload_progress?: (data: any) => void;
   upload_error?: (data: any) => void;
   new_recording?: (data: any) => void;
+  recordings_refresh?: (data: any) => void;
   camera_status_changed?: (data: any) => void;
   connection_established?: (data: any) => void;
   error?: (error: any) => void;
@@ -29,19 +30,22 @@ export function useSocket(events: SocketEvents = {}) {
   useEffect(() => {
     if (!token) return;
 
-    const socket = io(`${import.meta.env.VITE_BACKEND_URL || 'http://localhost:3002'}`, {
+    // Use window.location.origin para conectar no mesmo domínio
+    const socketUrl = window.location.origin;
+
+    const socket = io(socketUrl, {
+      path: '/socket.io',
       auth: {
         token,
         type: 'user'
       },
-      transports: ['polling', 'websocket'],
+      transports: ['websocket', 'polling'],
       timeout: 20000,
       forceNew: true,
       reconnection: true,
       reconnectionAttempts: 5,
       reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      maxReconnectionAttempts: 5
+      reconnectionDelayMax: 5000
     });
 
     socketRef.current = socket;

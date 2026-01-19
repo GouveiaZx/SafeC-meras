@@ -12,7 +12,7 @@ import {
 
 interface DataPoint {
   name: string;
-  [key: string]: any;
+  [key: string]: number | string | null | undefined;
 }
 
 interface BarConfig {
@@ -44,7 +44,7 @@ const BarChart: React.FC<BarChartProps> = ({
   unit = ''
 }) => {
   const barConfigs = bars || (bar ? [bar] : []);
-  const formatTooltipValue = (value: any, name: string) => {
+  const formatTooltipValue = (value: number | string, name: string) => {
     const barConfig = barConfigs.find(b => b.name === name);
     const unitToUse = barConfig?.unit || unit || '';
     

@@ -7,6 +7,7 @@ const corsConfig = {
   origin: function (origin, callback) {
     // Lista de origens permitidas
     const allowedOrigins = [
+      // Desenvolvimento local
       'http://localhost:3000',
       'http://localhost:5173',
       'http://localhost:5174',
@@ -17,10 +18,17 @@ const corsConfig = {
       'http://127.0.0.1:5174',
       'http://127.0.0.1:5175',
       'http://127.0.0.1:5176',
-      'http://66.94.104.241',
-      'http://66.94.104.241:80',
-      'http://66.94.104.241:3000',
-      'http://66.94.104.241:5173',
+      // Servidor de produção novo (Janeiro 2025) - HTTP
+      'http://186.233.4.8',
+      'http://186.233.4.8:80',
+      'http://186.233.4.8:3000',
+      'http://186.233.4.8:3002',
+      'http://186.233.4.8:5173',
+      // Servidor de produção - HTTPS (Novembro 2025)
+      'https://nuvem.safecameras.com.br',
+      'https://186.233.4.8',
+      'https://186.233.4.8:443',
+      // Variáveis de ambiente
       process.env.FRONTEND_URL,
       process.env.DOMAIN
     ].filter(Boolean); // Remove valores undefined/null

@@ -124,8 +124,9 @@ const authenticateHLS = async (req, res, next) => {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
       logger.debug(`✅ Token JWT válido para userId: ${decoded.userId} (fonte: ${tokenSource})`);
     } catch (jwtError) {
-      logger.error('❌ Erro JWT:', jwtError.message);
-      
+      logger.error(`❌ Erro JWT: ${jwtError.name} - ${jwtError.message}`);
+      logger.error(`📋 Stack trace JWT:`, jwtError.stack);
+
       if (jwtError.name === 'TokenExpiredError') {
         return res.status(401).json({
           error: 'Token expirado',
@@ -186,7 +187,10 @@ const authenticateHLS = async (req, res, next) => {
       permissions: user.permissions || [],
       camera_access: user.camera_access || []
     };
-    
+
+    // Salvar token para uso nas URLs de HLS
+    req.token = token;
+
     logger.debug(`✅ HLS autenticado: ${user.email} (${user.role}) via ${tokenSource}`);
     next();
     
@@ -219,8 +223,9 @@ const authenticateHLS = async (req, res, next) => {
  */
 router.get('/:stream_id/hls', authenticateHLS, asyncHandler(async (req, res) => {
   const { stream_id } = req.params;
-  const { token } = req.query;
-  
+  // Token pode vir do middleware (req.token) ou da query string
+  const token = req.token || req.query.token;
+
   // Redirecionar para o arquivo principal do manifesto HLS
   const redirectUrl = `/api/streams/${stream_id}/hls/hls.m3u8${token ? `?token=${token}` : ''}`;
   res.redirect(302, redirectUrl);
@@ -232,86 +237,251 @@ router.get('/:stream_id/hls', authenticateHLS, asyncHandler(async (req, res) => 
  * @access Private (via token HLS)
  */
 router.get('/:stream_id/hls/*', authenticateHLS, asyncHandler(async (req, res) => {
+
   const { stream_id } = req.params;
   const file = req.params[0] || 'hls.m3u8'; // Captura todo o caminho restante ou usa o default
-  const { token } = req.query;
+  const { hls_ctx } = req.query;
+  // Token pode vir do middleware (req.token) ou da query string
+  const token = req.token || req.query.token;
 
   if (!file.endsWith('.m3u8') && !file.endsWith('.ts')) {
     return res.status(400).send('Tipo de arquivo inválido.');
   }
 
-  const activeStream = streamingService.getStream(stream_id);
+  let activeStream = streamingService.getStream(stream_id);
+
+  // FALLBACK: Se stream não está no Map local, verificar APIs diretamente
   if (!activeStream) {
-    return res.status(404).send('Stream não encontrado.');
+    logger.info(`[HLS FALLBACK] Stream ${stream_id} não encontrado no Map, verificando APIs...`);
+
+    try {
+      // 1. Verificar no ZLMediaKit
+      const zlmStreams = await streamingService.getMediaList();
+      logger.info(`[HLS FALLBACK] ZLM retornou ${zlmStreams.length} streams`);
+      const zlmStream = zlmStreams.find(s => s.stream === stream_id);
+
+      if (zlmStream && (zlmStream.originType !== 4 || zlmStream.bytesSpeed > 0)) {
+        logger.info(`[HLS FALLBACK] Stream ${stream_id} encontrado no ZLMediaKit`);
+        activeStream = {
+          id: stream_id,
+          camera_id: stream_id,
+          status: 'active',
+          server: 'zlm',
+          urls: { hls: `/api/streams/${stream_id}/hls` }
+        };
+        // Popular Map para futuras requisições
+        streamingService.activeStreams.set(stream_id, activeStream);
+      } else {
+        logger.info(`[HLS FALLBACK] Stream ${stream_id} NÃO encontrado no ZLM, verificando SRS...`);
+      }
+
+      // 2. Se não encontrou no ZLM, verificar no SRS
+      if (!activeStream) {
+        const SRS_API_URL = process.env.SRS_API_URL || 'http://127.0.0.1:1985/api/v1';
+        logger.info(`[HLS FALLBACK] Consultando SRS em: ${SRS_API_URL}/streams/`);
+        try {
+          const srsResponse = await fetch(`${SRS_API_URL}/streams/`, { signal: AbortSignal.timeout(3000) });
+          const srsData = await srsResponse.json();
+          const srsStreams = srsData.streams || [];
+          logger.info(`[HLS FALLBACK] SRS retornou ${srsStreams.length} streams`);
+
+          // Buscar câmera para obter stream_key
+          const { Camera } = await import('../models/Camera.js');
+          const camera = await Camera.findById(stream_id);
+          logger.info(`[HLS FALLBACK] Camera encontrada: ${camera ? camera.name : 'NÃO'}, stream_key: ${camera?.stream_key}`);
+
+          if (camera) {
+            const streamKey = camera.stream_key || stream_id;
+            const srsStream = srsStreams.find(s => s.publish?.active && s.name === streamKey);
+            logger.info(`[HLS FALLBACK] Buscando stream_key=${streamKey} no SRS: ${srsStream ? 'ENCONTRADO' : 'NÃO ENCONTRADO'}`);
+
+            if (srsStream) {
+              logger.info(`[HLS FALLBACK] ✅ Stream ${stream_id} encontrado no SRS (stream_key: ${streamKey})`);
+              activeStream = {
+                id: stream_id,
+                camera_id: stream_id,
+                status: 'active',
+                server: 'srs',
+                stream_key: streamKey,
+                urls: { hls: `/api/streams/${stream_id}/hls` }
+              };
+              // Popular Map para futuras requisições
+              streamingService.activeStreams.set(stream_id, activeStream);
+            }
+          }
+        } catch (srsErr) {
+          logger.warn(`[HLS FALLBACK] ❌ Erro ao consultar SRS: ${srsErr.message}`);
+        }
+      }
+    } catch (fallbackErr) {
+      logger.warn(`[HLS FALLBACK] ❌ Erro no fallback: ${fallbackErr.message}`);
+    }
+  }
+
+  // Se ainda não encontrou, tentar dar mensagem útil
+  if (!activeStream) {
+    try {
+      const { Camera } = await import('../models/Camera.js');
+      const camera = await Camera.findById(stream_id);
+      if (camera) {
+        return res.status(404).json({
+          error: 'Stream não iniciado',
+          message: 'A câmera existe mas o stream não foi iniciado. Clique em "Iniciar Stream" primeiro.',
+          camera_id: stream_id,
+          camera_name: camera.name,
+          hint: camera.stream_type === 'rtmp'
+            ? 'Para câmeras RTMP, certifique-se que o encoder está transmitindo para a URL RTMP configurada.'
+            : 'Inicie o stream através da interface de câmeras.'
+        });
+      }
+    } catch (err) {
+      logger.warn(`Erro ao buscar câmera ${stream_id}:`, err.message);
+    }
+    return res.status(404).json({
+      error: 'Stream não encontrado',
+      message: 'Câmera ou stream não existe no sistema.'
+    });
   }
 
   if (req.user.role !== 'admin' && !req.user.camera_access.includes(activeStream.camera_id)) {
     return res.status(403).send('Acesso negado a este stream.');
   }
 
-  const ZLM_BASE_URL = process.env.ZLM_BASE_URL || 'http://localhost:8000';
-  const proxyUrl = `${ZLM_BASE_URL}/live/${stream_id}/${file}`;
+  if (activeStream.status === 'pending') {
+    return res.status(425).json({
+      error: 'Stream pendente',
+      message: 'Aguardando encoder publicar no servidor de streaming.',
+      stream_id,
+      stream_key: activeStream.stream_key || stream_id
+    });
+  }
+
+  // Determinar qual servidor de mídia usar baseado no stream ativo
+  const streamServer = activeStream.server || 'zlm';
+  let proxyUrl;
+
+  if (streamServer === 'srs') {
+    // Para SRS, preferir URL HLS configurada
+    const rawSrsBase = process.env.SRS_HLS_URL || process.env.SRS_BASE_URL || 'http://localhost:8081';
+    const normalizedSrsBase = rawSrsBase.endsWith('/') ? rawSrsBase.slice(0, -1) : rawSrsBase;
+    const srsLiveBase = normalizedSrsBase.endsWith('/live') ? normalizedSrsBase : `${normalizedSrsBase}/live`;
+    const streamKey = activeStream.stream_key || stream_id;
+    // SRS usa formato diferente: /live/streamkey.m3u8 para o manifesto principal
+    const srsFile = file === 'hls.m3u8' ? `${streamKey}.m3u8` : file;
+    // Passar hls_ctx se presente (mant?m sess?o HLS do SRS)
+    const queryParams = hls_ctx ? `?hls_ctx=${hls_ctx}` : '';
+    proxyUrl = `${srsLiveBase}/${srsFile}${queryParams}`;
+    logger.info(`[SRS] Proxy URL: ${proxyUrl}`);
+  } else {
+    // Para ZLMediaKit, usar porta 8000 com secret
+    const ZLM_BASE_URL = process.env.ZLM_BASE_URL || 'http://localhost:8000';
+    const ZLM_SECRET = process.env.ZLM_SECRET;
+    const separator = file.includes('?') ? '&' : '?';
+    proxyUrl = `${ZLM_BASE_URL}/live/${stream_id}/${file}${ZLM_SECRET ? `${separator}secret=${ZLM_SECRET}` : ''}`;
+    logger.debug(`🔗 [ZLM] Proxy URL: ${proxyUrl}`);
+  }
+
+  logger.debug(`🔗 Proxy URL construída: ${proxyUrl}`);
 
   try {
-    // Configurar timeout para o fetch
+    logger.info(`[HLS PROXY] Requisitando via fetch: ${proxyUrl}`);
+
+    // Configurar timeout com AbortController
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 segundos timeout
-    
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+    // Fazer requisição com fetch (sem Accept-Encoding automático)
     const response = await fetch(proxyUrl, {
-      signal: controller.signal,
+      method: req.method,
       headers: {
-        'User-Agent': 'NewCAM-Backend/1.0',
-        'Accept': file.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp2t'
-      }
+        'Accept': '*/*',
+        'User-Agent': 'curl/8.0.0'
+      },
+      signal: controller.signal
     });
-    
+
     clearTimeout(timeoutId);
-    
+
+    logger.info(`[HLS PROXY] Response status: ${response.status}`);
+
     if (!response.ok) {
-      logger.warn(`ZLMediaKit retornou status ${response.status} para ${proxyUrl}`);
-      return res.status(response.status).send(await response.text());
+      logger.error(`[HLS PROXY] Response não OK: ${response.status} ${response.statusText}`);
+      return res.status(response.status).send('Stream não disponível');
     }
 
     if (file.endsWith('.m3u8')) {
+      // Para manifests, ler como texto
       let manifest = await response.text();
       const baseUrl = `/api/streams/${stream_id}/hls`;
 
       // Reescreve as URLs para apontar para o nosso proxy
-      // Regex melhorada que evita capturar notação científica (e+, e-, E+, E-)
-      manifest = manifest.replace(/^([^#\n\r]*\.m3u8)$/gm, `${baseUrl}/$1?token=${token}`)
-                         .replace(/^([^#\n\r]*(?<!e[+-]\d*)\.ts)$/gm, `${baseUrl}/$1?token=${token}`);
+      // Para SRS: preserva hls_ctx para manter sessão HLS
+      if (streamServer === 'srs') {
+        manifest = manifest
+          // URLs de manifests SRS: /live/streamname.m3u8?hls_ctx=xxx
+          .replace(/^\/live\/([^?\s]+\.m3u8)\?hls_ctx=([^\n\r]+)$/gm, (match, filename, hlsCtx) => {
+            return `${baseUrl}/${filename}?token=${token}&hls_ctx=${hlsCtx}`;
+          })
+          // URLs relativas SRS: streamname.m3u8?hls_ctx=xxx (sem /)
+          .replace(/^([^#\/\n\r][^\n\r]*\.m3u8)\?hls_ctx=([^\n\r]+)$/gm, (match, filename, hlsCtx) => {
+            return `${baseUrl}/${filename}?token=${token}&hls_ctx=${hlsCtx}`;
+          })
+          // URLs de segmentos .ts com hls_ctx: stream001-N.ts?hls_ctx=xxx
+          .replace(/^([^#\n\r]*\.ts)\?hls_ctx=([^\n\r]+)$/gm, (match, filename, hlsCtx) => {
+            return `${baseUrl}/${filename}?token=${token}&hls_ctx=${hlsCtx}`;
+          })
+          // URLs sem hls_ctx (fallback)
+          .replace(/^\/live\/([^?\s]+\.m3u8)$/gm, `${baseUrl}/$1?token=${token}`)
+          .replace(/^([^#\/\n\r][^\n\r]*\.m3u8)$/gm, `${baseUrl}/$1?token=${token}`)
+          .replace(/^([^#\n\r]*\.ts)$/gm, `${baseUrl}/$1?token=${token}`);
+      } else {
+        // Para ZLMediaKit
+        manifest = manifest
+          // URLs de manifests ZLM: /live/streamid/xxx.m3u8
+          .replace(/^\/live\/[^/]+\/([^\n\r]+\.m3u8)$/gm, `${baseUrl}/$1?token=${token}`)
+          // URLs relativas como xxx.m3u8
+          .replace(/^([^#\/\n\r][^\n\r]*\.m3u8)$/gm, `${baseUrl}/$1?token=${token}`)
+          // URLs de segmentos .ts
+          .replace(/^([^#\n\r]*(?<!e[+-]\d*)\.ts)$/gm, `${baseUrl}/$1?token=${token}`);
+      }
 
       res.set('Content-Type', 'application/vnd.apple.mpegurl');
       res.send(manifest);
+      logger.info(`[HLS PROXY] Manifest enviado com sucesso`);
     } else {
+      // Para segmentos .ts, fazer streaming direto
       res.set('Content-Type', 'video/mp2t');
       if (req.method === 'HEAD') {
         res.set('Content-Length', response.headers.get('content-length') || '0');
         res.end();
       } else {
+        // Stream do body
         const reader = response.body.getReader();
-        const pump = () => {
-          return reader.read().then(({ done, value }) => {
-            if (done) {
-              res.end();
-              return;
+        const pump = async () => {
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              res.write(value);
             }
-            res.write(value);
-            return pump();
-          });
+            res.end();
+            logger.info(`[HLS PROXY] Streaming de segmento concluído`);
+          } catch (err) {
+            logger.error(`[HLS PROXY] Erro no streaming:`, err);
+            res.end();
+          }
         };
-        pump().catch(err => {
-          logger.error('Erro ao fazer stream do segmento:', err);
-          res.end();
-        });
+        pump();
       }
     }
   } catch (error) {
+    logger.error(`[HLS PROXY] Erro:`, error.message);
+    logger.error(`[HLS PROXY] Stack:`, error.stack);
+
     if (error.name === 'AbortError') {
-      logger.error(`Timeout no proxy HLS para ${proxyUrl}`);
       return res.status(504).send('Timeout ao acessar stream.');
     }
-    logger.error(`Erro no proxy HLS para ${proxyUrl}:`, error);
+
     res.status(500).send('Erro interno no proxy HLS.');
   }
 }));
@@ -324,7 +494,8 @@ router.get('/:stream_id/hls/*', authenticateHLS, asyncHandler(async (req, res) =
 router.get('/:stream_id/hls_h264/*', authenticateHLS, asyncHandler(async (req, res) => {
   const { stream_id } = req.params;
   const file = req.params[0] || 'hls.m3u8';
-  const token = req.query.token;
+  // Token pode vir do middleware (req.token) ou da query string
+  const token = req.token || req.query.token;
 
   if (!file.endsWith('.m3u8') && !file.endsWith('.ts')) {
     return res.status(400).send('Tipo de arquivo não suportado para streaming H264.');
@@ -420,8 +591,8 @@ router.get('/',
       quality = null
     } = req.query;
 
-    // Obter streams ativos do serviço
-    let streams = streamingService.getActiveStreams();
+    // Obter streams ativos do serviço (agora async - consulta SRS/ZLM diretamente)
+    let streams = await streamingService.getActiveStreams();
 
     // Filtrar por status se especificado
     if (status) {
@@ -724,17 +895,7 @@ router.post('/:stream_id/stop',
           logger.error(`❌ Erro ao buscar gravações ativas:`, error);
         }
         
-        // Processar arquivos temporários
-        setTimeout(async () => {
-          try {
-            const hookModule = await import('./hooks.js');
-            // A função processTemporaryFilesForCamera não está exportada, mas podemos chamar o serviço de finalização
-            const finalizationService = (await import('../services/RecordingFinalizationService.js')).default;
-            await finalizationService.finalizeActiveRecordingForCamera(cameraId);
-          } catch (tempError) {
-            logger.error(`⚠️ Erro ao processar arquivos temporários:`, tempError);
-          }
-        }, 3000);
+        // Arquivos temporários serão processados pelo RecordingSyncService automaticamente
       }
     } catch (recordingError) {
       logger.error(`❌ Erro ao finalizar gravações:`, recordingError);
@@ -769,16 +930,32 @@ router.get('/:stream_id',
 
     const stream = streamingService.getStream(stream_id);
     if (!stream) {
+      const camera = await Camera.findById(stream_id);
+      if (camera && (camera.stream_type === 'rtmp' || camera.rtmp_url)) {
+        const rtmpMatch = camera.rtmp_url ? camera.rtmp_url.match(/\/live\/([^/]+)$/) : null;
+        const streamKey = rtmpMatch ? rtmpMatch[1] : stream_id;
+        return res.json({
+          message: 'Stream pendente',
+          data: {
+            id: stream_id,
+            camera_id: camera.id,
+            status: 'pending',
+            server: camera.rtmp_server_type || 'srs',
+            stream_key: streamKey,
+            urls: {
+              rtmp: camera.rtmp_url || `rtmp://localhost:${process.env.SRS_RTMP_PORT || '1936'}/live/${streamKey}`
+            }
+          }
+        });
+      }
       throw new NotFoundError('Stream não encontrado');
     }
 
-    // Verificar acesso à câmera
-    if (req.user.role !== 'admin' && 
+    if (req.user.role !== 'admin' &&
         !req.user.camera_access.includes(stream.camera_id)) {
       throw new AuthorizationError('Sem permissão para visualizar este stream');
     }
 
-    // Construir URLs completas para o cliente
     const baseUrl = `${req.protocol}://${req.get('host')}`;
     const streamInfo = {
       ...stream,

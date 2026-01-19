@@ -228,13 +228,14 @@ router.post('/on_stop', async (req, res) => {
 
 /**
  * SRS Hook: on_dvr
- * Chamado quando DVR (gravação) é iniciada ou finalizada
+ * Chamado quando um segmento DVR (gravação) é finalizado
+ * O SRS envia: client_id, ip, vhost, app, stream, cwd, file
  */
 router.post('/on_dvr', async (req, res) => {
   try {
     const { client_id, ip, vhost, app, stream, cwd, file } = req.body;
-    
-    logger.info('🎬 [SRS] Evento DVR:', {
+
+    logger.info('🎬 [SRS] Evento DVR recebido:', {
       client_id,
       ip,
       vhost,
@@ -243,14 +244,59 @@ router.post('/on_dvr', async (req, res) => {
       cwd,
       file
     });
-    
+
     const cameraId = extractCameraId(stream);
-    
+
     if (cameraId && file) {
-      // Registrar gravação no Supabase se necessário
-      logger.info(`📹 [SRS] Gravação DVR para câmera ${cameraId}: ${file}`);
+      // Extrair nome do arquivo do path completo
+      const filename = file.split('/').pop();
+
+      // Calcular path relativo para armazenamento
+      // DVR path: ./objs/nginx/html/record/[app]/[stream]/[2006]-[01]-[02]/[stream].[timestamp].mp4
+      const relativePath = file.replace('./objs/nginx/html/', '').replace(/^\//, '');
+
+      // Verificar se câmera existe e tem gravação habilitada
+      const { data: camera } = await supabaseAdmin
+        .from('cameras')
+        .select('id, name, recording_enabled, retention_days')
+        .eq('id', cameraId)
+        .single();
+
+      if (!camera) {
+        logger.warn(`📹 [SRS] Câmera ${cameraId} não encontrada - ignorando gravação`);
+        return res.json({ code: 0 });
+      }
+
+      if (!camera.recording_enabled) {
+        logger.info(`📹 [SRS] Gravação desabilitada para câmera ${camera.name} - ignorando`);
+        return res.json({ code: 0 });
+      }
+
+      // Inserir registro de gravação no Supabase
+      const { data: recording, error } = await supabaseAdmin
+        .from('recordings')
+        .insert({
+          camera_id: cameraId,
+          filename: filename,
+          local_path: relativePath,
+          file_path: relativePath,
+          status: 'completed',
+          duration: 1800, // Conforme configurado em dvr_duration
+          file_size: 0, // Será atualizado depois se necessário
+          source: 'srs_dvr',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      if (error) {
+        logger.error(`❌ [SRS] Erro ao salvar gravação no banco:`, error);
+      } else {
+        logger.info(`✅ [SRS] Gravação salva: ${filename} para câmera ${camera.name} (ID: ${recording.id})`);
+      }
     }
-    
+
     res.json({ code: 0 });
   } catch (error) {
     logger.error('❌ [SRS] Erro no hook on_dvr:', error);

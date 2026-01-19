@@ -64,31 +64,28 @@ const PieChart: React.FC<PieChartProps> = ({
     }
   };
 
-  const renderLabel = (entry: any) => {
-    if (!showLabels) return null;
-    
-    const total = dataWithColors.reduce((sum, item) => sum + item.value, 0);
-    const percent = ((entry.value / total) * 100).toFixed(1);
-    
-    return `${percent}%`;
-  };
-
-  const renderCustomizedLabel = ({
-    cx, cy, midAngle, innerRadius, outerRadius, percent
-  }: any) => {
+  const renderCustomizedLabel = (props: {
+    cx?: number;
+    cy?: number;
+    midAngle?: number;
+    innerRadius?: number;
+    outerRadius?: number;
+    percent?: number;
+  }) => {
+    const { cx = 0, cy = 0, midAngle = 0, innerRadius = 0, outerRadius = 0, percent = 0 } = props;
     if (!showLabels || percent < 0.05) return null; // Não mostrar labels para fatias muito pequenas
-    
+
     const RADIAN = Math.PI / 180;
     const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
     const x = cx + radius * Math.cos(-midAngle * RADIAN);
     const y = cy + radius * Math.sin(-midAngle * RADIAN);
 
     return (
-      <text 
-        x={x} 
-        y={y} 
-        fill="white" 
-        textAnchor={x > cx ? 'start' : 'end'} 
+      <text
+        x={x}
+        y={y}
+        fill="white"
+        textAnchor={x > cx ? 'start' : 'end'}
         dominantBaseline="central"
         fontSize={12}
         fontWeight="bold"
@@ -132,7 +129,7 @@ const PieChart: React.FC<PieChartProps> = ({
           <Legend 
             verticalAlign="bottom" 
             height={36}
-            formatter={(value, entry: any) => (
+            formatter={(value: string, entry: { color?: string }) => (
               <span style={{ color: entry.color }}>{value}</span>
             )}
           />

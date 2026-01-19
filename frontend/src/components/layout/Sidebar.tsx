@@ -1,21 +1,16 @@
-import React from 'react';
+import React, { type ComponentType } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { 
-  Home, 
-  Camera, 
-  Users, 
-  Settings, 
-  Monitor, 
- 
-  Shield, 
-  BarChart3,
+import {
+  Home,
+  Camera,
+  Users,
+  Shield,
   X,
   Video,
-  FileText,
-  TrendingUp,
   UserCircle
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
+import logoImg from '@/assets/safecameras.png';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -25,7 +20,7 @@ interface SidebarProps {
 interface NavItem {
   name: string;
   href: string;
-  icon: React.ComponentType<any>;
+  icon: ComponentType<{ className?: string }>;
   userTypes: ('ADMIN' | 'INTEGRATOR' | 'CLIENT')[];
 }
 
@@ -88,17 +83,13 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
         ${isOpen ? 'translate-x-0' : '-translate-x-full'}
       `}>
         <div className="flex h-full flex-col">
-          {/* Logo - Sistema automático FUNCIONANDO perfeitamente! */}
+          {/* Logo */}
           <div className="flex h-16 items-center justify-center px-6 border-b border-gray-200">
             <div className="flex items-center justify-center">
-              <img 
-                src="/images/safecameras.png" 
-                alt="SafeCameras" 
+              <img
+                src={logoImg}
+                alt="SafeCameras"
                 className="h-10 w-auto"
-                onError={(e) => {
-                  console.error('Erro ao carregar logo local:', e);
-                  // Fallback para uma logo padrão se necessário
-                }}
               />
             </div>
             

@@ -154,10 +154,10 @@ const Users: React.FC = () => {
     setEditingUser(null);
   }, []);
 
-  // Carregar câmeras
+  // Carregar câmeras (com limit alto para pegar todas)
   const loadCameras = useCallback(async () => {
     try {
-      const data = await api.get<CamerasResponse>(endpoints.cameras.getAll());
+      const data = await api.get<CamerasResponse>(endpoints.cameras.getAll(), { limit: '1000' });
       setCameras(data.data || []);
     } catch (error) {
       console.error('Erro ao carregar câmeras:', error);
@@ -172,9 +172,13 @@ const Users: React.FC = () => {
     
     // Validação
     const errors: Record<string, string> = {};
-    
+
     if (!formData.username.trim()) {
       errors.username = 'Nome de usuário é obrigatório';
+    } else if (!/^[a-zA-Z0-9_-]+$/.test(formData.username)) {
+      errors.username = 'Apenas letras, números, _ e - são permitidos';
+    } else if (formData.username.length < 3) {
+      errors.username = 'Mínimo 3 caracteres';
     }
     
     if (!formData.email.trim()) {
@@ -226,13 +230,17 @@ const Users: React.FC = () => {
       loadUsers();
     } catch (error) {
       console.error('Erro ao salvar usuário:', error);
-      
+
       // Melhor tratamento de erro
       const errorMessage = error instanceof Error ? error.message : 'Erro desconhecido';
-      if (errorMessage.includes('já está em uso')) {
+      if (errorMessage.includes('já está em uso') || errorMessage.includes('already exists')) {
         toast.error('Email ou nome de usuário já está em uso');
-      } else if (errorMessage.includes('validação')) {
+      } else if (errorMessage.includes('validação') || errorMessage.includes('validation')) {
         toast.error('Dados inválidos. Verifique os campos preenchidos.');
+      } else if (errorMessage.includes('username') && (errorMessage.includes('invalid') || errorMessage.includes('inválido'))) {
+        toast.error('Nome de usuário inválido. Use apenas letras, números, _ e -');
+      } else if (errorMessage.includes('400')) {
+        toast.error('Dados inválidos. Verifique se o nome de usuário contém apenas letras, números, _ e -');
       } else {
         toast.error('Erro ao salvar usuário: ' + errorMessage);
       }
@@ -255,17 +263,6 @@ const Users: React.FC = () => {
     }
   }, [loadUsers]);
   
-  // Alterar status do usuário
-  const handleToggleUserStatus = useCallback(async (userId: string, newStatus: 'active' | 'inactive' | 'suspended') => {
-    try {
-      await api.put(endpoints.users.updateStatus(userId), { status: newStatus });
-      toast.success('Status atualizado');
-      loadUsers();
-    } catch (error) {
-      console.error('Erro ao atualizar status:', error);
-      toast.error('Erro ao atualizar status');
-    }
-  }, [loadUsers]);
   
   // Resetar senha
   const handleResetPassword = useCallback(async (userId: string, newPassword: string) => {
@@ -445,9 +442,7 @@ const Users: React.FC = () => {
                 >
                   <option value="">Todas as funções</option>
                   <option value="admin">Administrador</option>
-                  <option value="integrator">Integrador</option>
                   <option value="operator">Operador</option>
-                  <option value="client">Cliente</option>
                   <option value="viewer">Visualizador</option>
                 </select>
               </div>
@@ -557,7 +552,7 @@ const Users: React.FC = () => {
                         </span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {user.last_login ? new Date(user.last_login).toLocaleString() : 'Nunca'}
+                        {user.last_login_at ? new Date(user.last_login_at).toLocaleString() : 'Nunca'}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                         <div className="flex items-center justify-end space-x-2">
@@ -687,11 +682,19 @@ const Users: React.FC = () => {
                     <input
                       type="text"
                       value={formData.username}
-                      onChange={(e) => setFormData(prev => ({ ...prev, username: e.target.value }))}
+                      onChange={(e) => {
+                        // Remove caracteres inválidos automaticamente (só permite a-z, A-Z, 0-9, _, -)
+                        const value = e.target.value.replace(/[^a-zA-Z0-9_-]/g, '');
+                        setFormData(prev => ({ ...prev, username: value }));
+                      }}
+                      placeholder="Ex: rodrigo_cliente"
                       className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent ${
                         formErrors.username ? 'border-red-500' : 'border-gray-300'
                       }`}
                     />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Apenas letras, números, _ e - (sem @ ou espaços)
+                    </p>
                     {formErrors.username && (
                       <p className="text-red-500 text-xs mt-1">{formErrors.username}</p>
                     )}
@@ -766,13 +769,11 @@ const Users: React.FC = () => {
                     </label>
                     <select
                       value={formData.role}
-                      onChange={(e) => handleRoleChange(e.target.value as 'admin' | 'integrator' | 'operator' | 'client' | 'viewer')}
+                      onChange={(e) => handleRoleChange(e.target.value as 'admin' | 'operator' | 'viewer')}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                     >
                       <option value="viewer">Visualizador</option>
-                      <option value="client">Cliente</option>
                       <option value="operator">Operador</option>
-                      <option value="integrator">Integrador</option>
                       <option value="admin">Administrador</option>
                     </select>
                   </div>
@@ -795,34 +796,60 @@ const Users: React.FC = () => {
                 </div>
                 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Acesso às Câmeras
-                  </label>
-                  <div className="max-h-32 overflow-y-auto border border-gray-300 rounded-lg p-2">
-                    {cameras.map(camera => (
-                      <label key={camera.id} className="flex items-center space-x-2 py-1">
-                        <input
-                          type="checkbox"
-                          checked={Array.isArray(formData.camera_access) && formData.camera_access.includes(camera.id)}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setFormData(prev => ({
-                                ...prev,
-                                camera_access: [...(Array.isArray(prev.camera_access) ? prev.camera_access : []), camera.id]
-                              }));
-                            } else {
-                              setFormData(prev => ({
-                                ...prev,
-                                camera_access: Array.isArray(prev.camera_access) ? prev.camera_access.filter(id => id !== camera.id) : []
-                              }));
-                            }
-                          }}
-                          className="w-4 h-4 text-primary-600 bg-gray-100 border-gray-300 rounded focus:ring-primary-500"
-                        />
-                        <span className="text-sm">{camera.name}{camera.location ? ` - ${camera.location}` : ''}</span>
-                      </label>
-                    ))}
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-sm font-medium text-gray-700">
+                      Acesso às Câmeras ({Array.isArray(formData.camera_access) ? formData.camera_access.length : 0} de {cameras.length})
+                    </label>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setFormData(prev => ({ ...prev, camera_access: cameras.map(c => c.id) }))}
+                        className="text-xs text-primary-600 hover:text-primary-700 font-medium"
+                      >
+                        Selecionar todas
+                      </button>
+                      <span className="text-gray-300">|</span>
+                      <button
+                        type="button"
+                        onClick={() => setFormData(prev => ({ ...prev, camera_access: [] }))}
+                        className="text-xs text-gray-600 hover:text-gray-700 font-medium"
+                      >
+                        Limpar
+                      </button>
+                    </div>
                   </div>
+                  {cameras.length === 0 ? (
+                    <div className="text-sm text-gray-500 italic p-4 border border-gray-200 rounded-lg bg-gray-50">
+                      Nenhuma câmera cadastrada no sistema
+                    </div>
+                  ) : (
+                    <div className="max-h-40 overflow-y-auto border border-gray-300 rounded-lg p-2">
+                      {cameras.map(camera => (
+                        <label key={camera.id} className="flex items-center space-x-2 py-1 hover:bg-gray-50 rounded px-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={Array.isArray(formData.camera_access) && formData.camera_access.includes(camera.id)}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setFormData(prev => ({
+                                  ...prev,
+                                  camera_access: [...(Array.isArray(prev.camera_access) ? prev.camera_access : []), camera.id]
+                                }));
+                              } else {
+                                setFormData(prev => ({
+                                  ...prev,
+                                  camera_access: Array.isArray(prev.camera_access) ? prev.camera_access.filter(id => id !== camera.id) : []
+                                }));
+                              }
+                            }}
+                            className="w-4 h-4 text-primary-600 bg-gray-100 border-gray-300 rounded focus:ring-primary-500"
+                          />
+                          <span className="text-sm flex-1">{camera.name}</span>
+                          {camera.location && <span className="text-xs text-gray-400">{camera.location}</span>}
+                        </label>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 
                 

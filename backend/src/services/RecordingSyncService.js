@@ -201,7 +201,7 @@ class RecordingSyncService {
 
       const { data: orphanRecording } = await supabaseAdmin
         .from('recordings')
-        .select('id, start_time, created_at')
+        .select('id, start_time, created_at, metadata')
         .eq('camera_id', fileInfo.cameraId)
         .or('status.eq.recording,status.eq.completed')
         .or('file_path.is.null,filename.is.null')
@@ -212,7 +212,7 @@ class RecordingSyncService {
         .single();
 
       if (orphanRecording) {
-        // Vincular arquivo ao registro órfão
+        // Vincular arquivo ao registro órfão existente
         const { error } = await supabaseAdmin
           .from('recordings')
           .update({
@@ -233,17 +233,90 @@ class RecordingSyncService {
           .eq('id', orphanRecording.id);
 
         if (!error) {
-          this.logger.debug(`🔗 Arquivo ${fileInfo.filename} vinculado ao registro ${orphanRecording.id}`);
+          this.logger.info(`🔗 Arquivo ${fileInfo.filename} vinculado ao registro ${orphanRecording.id}`);
           return true;
         } else {
           this.logger.error(`❌ Erro ao vincular arquivo: ${error.message}`);
         }
+      } else {
+        // NOVO: Criar registro para arquivo órfão que não tem registro no banco
+        return await this.createRecordForOrphanFile(fileInfo, fileTime);
       }
 
       return false;
 
     } catch (error) {
       this.logger.error(`❌ Erro ao vincular arquivo órfão ${fileInfo.filename}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Cria um novo registro no banco de dados para um arquivo MP4 órfão
+   * Usado quando o webhook on_record_mp4 não foi chamado pelo ZLMediaKit
+   */
+  async createRecordForOrphanFile(fileInfo, fileTime) {
+    try {
+      // Estimar duração baseada no tamanho do arquivo
+      // Assumindo ~500KB por segundo para vídeo H264/HEVC típico
+      const estimatedDuration = Math.max(Math.round(fileInfo.size / (500 * 1024)), 10);
+
+      // Calcular end_time baseado no modified time do arquivo
+      const endTime = fileInfo.modified;
+      const startTime = new Date(endTime.getTime() - (estimatedDuration * 1000));
+
+      // Normalizar path para formato relativo
+      let relativePath = fileInfo.relativePath;
+      if (relativePath.startsWith('/')) {
+        relativePath = relativePath.substring(1);
+      }
+      if (!relativePath.startsWith('storage/')) {
+        relativePath = `storage/www/record/live/${fileInfo.cameraId}/${fileInfo.date}/${fileInfo.filename}`;
+      }
+
+      this.logger.info(`📝 Criando registro para arquivo órfão: ${fileInfo.filename}`, {
+        cameraId: fileInfo.cameraId,
+        size: fileInfo.size,
+        estimatedDuration,
+        relativePath
+      });
+
+      const { data: newRecording, error } = await supabaseAdmin
+        .from('recordings')
+        .insert({
+          camera_id: fileInfo.cameraId,
+          filename: fileInfo.filename,
+          file_path: relativePath,
+          local_path: relativePath,
+          size: fileInfo.size,
+          file_size: fileInfo.size,
+          duration: estimatedDuration,
+          start_time: startTime.toISOString(),
+          end_time: endTime.toISOString(),
+          status: 'completed',
+          upload_status: 'pending',
+          created_at: new Date().toISOString(),
+          metadata: {
+            created_by: 'RecordingSyncService',
+            created_at: new Date().toISOString(),
+            file_modified: fileInfo.modified.toISOString(),
+            estimated_duration: true,
+            source: 'orphan_file_scan'
+          }
+        })
+        .select()
+        .single();
+
+      if (error) {
+        this.logger.error(`❌ Erro ao criar registro para arquivo órfão: ${error.message}`);
+        return false;
+      }
+
+      this.logger.info(`✅ Registro criado para arquivo órfão: ${fileInfo.filename} -> ${newRecording.id}`);
+      return true;
+
+    } catch (error) {
+      this.logger.error(`❌ Erro ao criar registro para arquivo órfão ${fileInfo.filename}:`, error);
       return false;
     }
   }

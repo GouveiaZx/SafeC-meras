@@ -186,7 +186,25 @@ const requirePermission = (permission) => {
     if (req.user.role === 'admin') {
       return next();
     }
-    
+
+    // Operadores, Visualizadores e Clientes têm permissões básicas de visualização
+    if (['operator', 'viewer', 'client'].includes(req.user.role)) {
+      const basicViewPermissions = [
+        'dashboard.view',
+        'cameras.view',
+        'cameras.test',
+        'recordings.view',
+        'recordings.download',
+        'streams.view',
+        'metrics.view',
+        'logs.view'
+      ];
+
+      if (basicViewPermissions.includes(permission)) {
+        return next();
+      }
+    }
+
     // Verificar se o usuário tem a permissão específica
     if (!req.user.permissions.includes(permission)) {
       logger.warn(`Acesso negado para ${req.user.email} - permissão: ${permission}`);

@@ -1,10 +1,11 @@
+import type { ComponentType } from 'react';
 import { cn } from "@/lib/utils";
 import { FileX } from 'lucide-react';
 
 interface EmptyProps {
   title?: string;
   description?: string;
-  icon?: React.ComponentType<any>;
+  icon?: ComponentType<{ className?: string }>;
   className?: string;
 }
 

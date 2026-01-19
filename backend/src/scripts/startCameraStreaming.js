@@ -25,7 +25,8 @@ async function forceStartRecording(streamId) {
         type: 1, // MP4
         vhost: '__defaultVhost__',
         app: 'live',
-        stream: streamId
+        stream: streamId,
+        max_second: 1800  // 30 minutos - segmentação correta
       },
       timeout: 10000
     });

@@ -3,8 +3,8 @@
  * PM2 ECOSYSTEM CONFIGURATION - SISTEMA NEWCAM
  * =========================================================
  * Configuração de produção para gerenciamento de processos
- * Servidor: nuvem.safecameras.com.br (66.94.104.241)
- * 
+ * Servidor: 186.233.4.8 (Janeiro 2025)
+ *
  * Comandos úteis:
  * - pm2 start ecosystem.config.js
  * - pm2 restart all
@@ -22,7 +22,7 @@ module.exports = {
       // =====================================
       name: 'newcam-backend',
       script: './backend/src/server.js',
-      cwd: '/var/www/newcam',
+      cwd: '/root/NewCAM',
       
       // Instâncias e modo de execução
       instances: 1,
@@ -36,9 +36,9 @@ module.exports = {
       },
       
       // Configurações de log
-      log_file: '/var/log/newcam/backend_combined.log',
-      out_file: '/var/log/newcam/backend_out.log',
-      error_file: '/var/log/newcam/backend_error.log',
+      log_file: '/root/NewCAM/storage/logs/backend_combined.log',
+      out_file: '/root/NewCAM/storage/logs/backend_out.log',
+      error_file: '/root/NewCAM/storage/logs/backend_error.log',
       log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
       
       // Configurações de restart
@@ -65,7 +65,7 @@ module.exports = {
       // =====================================
       name: 'newcam-worker',
       script: './worker/src/worker.js',
-      cwd: '/var/www/newcam',
+      cwd: '/root/NewCAM',
       
       // Instâncias e modo de execução
       instances: 1,
@@ -80,9 +80,9 @@ module.exports = {
       },
       
       // Configurações de log
-      log_file: '/var/log/newcam/worker_combined.log',
-      out_file: '/var/log/newcam/worker_out.log',
-      error_file: '/var/log/newcam/worker_error.log',
+      log_file: '/root/NewCAM/storage/logs/worker_combined.log',
+      out_file: '/root/NewCAM/storage/logs/worker_out.log',
+      error_file: '/root/NewCAM/storage/logs/worker_error.log',
       log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
       
       // Configurações de restart
@@ -110,11 +110,11 @@ module.exports = {
   deploy: {
     production: {
       user: 'root',
-      host: '66.94.104.241',
+      host: '186.233.4.8',
       ref: 'origin/main',
       repo: 'git@github.com:seu-usuario/newcam-surveillance-system.git',
-      path: '/var/www/newcam',
-      
+      path: '/root/NewCAM',
+
       // Comandos de deploy
       'pre-deploy-local': '',
       'post-deploy': 'npm ci --production && pm2 reload ecosystem.config.js --env production',

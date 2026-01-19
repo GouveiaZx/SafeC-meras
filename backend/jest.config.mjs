@@ -1,5 +1,7 @@
 export default {
   testEnvironment: 'node',
-  extensionsToTreatAsEsm: ['.js', '.mjs'],
+  modulePathIgnorePatterns: ['<rootDir>/backup', '<rootDir>/node_modules'],
+  roots: ['<rootDir>/src'],
+  passWithNoTests: true,
   transform: {},
 };

@@ -77,6 +77,13 @@ class Camera {
     this.settings = data.settings || {};
     this.metadata = data.metadata || {};
 
+    // Campos para RTMP dinâmico sequencial (SRS Integration)
+    this.stream_key = data.stream_key; // Stream key para identificação única no SRS
+    this.rtmp_stream_id = data.rtmp_stream_id;
+    this.rtmp_sequential_number = data.rtmp_sequential_number;
+    this.use_dynamic_rtmp = data.use_dynamic_rtmp || false;
+    this.rtmp_server_type = data.rtmp_server_type || 'srs';
+
     // Gerar URLs de streaming se necessário
     this.generateStreamingUrls();
   }
@@ -190,7 +197,7 @@ class Camera {
       // HLS URL sempre baseada no stream existente
       if (this.rtsp_url || this.rtmp_url) {
         const streamId = this.id || 'temp';
-        this.hls_url = `/api/streams/${streamId}/hls/playlist.m3u8`;
+        this.hls_url = `/api/streams/${streamId}/hls/hls.m3u8`;
       }
       return;
     }
@@ -215,7 +222,7 @@ class Camera {
     
     // HLS URL sempre baseada no stream
     const streamId = this.id || 'temp';
-    this.hls_url = `/api/streams/${streamId}/hls/playlist.m3u8`;
+    this.hls_url = `/api/streams/${streamId}/hls/hls.m3u8`;
   }
 
   // Verificar conectividade da câmera
@@ -416,8 +423,9 @@ class Camera {
         throw new ValidationError('Nome da câmera é obrigatório');
       }
       
-      // Deve ter pelo menos uma URL de stream ou IP
-      if (!this.rtsp_url && !this.rtmp_url && !this.ip_address) {
+      // Deve ter pelo menos uma URL de stream ou IP (ou usar pool dinâmico RTMP)
+      const allowDynamicRTMP = this.use_dynamic_rtmp && this.stream_type === 'rtmp';
+      if (!this.rtsp_url && !this.rtmp_url && !this.ip_address && !allowDynamicRTMP) {
         throw new ValidationError('Deve ser fornecido pelo menos um: IP da câmera, URL RTSP ou URL RTMP');
       }
 
@@ -464,6 +472,7 @@ class Camera {
             resolution: this.resolution,
             fps: this.fps,
             active: this.active,
+            retention_days: this.retention_days,
             updated_at: this.updated_at
           })
           .eq('id', this.id)
@@ -492,7 +501,11 @@ class Camera {
           rtmp_url: this.rtmp_url,
           stream_type: this.stream_type,
           status: this.status || 'offline',
-          location: this.location
+          location: this.location,
+          use_dynamic_rtmp: this.use_dynamic_rtmp || false,
+          rtmp_server_type: this.rtmp_server_type || 'srs',
+          retention_days: this.retention_days || 30,
+          recording_enabled: this.recording_enabled || false
         };
         
         // Só incluir ip_address se for um IP válido (não hostname)
@@ -694,7 +707,8 @@ class Camera {
 
       // Filtros
       if (search) {
-        query = query.or(`name.ilike.%${search}%,location.ilike.%${search}%,ip_address.ilike.%${search}%`);
+        // Nota: ip_address é do tipo inet e não pode usar ILIKE
+        query = query.or(`name.ilike.%${search}%,location.ilike.%${search}%`);
       }
 
       if (status) {

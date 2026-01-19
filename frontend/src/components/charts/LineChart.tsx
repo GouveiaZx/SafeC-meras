@@ -11,7 +11,7 @@ import {
 } from 'recharts';
 
 interface DataPoint {
-  [key: string]: any;
+  [key: string]: number | string | null | undefined;
 }
 
 interface LineConfig {
@@ -68,7 +68,7 @@ const LineChart: React.FC<LineChartProps> = ({
     return date.toLocaleString('pt-BR');
   };
 
-  const formatTooltipValue = (value: any, name: string) => {
+  const formatTooltipValue = (value: number | string, name: string) => {
     const line = lines.find(l => l.name === name);
     const unitToUse = line?.unit || unit || '';
     
@@ -94,8 +94,11 @@ const LineChart: React.FC<LineChartProps> = ({
       sampleData: data?.[0],
       xAxisKey,
       lines: lines.map(l => ({ dataKey: l.dataKey, name: l.name })),
-      hasValidData: data && data.length > 0 && data.some(item => 
-        lines.some(line => typeof item[line.dataKey] === 'number' && item[line.dataKey] > 0)
+      hasValidData: data && data.length > 0 && data.some(item =>
+        lines.some(line => {
+          const value = item[line.dataKey];
+          return typeof value === 'number' && value > 0;
+        })
       )
     });
   }, [data, title, xAxisKey, lines]);

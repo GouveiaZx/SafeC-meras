@@ -1,9 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Camera, AlertCircle, RotateCcw, Pause, Play, Trash2, Settings, Save, X, Plus, Grid3X3, Maximize2 } from 'lucide-react';
 import { api, endpoints } from '@/lib/api';
 import AuthenticatedVideoPlayer from '../components/AuthenticatedVideoPlayer';
+import CameraDetailsModal from '../components/CameraDetailsModal';
+import { useAuth } from '@/contexts/AuthContext';
 
 // Tipos
 interface CameraData {
@@ -13,6 +15,7 @@ interface CameraData {
   rtmp_url?: string;
   location?: string;
   status: 'online' | 'offline' | 'error';
+  is_streaming?: boolean;
   recording_enabled?: boolean;
   recording?: boolean;
   quality_profile?: string;
@@ -21,13 +24,16 @@ interface CameraData {
 }
 
 interface StreamStatus {
-  status: 'active' | 'inactive' | 'error';
+  status: 'active' | 'inactive' | 'error' | 'pending';
+  camera_id?: string;
   stream_id?: string;
   urls?: {
     hls?: string;
     flv?: string;
+    rtmp?: string;
   };
   bitrate?: number;
+  viewers?: number;
 }
 
 interface CamerasResponse {
@@ -42,15 +48,17 @@ interface CamerasResponse {
   cameras?: CameraData[]; // Manter para compatibilidade
 }
 
-const Cameras = ({ token }) => {
+const Cameras = () => {
+  const { user } = useAuth();
+  // Verificar permissões - apenas admin e integrator podem gerenciar
+  const canManage = user?.userType === 'ADMIN' || user?.userType === 'INTEGRATOR';
+
   const [cameras, setCameras] = useState<CameraData[]>([]);
   const [filteredCameras, setFilteredCameras] = useState<CameraData[]>([]);
   const [streamStatus, setStreamStatus] = useState<Map<string, StreamStatus>>(new Map());
   const [selectedCamera, setSelectedCamera] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'single'>('grid');
   const [loading, setLoading] = useState(true);
-  const [currentQuality, setCurrentQuality] = useState<string>('720p');
-  const [availableQualitiesState] = useState<string[]>(['1080p', '720p', '480p']);
   const [error, setError] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const location = useLocation();
@@ -61,6 +69,8 @@ const Cameras = ({ token }) => {
     rtmp_url: '',
     location: '',
     stream_type: 'rtsp' as 'rtsp' | 'rtmp',
+    rtmp_server_type: 'srs' as 'srs',
+    use_dynamic_rtmp: true, // Pool automático SRS como padrão
     type: 'ip', // Campo obrigatório para validação do backend
     recording_enabled: false,
     quality_profile: 'medium',
@@ -71,6 +81,8 @@ const Cameras = ({ token }) => {
   const [selectedCameraForSettings, setSelectedCameraForSettings] = useState<CameraData | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [cameraToDelete, setCameraToDelete] = useState<string | null>(null);
+  const [showDetailsModal, setShowDetailsModal] = useState(false);
+  const [selectedCameraForDetails, setSelectedCameraForDetails] = useState<CameraData | null>(null);
 
   const handleDeleteCamera = async (cameraId: string) => {
     try {
@@ -98,12 +110,18 @@ const Cameras = ({ token }) => {
   };
 
   const handleOpenSettings = (camera: CameraData) => {
+    // Verificar permissão - apenas admin e integrator podem editar
+    if (!canManage) {
+      toast.error('Você não tem permissão para editar câmeras');
+      return;
+    }
+
     setSelectedCameraForSettings(camera);
-    
+
     // Detectar tipo de stream baseado nos campos preenchidos
     const isRtmp = camera.rtmp_url && !camera.rtsp_url;
     const streamType = isRtmp ? 'rtmp' : 'rtsp';
-    
+
     setFormData({
       name: camera.name,
       ip_address: '', // Não temos IP no modelo atual
@@ -111,10 +129,12 @@ const Cameras = ({ token }) => {
       rtmp_url: camera.rtmp_url || '',
       location: camera.location || '',
       stream_type: streamType,
+      rtmp_server_type: 'srs',
+      use_dynamic_rtmp: false,
       type: 'ip', // Campo obrigatório para validação do backend
       recording_enabled: camera.recording_enabled || false,
       quality_profile: camera.quality_profile || 'medium',
-      retention_days: camera.retention_days || 30
+      retention_days: camera.retention_days ?? 30
     });
     setShowSettingsModal(true);
   };
@@ -140,7 +160,7 @@ const Cameras = ({ token }) => {
       setSelectedCameraForSettings(null);
       
       // Recarregar lista de câmeras
-      const updatedResult = await api.get<CamerasResponse>(endpoints.cameras.getAll());
+      const updatedResult = await api.get<CamerasResponse>(endpoints.cameras.getAll(), { limit: '100' });
       const updatedCameras = updatedResult.data || updatedResult.cameras || [];
       setCameras(updatedCameras);
       setFilteredCameras(updatedCameras);
@@ -157,10 +177,73 @@ const Cameras = ({ token }) => {
     setShowDeleteConfirm(true);
   };
 
-  // Função para navegar para visualização individual ao clicar na câmera
+  // Referência para armazenar intervalos de polling ativos
+  const pollingIntervals = React.useRef<Map<string, NodeJS.Timeout>>(new Map());
+
+  // Função para iniciar polling quando status é 'pending'
+  const startStreamPolling = (cameraId: string) => {
+    // Se já existe um polling para esta câmera, não criar outro
+    if (pollingIntervals.current.has(cameraId)) {
+      return;
+    }
+
+    console.log(`[POLLING] Iniciando polling para câmera ${cameraId}`);
+
+    const interval = setInterval(async () => {
+      try {
+        const response = await api.get(endpoints.streams.getById(cameraId)) as { data: any };
+        const streamData = response.data?.data || response.data;
+
+        if (streamData?.status === 'active' || streamData?.is_streaming) {
+          // Stream ficou ativo! Parar polling e atualizar estado
+          clearInterval(interval);
+          pollingIntervals.current.delete(cameraId);
+
+          setStreamStatus(prev => new Map(prev.set(cameraId, {
+            camera_id: cameraId,
+            status: 'active',
+            viewers: streamData.viewers || 1,
+            bitrate: streamData.bitrate || 2048,
+            urls: streamData.urls,
+            stream_id: streamData.id
+          })));
+
+          toast.success(`Stream da câmera ativo!`);
+          console.log(`[POLLING] Stream ${cameraId} ficou ativo!`);
+        }
+      } catch (err) {
+        // Continuar tentando silenciosamente
+        console.log(`[POLLING] Verificando status de ${cameraId}...`);
+      }
+    }, 5000); // Verifica a cada 5 segundos
+
+    pollingIntervals.current.set(cameraId, interval);
+
+    // Parar polling após 5 minutos se não houver resposta
+    setTimeout(() => {
+      if (pollingIntervals.current.has(cameraId)) {
+        clearInterval(pollingIntervals.current.get(cameraId)!);
+        pollingIntervals.current.delete(cameraId);
+        console.log(`[POLLING] Timeout para câmera ${cameraId} após 5 minutos`);
+      }
+    }, 300000);
+  };
+
+  // Limpar polling ao desmontar componente
+  React.useEffect(() => {
+    return () => {
+      pollingIntervals.current.forEach((interval) => clearInterval(interval));
+      pollingIntervals.current.clear();
+    };
+  }, []);
+
+  // Função para abrir modal de detalhes ao clicar na câmera
   const handleCameraClick = (cameraId: string) => {
-    setSelectedCamera(cameraId);
-    setViewMode('single');
+    const camera = cameras.find(c => c.id === cameraId);
+    if (camera) {
+      setSelectedCameraForDetails(camera);
+      setShowDetailsModal(true);
+    }
   };
 
   // Função para extrair hostname de uma URL
@@ -170,171 +253,23 @@ const Cameras = ({ token }) => {
       return urlObj.hostname;
     } catch {
       // Fallback com regex para URLs RTMP
-      const match = url.match(/rtmp:\/\/([^:\/]+)/);
+      const match = url.match(/rtmp:\/\/([^:/]+)/);
       return match ? match[1] : '';
     }
   };
 
-  // Mapeamento de qualidades do frontend para backend (consistente com StreamingService)
-  const qualityMapping: { [key: string]: string } = {
-    '4K': 'ultra',
-    '1080p': 'high', 
-    '720p': 'medium',
-    '480p': 'low'
-  };
-
-  // Mapeamento reverso para exibir qualidade atual
-  const reverseQualityMapping: { [key: string]: string } = {
-    'ultra': '4K',
-    'high': '1080p',
-    'medium': '720p',
-    'low': '480p'
-  };
-
-  // Qualidades disponíveis para seleção (ordenadas por qualidade)
-  const availableQualities = ['1080p', '720p', '480p']; // Removido 4K temporariamente
-
-  const handleQualityChange = async (quality: string) => {
-    console.log('🎥 Cameras: Iniciando mudança de qualidade:', {
-      qualidadeSelecionada: quality,
-      cameraSelecionada: selectedCamera,
-      qualidadeAtual: currentQuality
-    });
-    
-    // Validações iniciais
-    if (!selectedCamera) {
-      console.error('❌ Cameras: Nenhuma câmera selecionada');
-      toast.error('Selecione uma câmera primeiro');
-      return;
-    }
-
-    if (!availableQualities.includes(quality)) {
-      console.error('❌ Cameras: Qualidade não suportada:', quality);
-      toast.error(`Qualidade não suportada. Disponíveis: ${availableQualities.join(', ')}`);
-      return;
-    }
-
-    const stream = streamStatus.get(selectedCamera);
-    console.log('📡 Cameras: Status do stream:', {
-      streamEncontrado: !!stream,
-      streamId: stream?.stream_id,
-      statusStream: stream?.status
-    });
-    
-    if (!stream) {
-      console.error('❌ Cameras: Stream não encontrado para câmera:', selectedCamera);
-      toast.error('Stream não encontrado. Inicie o stream primeiro.');
-      return;
-    }
-
-    if (stream.status !== 'active') {
-      console.error('❌ Cameras: Stream não está ativo:', stream.status);
-      toast.error('Stream não está ativo. Inicie o stream primeiro.');
-      return;
-    }
-
-    if (!stream.stream_id) {
-      console.error('❌ Cameras: Stream ID não encontrado');
-      toast.error('ID do stream não encontrado');
-      return;
-    }
-
-    const backendQuality = qualityMapping[quality];
-    if (!backendQuality) {
-      console.error('❌ Cameras: Mapeamento de qualidade falhou:', quality);
-      toast.error(`Erro no mapeamento de qualidade: ${quality}`);
-      return;
-    }
-
-    // Verificar se já está na qualidade desejada
-    const currentBackendQuality = qualityMapping[currentQuality];
-    if (currentBackendQuality === backendQuality) {
-      console.log('ℹ️ Cameras: Qualidade já está definida como:', quality);
-      toast.info(`Qualidade já está em ${quality}`);
-      return;
-    }
-
-    const previousQuality = currentQuality;
-    console.log('🔄 Cameras: Iniciando alteração:', {
-      de: previousQuality,
-      para: quality,
-      backendQuality,
-      streamId: stream.stream_id
-    });
-    
-    try {
-      // Atualizar UI imediatamente para melhor UX
-      setCurrentQuality(quality);
-      
-      console.log(`📤 Enviando requisição para alterar qualidade do stream ${stream.stream_id}`);
-      
-      const response = await api.put(`/api/streams/${stream.stream_id}/quality`, {
-        quality: backendQuality
-      });
-      
-      console.log('✅ Resposta da API:', (response as any).data);
-      
-      // Atualizar informações do stream no estado local
-      setStreamStatus(prev => {
-        const newMap = new Map(prev);
-        const currentStream = newMap.get(selectedCamera);
-        if (currentStream) {
-          (currentStream as any).quality = backendQuality;
-          if ((response as any).data?.data?.bitrate) {
-            currentStream.bitrate = (response as any).data.data.bitrate;
-          }
-          console.log('📊 Stream atualizado no estado local:', currentStream);
-        }
-        return newMap;
-      });
-      
-      toast.success(`✅ Qualidade alterada para ${quality}`);
-      console.log('🎉 Mudança de qualidade concluída com sucesso');
-      
-    } catch (error: any) {
-      console.error('💥 Erro ao alterar qualidade:', {
-        error,
-        response: error.response?.data,
-        status: error.response?.status
-      });
-      
-      // Reverter mudança na UI em caso de erro
-      setCurrentQuality(previousQuality);
-      
-      let errorMessage = 'Erro ao alterar qualidade do stream';
-      
-      if (error.response?.data?.message) {
-        errorMessage = error.response.data.message;
-      } else if (error.response?.data?.error) {
-        errorMessage = error.response.data.error;
-      } else if (error.response?.data?.details && Array.isArray(error.response.data.details)) {
-        errorMessage = error.response.data.details[0]?.message || errorMessage;
-      } else if (error.response?.status === 404) {
-        errorMessage = 'Stream não encontrado. Verifique se a câmera está ativa.';
-      } else if (error.response?.status === 403) {
-        errorMessage = 'Sem permissão para alterar qualidade do stream.';
-      } else if (error.response?.status === 400) {
-        errorMessage = 'Parâmetros inválidos para alteração de qualidade.';
-      } else if (error.response?.status === 500) {
-        errorMessage = 'Erro interno do servidor. Tente novamente.';
-      } else if (error.message) {
-        errorMessage = error.message;
-      }
-      
-      toast.error(`❌ ${errorMessage}`);
-    }
-  };
+  
 
   useEffect(() => {
     const loadCameras = async () => {
       try {
-        const result = await api.get<CamerasResponse>(endpoints.cameras.getAll());
+        const result = await api.get<CamerasResponse>(endpoints.cameras.getAll(), { limit: '100' });
         const camerasData = result.data || result.cameras || [];
         setCameras(camerasData);
         setFilteredCameras(camerasData);
         setLoading(false);
       } catch (error) {
-        // Erro já tratado no estado
+        console.error('Erro ao carregar câmeras:', error);
         setError('Erro ao carregar câmeras');
         setLoading(false);
       }
@@ -342,7 +277,7 @@ const Cameras = ({ token }) => {
 
     const loadStreams = async () => {
       try {
-        const streamsResult = await api.get(endpoints.streams.getAll()) as { data: any };
+        const streamsResult = await api.get(endpoints.streams.getAll(), { limit: '100' }) as { data: any };
         // O backend retorna { data: streams, pagination: ... }
         const activeStreams = streamsResult.data?.data || streamsResult.data || [];
         
@@ -411,17 +346,46 @@ const Cameras = ({ token }) => {
         return;
       }
       
-      // Chamar API real para iniciar stream
-      const response = await api.post(endpoints.streams.start(cameraId), {
-        quality: 'medium',
+      const camera = cameras.find(c => c.id === cameraId);
+      const streamPayload: { format: string; audio: boolean; quality?: string } = {
         format: 'hls',
         audio: true
-      });
-      
+      };
+      if (camera?.quality_profile) {
+        streamPayload.quality = camera.quality_profile;
+      }
+
+      // Chamar API real para iniciar stream
+      const response = await api.post(endpoints.streams.start(cameraId), streamPayload);
+
       if ((response as any).data) {
         const responseData = (response as any).data;
         // O backend retorna { data: streamConfig }, então acessamos responseData.data
         const streamConfig = responseData.data || responseData;
+
+        // Verificar se é status pending (aguardando transmissão real)
+        if (streamConfig.status === 'pending') {
+          setStreamStatus(prev => new Map(prev.set(cameraId, {
+            camera_id: cameraId,
+            status: 'pending',
+            viewers: 0,
+            bitrate: 0,
+            urls: { rtmp: streamConfig.rtmp_url },
+            stream_id: streamConfig.stream_key
+          })));
+
+          // Mostrar instruções ao usuário
+          toast.info(
+            `Configure seu encoder para: ${streamConfig.rtmp_url}`,
+            { duration: 8000 }
+          );
+
+          // Iniciar polling para detectar quando stream ficar ativo
+          startStreamPolling(cameraId);
+          return;
+        }
+
+        // Stream realmente ativo
         setStreamStatus(prev => new Map(prev.set(cameraId, {
           camera_id: cameraId,
           status: 'active',
@@ -430,7 +394,7 @@ const Cameras = ({ token }) => {
           urls: streamConfig.urls,
           stream_id: streamConfig.id
         })));
-        
+
         toast.success('Stream iniciado com sucesso');
       }
     } catch (error: any) {
@@ -441,7 +405,7 @@ const Cameras = ({ token }) => {
         toast.info('Stream já está ativo para esta câmera');
         // Recarregar streams para sincronizar o estado
         try {
-          const streamsResult = await api.get(endpoints.streams.getAll()) as { data: any };
+          const streamsResult = await api.get(endpoints.streams.getAll(), { limit: '100' }) as { data: any };
           // O backend retorna { data: streams, pagination: ... }
           const activeStreams = streamsResult.data?.data || streamsResult.data || [];
           const streamMap = new Map();
@@ -571,7 +535,9 @@ const Cameras = ({ token }) => {
       rtmp_url: '',
       location: 'Portaria Principal',
       stream_type: 'rtsp',
-      type: 'ip', // Campo obrigatório para validação do backend
+      rtmp_server_type: 'srs',
+      use_dynamic_rtmp: true, // Pool automático SRS como padrão
+      type: 'ip',
       recording_enabled: false,
       quality_profile: 'medium',
       retention_days: 30
@@ -609,20 +575,25 @@ const Cameras = ({ token }) => {
       if (formData.stream_type === 'rtmp') {
         console.log('🔍 DEBUG: Validando RTMP:', {
           rtmp_url: formData.rtmp_url,
+          use_dynamic_rtmp: formData.use_dynamic_rtmp,
+          rtmp_server_type: formData.rtmp_server_type,
           rtmp_url_trimmed: formData.rtmp_url.trim(),
           is_empty: !formData.rtmp_url.trim(),
           starts_with_rtmp: formData.rtmp_url.startsWith('rtmp://')
         });
-        
-        if (!formData.rtmp_url.trim()) {
-          console.log('❌ DEBUG: URL RTMP vazia');
-          toast.error('URL RTMP é obrigatória');
-          return;
-        }
-        if (!formData.rtmp_url.startsWith('rtmp://')) {
-          console.log('❌ DEBUG: URL RTMP não começa com rtmp://');
-          toast.error('URL RTMP deve começar com rtmp://');
-          return;
+
+        // Validar URL RTMP apenas se NÃO usar pool dinâmico
+        if (!formData.use_dynamic_rtmp) {
+          if (!formData.rtmp_url.trim()) {
+            console.log('❌ DEBUG: URL RTMP vazia');
+            toast.error('URL RTMP é obrigatória quando não usar pool automático');
+            return;
+          }
+          if (!formData.rtmp_url.startsWith('rtmp://')) {
+            console.log('❌ DEBUG: URL RTMP não começa com rtmp://');
+            toast.error('URL RTMP deve começar com rtmp://');
+            return;
+          }
         }
       } else if (formData.stream_type === 'rtsp') {
         if (!formData.rtsp_url.trim()) {
@@ -649,8 +620,9 @@ const Cameras = ({ token }) => {
         will_fail: !hasUrl && !hasIp
       });
       
-      if (!hasUrl && !hasIp) {
-        console.log('❌ DEBUG: Falha na validação - nem URL nem IP fornecidos');
+      const allowDynamicRTMP = formData.stream_type === 'rtmp' && formData.use_dynamic_rtmp;
+      if (!hasUrl && !hasIp && !allowDynamicRTMP) {
+        console.log('❌ DEBUG: Falha na validação - nem URL nem IP fornecidos (e pool dinâmico não ativado)');
         toast.error('É necessário fornecer pelo menos uma URL de stream ou endereço IP');
         return;
       }
@@ -666,7 +638,7 @@ const Cameras = ({ token }) => {
       const hasRtspUrl = formData.stream_type === 'rtsp' && formData.rtsp_url.trim();
       const hasIpAddress = formData.ip_address.trim();
       
-      if (!hasRtmpUrl && !hasRtspUrl && !hasIpAddress) {
+      if (!hasRtmpUrl && !hasRtspUrl && !hasIpAddress && !allowDynamicRTMP) {
         toast.error('É necessário fornecer pelo menos uma URL de stream ou endereço IP');
         return;
       }
@@ -682,11 +654,23 @@ const Cameras = ({ token }) => {
       
       // Adicionar URL baseado no tipo de stream
       if (formData.stream_type === 'rtmp') {
-        payload.rtmp_url = formData.rtmp_url.trim();
+        // Adicionar campos SRS
+        payload.rtmp_server_type = formData.rtmp_server_type;
+        payload.use_dynamic_rtmp = formData.use_dynamic_rtmp;
+
+        // Só adicionar rtmp_url se não usar pool dinâmico
+        if (!formData.use_dynamic_rtmp && formData.rtmp_url.trim()) {
+          payload.rtmp_url = formData.rtmp_url.trim();
+        }
       } else {
         payload.rtsp_url = formData.rtsp_url.trim();
       }
-      
+
+      // Adicionar campos de gravação e retenção
+      payload.recording_enabled = formData.recording_enabled;
+      payload.quality_profile = formData.quality_profile;
+      payload.retention_days = formData.retention_days;
+
       console.log('Enviando payload para criação de câmera:', payload);
       
       const response = await api.post(endpoints.cameras.create(), payload);
@@ -702,14 +686,16 @@ const Cameras = ({ token }) => {
         rtmp_url: '',
         location: '',
         stream_type: 'rtsp',
+        rtmp_server_type: 'srs',
+        use_dynamic_rtmp: true, // Pool automático SRS como padrão
         type: 'ip', // Campo obrigatório para validação do backend
         recording_enabled: false,
         quality_profile: 'medium',
         retention_days: 30
       });
-      
+
       // Recarregar lista de câmeras
-      const updatedResult = await api.get<CamerasResponse>(endpoints.cameras.getAll());
+      const updatedResult = await api.get<CamerasResponse>(endpoints.cameras.getAll(), { limit: '100' });
       const updatedCameras = updatedResult.data || updatedResult.cameras || [];
       setCameras(updatedCameras);
       setFilteredCameras(updatedCameras);
@@ -760,6 +746,8 @@ const Cameras = ({ token }) => {
       rtmp_url: '',
       location: '',
       stream_type: 'rtsp',
+      rtmp_server_type: 'srs',
+      use_dynamic_rtmp: true, // Pool automático SRS como padrão
       type: 'ip', // Campo obrigatório para validação do backend
       recording_enabled: false,
       quality_profile: 'medium',
@@ -823,14 +811,17 @@ const Cameras = ({ token }) => {
             </div>
             
             <div className="flex items-center space-x-4">
-              <button
-                onClick={() => setShowAddModal(true)}
-                className="bg-primary-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary-700 transition-colors flex items-center"
-              >
-                <Plus className="h-4 w-4 mr-2" />
-                Adicionar Câmera
-              </button>
-              
+              {/* Botão Adicionar - Ocultar para cliente */}
+              {canManage && (
+                <button
+                  onClick={() => setShowAddModal(true)}
+                  className="bg-primary-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary-700 transition-colors flex items-center"
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  Adicionar Câmera
+                </button>
+              )}
+
               <div className="flex bg-gray-100 rounded-lg p-1">
                 <button
                   onClick={() => setViewMode('grid')}
@@ -876,16 +867,34 @@ const Cameras = ({ token }) => {
                       <div className="text-center">
                         <Camera className="h-12 w-12 mx-auto mb-3 opacity-50" />
                         <p className="text-sm mb-2">Clique para visualizar</p>
-                        {/* Status do Stream com destaque */}
-                        {status?.status === 'active' ? (
-                          <div className="bg-green-600 text-white px-3 py-1 rounded-full text-xs font-medium">
-                            Stream Ativo
-                          </div>
-                        ) : (
-                          <div className="bg-gray-600 text-gray-300 px-3 py-1 rounded-full text-xs">
-                            Stream Inativo
-                          </div>
-                        )}
+                        {/* Status do Stream com destaque - verificar status real */}
+                        {(() => {
+                          const localStatus = streamStatus.get(camera.id)?.status;
+                          // CORRIGIDO: 'online' significa câmera disponível, NÃO stream ativo
+                          // Só mostrar "Stream Ativo" se is_streaming=true OU localStatus='active'
+                          const isActive = camera.is_streaming === true || localStatus === 'active';
+                          const isPending = localStatus === 'pending';
+
+                          if (isActive) {
+                            return (
+                              <div className="bg-green-600 text-white px-3 py-1 rounded-full text-xs font-medium">
+                                Stream Ativo
+                              </div>
+                            );
+                          } else if (isPending) {
+                            return (
+                              <div className="bg-yellow-600 text-white px-3 py-1 rounded-full text-xs font-medium animate-pulse">
+                                Aguardando...
+                              </div>
+                            );
+                          } else {
+                            return (
+                              <div className="bg-gray-600 text-gray-300 px-3 py-1 rounded-full text-xs">
+                                Stream Inativo
+                              </div>
+                            );
+                          }
+                        })()}
                         <p className="text-xs opacity-75 mt-2">{camera.name}</p>
                       </div>
                     </div>
@@ -919,22 +928,25 @@ const Cameras = ({ token }) => {
                           <p className="text-sm text-gray-500">{camera.location}</p>
                         )}
                       </div>
-                      <div className="flex space-x-1">
-                        <button 
-                          onClick={() => handleOpenSettings(camera)}
-                          className="text-gray-400 hover:text-gray-600 p-1 rounded"
-                          title="Configurações"
-                        >
-                          <Settings className="h-4 w-4" />
-                        </button>
-                        <button
-                          onClick={() => confirmDelete(camera.id)}
-                          className="text-gray-400 hover:text-red-600 p-1 rounded"
-                          title="Excluir câmera"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      </div>
+                      {/* Botões de gerenciamento - Ocultar para cliente */}
+                      {canManage && (
+                        <div className="flex space-x-1">
+                          <button
+                            onClick={() => handleOpenSettings(camera)}
+                            className="text-gray-400 hover:text-gray-600 p-1 rounded"
+                            title="Configurações"
+                          >
+                            <Settings className="h-4 w-4" />
+                          </button>
+                          <button
+                            onClick={() => confirmDelete(camera.id)}
+                            className="text-gray-400 hover:text-red-600 p-1 rounded"
+                            title="Excluir câmera"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                      )}
                     </div>
 
                     {/* Last Seen */}
@@ -1010,8 +1022,6 @@ const Cameras = ({ token }) => {
                   {/* Status Indicators na visualização individual */}
                   {(() => {
                     const camera = filteredCameras.find(c => c.id === selectedCamera);
-                    const status = streamStatus.get(selectedCamera);
-                    
                     return (
                       <>
                         {/* Status Indicator */}
@@ -1209,7 +1219,40 @@ const Cameras = ({ token }) => {
                     <option value="rtmp">RTMP</option>
                   </select>
                 </div>
-                
+
+                {/* Campos SRS - apenas para RTMP */}
+                {formData.stream_type === 'rtmp' && (
+                  <>
+                    <div className="bg-blue-50 border border-blue-200 rounded-md p-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <label htmlFor="use_dynamic_rtmp" className="block text-sm font-medium text-blue-900">
+                            Usar Pool Automático SRS
+                          </label>
+                          <p className="text-xs text-blue-700 mt-1">
+                            URL RTMP será alocada automaticamente do pool de 100 streams
+                          </p>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer">
+                          <input
+                            type="checkbox"
+                            id="use_dynamic_rtmp"
+                            name="use_dynamic_rtmp"
+                            checked={formData.use_dynamic_rtmp}
+                            onChange={(e) => setFormData(prev => ({
+                              ...prev,
+                              use_dynamic_rtmp: e.target.checked,
+                              rtmp_url: e.target.checked ? '' : prev.rtmp_url // Limpar URL manual se ativar dinâmico
+                            }))}
+                            className="sr-only peer"
+                          />
+                          <div className="w-11 h-6 bg-gray-300 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                        </label>
+                      </div>
+                    </div>
+                  </>
+                )}
+
                 {formData.stream_type === 'rtsp' && (
                   <div>
                     <label htmlFor="rtsp_url" className="block text-sm font-medium text-gray-700 mb-1">
@@ -1231,10 +1274,11 @@ const Cameras = ({ token }) => {
                   </div>
                 )}
                 
-                {formData.stream_type === 'rtmp' && (
+                {/* Campo RTMP Manual - apenas quando NÃO usar pool automático */}
+                {formData.stream_type === 'rtmp' && !formData.use_dynamic_rtmp && (
                   <div>
                     <label htmlFor="rtmp_url" className="block text-sm font-medium text-gray-700 mb-1">
-                      URL RTMP *
+                      URL RTMP {formData.rtmp_server_type !== 'srs' ? '*' : ''}
                     </label>
                     <input
                       type="text"
@@ -1242,7 +1286,7 @@ const Cameras = ({ token }) => {
                       name="rtmp_url"
                       value={formData.rtmp_url}
                       onChange={handleInputChange}
-                      required
+                      required={formData.rtmp_server_type !== 'srs'}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                       placeholder="rtmp://servidor:1935/live/stream"
                     />
@@ -1413,18 +1457,20 @@ const Cameras = ({ token }) => {
                 ) : (
                   <div>
                     <label htmlFor="edit-rtmp_url" className="block text-sm font-medium text-gray-700 mb-1">
-                      URL RTMP *
+                      URL RTMP
                     </label>
                     <input
                       type="text"
                       id="edit-rtmp_url"
                       name="rtmp_url"
                       value={formData.rtmp_url}
-                      onChange={handleInputChange}
-                      required
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      readOnly
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-100 text-gray-600 cursor-not-allowed"
                       placeholder="rtmp://servidor:porta/live/stream_key"
                     />
+                    <p className="text-xs text-amber-600 mt-1">
+                      URL RTMP não pode ser alterada. Para mudar, exclua e crie nova câmera.
+                    </p>
                   </div>
                 )}
                 
@@ -1578,6 +1624,18 @@ const Cameras = ({ token }) => {
           </div>
         </div>
       )}
+
+      {/* Modal de Detalhes da Camera */}
+      <CameraDetailsModal
+        camera={selectedCameraForDetails}
+        streamStatus={selectedCameraForDetails ? streamStatus.get(selectedCameraForDetails.id) : undefined}
+        isOpen={showDetailsModal}
+        onClose={() => {
+          setShowDetailsModal(false);
+          setSelectedCameraForDetails(null);
+        }}
+        canManage={canManage}
+      />
     </div>
   );
 };

@@ -3,6 +3,20 @@ import { Play, Pause, Volume2, VolumeX, Maximize, RotateCcw, AlertCircle, Wifi, 
 import { toast } from 'sonner';
 import Hls from 'hls.js';
 
+const DEBUG_LOGGING_ENABLED = import.meta.env.DEV;
+
+const debugLog = (...args: unknown[]): void => {
+  if (DEBUG_LOGGING_ENABLED) {
+    console.debug(...args);
+  }
+};
+
+const debugWarn = (...args: unknown[]): void => {
+  if (DEBUG_LOGGING_ENABLED) {
+    console.warn(...args);
+  }
+};
+
 interface VideoPlayerProps {
   src?: string;
   poster?: string;
@@ -29,7 +43,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
   onLoadEnd
 }) => {
   // 🔍 DEBUG: Log detalhado do token recebido
-  console.log('🔍 VideoPlayer - Token recebido:', {
+  debugLog('🔍 VideoPlayer - Token recebido:', {
     token: token,
     type: typeof token,
     length: token?.length || 0,
@@ -44,7 +58,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
   // Validação extra do token no VideoPlayer
   const validatedToken = useMemo(() => {
     if (!token) {
-      console.warn('🔍 VideoPlayer - Token não fornecido');
+      debugWarn('🔍 VideoPlayer - Token não fornecido');
       return undefined;
     }
     
@@ -61,23 +75,23 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
     // Verificar se parece um JWT (tem 3 partes separadas por ponto)
     const parts = token.split('.');
     if (parts.length !== 3) {
-      console.warn('🔍 VideoPlayer - Token não parece ser JWT (não tem 3 partes):', parts.length);
+      debugWarn('🔍 VideoPlayer - Token não parece ser JWT (não tem 3 partes):', parts.length);
     }
     
-    console.log('🔍 VideoPlayer - Token validado:', token.substring(0, 50) + '...');
+    debugLog('🔍 VideoPlayer - Token validado:', token.substring(0, 50) + '...');
     return token;
   }, [token]);
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const playAttemptInProgressRef = useRef(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(muted);
-  const [volume, setVolume] = useState(1);
-  const [isFullscreen, setIsFullscreen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isLive, setIsLive] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
   const [connectionHealth, setConnectionHealth] = useState<'good' | 'poor' | 'bad'>('good');
   const [lastErrorTime, setLastErrorTime] = useState<number>(0);
@@ -103,87 +117,46 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   }, []);
 
+  // Função unificada para tentar autoplay (evita tentativas simultâneas)
+  const attemptAutoplay = useCallback(async () => {
+    const video = videoRef.current;
+    if (!video || !autoPlay || playAttemptInProgressRef.current) {
+      return;
+    }
+
+    playAttemptInProgressRef.current = true;
+
+    try {
+      await video.play();
+      debugLog('✅ Autoplay bem-sucedido');
+      setShowAutoplayMessage(false);
+      playAttemptInProgressRef.current = false;
+    } catch (err) {
+      playAttemptInProgressRef.current = false;
+
+      // Mostrar mensagem apenas uma vez, não repetir para cada erro
+      if (!showAutoplayMessage) {
+        debugWarn('⚠️ Autoplay bloqueado pelo navegador');
+        setShowAutoplayMessage(true);
+
+        // Aguardar interação do usuário
+        const handleUserInteraction = () => {
+          setShowAutoplayMessage(false);
+          video.play().catch(() => {});
+          document.removeEventListener('click', handleUserInteraction);
+          document.removeEventListener('touchstart', handleUserInteraction);
+        };
+        document.addEventListener('click', handleUserInteraction, { once: true });
+        document.addEventListener('touchstart', handleUserInteraction, { once: true });
+      }
+    }
+  }, [autoPlay, showAutoplayMessage]);
+
   // Função para tentar acesso direto ao ZLMediaKit como fallback
   const tryDirectZLM = useCallback(async () => {
-    const video = videoRef.current;
-    if (!video || !src) return null;
-
-    // Carregar configuração de streaming dinamicamente (preferir ENV)
-    let zlmBase = (import.meta.env.VITE_ZLM_BASE_URL as string) || '';
-    if (!zlmBase) {
-      try {
-        const cfg = (await import('@/config/streaming.json')).default as any;
-        if (cfg?.streaming?.baseUrl) {
-          zlmBase = cfg.streaming.baseUrl;
-        }
-      } catch (_) {
-        // mantém padrão
-      }
-    }
-    if (!zlmBase) {
-      zlmBase = 'http://localhost:8000';
-    }
-
-    // Detectar base do backend a partir do env
-    const backendBase = (import.meta.env.VITE_BACKEND_URL as string) || window.location.origin;
-
-    // Converter URL do backend para URL direta do ZLMediaKit
-    // Exemplos aceitos:
-    // - `${backendBase}/api/streams/{id}/hls`
-    // - `/api/streams/{id}/hls`
-    const absSrc = src.startsWith('http') ? src : new URL(src, window.location.origin).toString();
-    const normalizedBackend = backendBase.replace(/\/$/, '');
-
-    // Regex para extrair o id do stream: /api/streams/{id}/hls
-    const match = absSrc.match(/\/api\/streams\/([^\/]+)\/hls/);
-    const streamId = match ? match[1] : '';
-
-    const directUrl = streamId
-      ? `${zlmBase.replace(/\/$/, '')}/live/${streamId}/hls.m3u8`
-      : absSrc
-          .replace(`${normalizedBackend}/api/streams/`, `${zlmBase.replace(/\/$/, '')}/live/`)
-          .replace('/hls', '/hls.m3u8');
-    
-    console.log('🔄 Tentando URL direta do ZLMediaKit:', directUrl);
-    
-    const hls = new Hls({
-      debug: false,
-      enableWorker: true,
-      lowLatencyMode: false,
-      backBufferLength: 90,
-      maxBufferLength: 60,
-      maxMaxBufferLength: 600,
-      manifestLoadingTimeOut: 10000,
-      manifestLoadingMaxRetry: 3,
-      levelLoadingTimeOut: 10000,
-      levelLoadingMaxRetry: 3,
-      fragLoadingTimeOut: 20000,
-      fragLoadingMaxRetry: 3,
-      xhrSetup: (xhr) => {
-        // Configuração simplificada para acesso direto (sem autenticação)
-        xhr.setRequestHeader('Accept', 'application/vnd.apple.mpegurl, application/x-mpegURL, */*');
-        xhr.timeout = 15000;
-      }
-    });
-    
-    hlsRef.current = hls;
-    
-    return new Promise((resolve, reject) => {
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        console.log('✅ Acesso direto ZLM bem-sucedido');
-        resolve(hls);
-      });
-      
-      hls.on(Hls.Events.ERROR, (event, data) => {
-        if (data.fatal) {
-          console.error('❌ Falha no acesso direto ZLM:', data);
-          reject(new Error(`Erro ZLM: ${data.details}`));
-        }
-      });
-      
-      hls.loadSource(directUrl);
-      hls.attachMedia(video);
-    });
+	 // DISABLED: Direct ZLMediaKit access causes 401 errors
+    // Always use backend proxy instead
+    throw new Error('Direct ZLMediaKit access disabled - use backend proxy');
   }, [src]);
 
   const initializeHLS = useCallback(() => {
@@ -198,12 +171,12 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
     const isMP4 = src.includes('.mp4') || src.includes('/stream') || src.includes('/recordings/') || src.includes('/play-web');
     
     if (isHLS && hlsSupported) {
-      console.log('🚀 Inicializando HLS.js para:', src);
+      debugLog('🚀 Inicializando HLS.js para:', src);
       
       // Usar token validado em vez de validação redundante
       const isValidToken = !!validatedToken;
       
-      console.log('🔐 Análise do token validado:', {
+      debugLog('🔐 Análise do token validado:', {
         received: validatedToken ? `${validatedToken.substring(0, 20)}...` : 'NULO',
         type: typeof validatedToken,
         length: validatedToken?.length || 0,
@@ -218,12 +191,12 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
         const existingToken = urlObj.searchParams.get('token');
         
         if (existingToken) {
-          console.log('🔗 URL já contém token, usando URL original');
+          debugLog('🔗 URL já contém token, usando URL original');
           urlWithToken = src;
         } else {
           const separator = src.includes('?') ? '&' : '?';
           urlWithToken = `${src}${separator}token=${encodeURIComponent(validatedToken)}`;
-          console.log('🔗 Token adicionado à URL de HLS');
+          debugLog('🔗 Token adicionado à URL de HLS');
         }
       }
       
@@ -256,14 +229,14 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
         maxStarvationDelay: 2, // Reduzir delay de starvation
         maxLoadingDelay: 2, // Reduzir delay de carregamento
         xhrSetup: (xhr, url) => {
-          console.log('⚙️ Configurando XHR para:', url.replace(validatedToken || '', 'TOKEN_HIDDEN'));
+          debugLog('⚙️ Configurando XHR para:', url.replace(validatedToken || '', 'TOKEN_HIDDEN'));
           
           // Tentar header Authorization primeiro
           if (isValidToken && validatedToken) {
             xhr.setRequestHeader('Authorization', `Bearer ${validatedToken}`);
-            console.log('✅ Token validado adicionado ao header Authorization');
+            debugLog('✅ Token validado adicionado ao header Authorization');
           } else {
-            console.warn('⚠️ Token validado não disponível - usando apenas query parameter');
+            debugWarn('⚠️ Token validado não disponível - usando apenas query parameter');
           }
           
           // Headers CORS otimizados
@@ -279,7 +252,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
           
           // Event listeners para debug
           xhr.addEventListener('loadstart', () => {
-            console.log('📡 XHR iniciado para:', url.replace(validatedToken || '', 'TOKEN_HIDDEN'));
+            debugLog('📡 XHR iniciado para:', url.replace(validatedToken || '', 'TOKEN_HIDDEN'));
           });
           
           xhr.addEventListener('error', (e) => {
@@ -304,7 +277,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       
       // Configurações específicas para live streaming estável
       if (src.includes('/live/')) {
-        console.log('🔴 Configurando para live stream estável');
+        debugLog('🔴 Configurando para live stream estável');
         hls.config.liveSyncDurationCount = 3; // Sincronização balanceada
         hls.config.liveMaxLatencyDurationCount = 10; // Latência controlada
         hls.config.backBufferLength = 15; // Back buffer adequado
@@ -319,65 +292,31 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
       // Event listeners do HLS
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        console.log('✅ HLS manifest carregado com sucesso (autenticado)');
+        debugLog('✅ HLS manifest carregado com sucesso (autenticado)');
         setIsLoading(false);
         setError(null);
         setRetryCount(0); // Reset contador de tentativas em sucesso
         setConnectionHealth('good'); // Reset saúde da conexão
         onLoadEnd?.();
-        
-        // Forçar início imediato para live streams
-        if (src.includes('/live/') && autoPlay) {
-          console.log('🚀 Iniciando reprodução imediata para live stream');
-          setTimeout(() => {
-            if (videoRef.current && !videoRef.current.paused) {
-              videoRef.current.play().catch(() => {});
-            }
-          }, 100);
-        }
-        
-        if (autoPlay) {
-          const playPromise = video.play();
-          if (playPromise !== undefined) {
-            playPromise.then(() => {
-               console.log('✅ Autoplay iniciado com sucesso');
-               setShowAutoplayMessage(false);
-             }).catch(err => {
-               console.warn('⚠️ Autoplay falhou (normal em alguns navegadores):', err.name);
-               setShowAutoplayMessage(true);
-               // Tentar novamente após interação do usuário
-               const handleUserInteraction = () => {
-                 setShowAutoplayMessage(false);
-                 video.play().catch(() => {});
-                 document.removeEventListener('click', handleUserInteraction);
-                 document.removeEventListener('touchstart', handleUserInteraction);
-               };
-               document.addEventListener('click', handleUserInteraction, { once: true });
-               document.addEventListener('touchstart', handleUserInteraction, { once: true });
-             });
-          }
-        }
+
+        // Tentar autoplay de forma unificada (apenas uma tentativa)
+        attemptAutoplay();
       });
       
-      // Reset contador quando fragmentos carregam com sucesso e forçar reprodução
+      // Reset contador quando fragmentos carregam com sucesso
       hls.on(Hls.Events.FRAG_LOADED, () => {
         if (retryCount > 0) {
           setRetryCount(0);
-          console.log('✅ Fragmento carregado - reset contador de tentativas');
+          debugLog('✅ Fragmento carregado - reset contador de tentativas');
         }
-        
-        // Forçar reprodução assim que o primeiro fragmento estiver disponível
-        if (autoPlay && src.includes('/live/') && videoRef.current && videoRef.current.paused) {
-          console.log('🚀 Primeiro fragmento carregado - iniciando reprodução');
-          videoRef.current.play().catch(() => {});
-        }
+        // Autoplay já foi tentado em MANIFEST_PARSED - não tentar novamente aqui
       });
       
       // Monitorar buffer para detectar problemas
       hls.on(Hls.Events.BUFFER_APPENDED, () => {
         if (connectionHealth !== 'good') {
           setConnectionHealth('good');
-          console.log('✅ Buffer estável - conexão recuperada');
+          debugLog('✅ Buffer estável - conexão recuperada');
         }
       });
 
@@ -398,30 +337,32 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
         
         // Tratar erro de codec específico primeiro (pode ser fatal)
         if (data.details === 'bufferAddCodecError') {
-          console.warn('🔄 Codec não suportado (provável H265), tentando alternativas...');
-          console.log('🐞 DEBUG bufferAddCodecError: retryCount =', retryCount);
+          debugWarn('🔄 Codec não suportado (provável H265), tentando alternativas...');
+          debugLog('🐞 DEBUG bufferAddCodecError: retryCount =', retryCount);
           if (retryCount < 3) {
             let fallbackUrl = urlWithToken;
             
             // Tentar diferentes alternativas baseadas no retry count
+            const zlmBaseUrl = import.meta.env.VITE_ZLM_BASE_URL || 'http://localhost:8000';
+
             if (retryCount === 0) {
               // Primeira tentativa: Stream direto do ZLMediaKit (bypass proxy)
-              const streamId = urlWithToken.match(/streams\/([^\/]+)\/hls/)?.[1];
+              const streamId = urlWithToken.match(/streams\/([^/]+)\/hls/)?.[1];
               if (streamId) {
-                fallbackUrl = `http://localhost:8000/live/${streamId}/hls.m3u8${urlWithToken.includes('?') ? '&' + urlWithToken.split('?')[1] : ''}`;
-                console.log('🎥 Tentativa 1: Stream direto ZLMediaKit:', fallbackUrl);
+                fallbackUrl = `${zlmBaseUrl}/live/${streamId}/hls.m3u8${urlWithToken.includes('?') ? '&' + urlWithToken.split('?')[1] : ''}`;
+                debugLog('🎥 Tentativa 1: Stream direto ZLMediaKit:', fallbackUrl);
               }
             } else if (retryCount === 1) {
               // Segunda tentativa: FMP4 format
-              const streamId = urlWithToken.match(/streams\/([^\/]+)\/hls/)?.[1];
+              const streamId = urlWithToken.match(/streams\/([^/]+)\/hls/)?.[1];
               if (streamId) {
-                fallbackUrl = `http://localhost:8000/${streamId}.live.m3u8${urlWithToken.includes('?') ? '?' + urlWithToken.split('?')[1] : ''}`;
-                console.log('🎥 Tentativa 2: Formato FMP4:', fallbackUrl);
+                fallbackUrl = `${zlmBaseUrl}/${streamId}.live.m3u8${urlWithToken.includes('?') ? '?' + urlWithToken.split('?')[1] : ''}`;
+                debugLog('🎥 Tentativa 2: Formato FMP4:', fallbackUrl);
               }
             } else {
               // Terceira tentativa: Stream com parâmetros de qualidade reduzida
               fallbackUrl = urlWithToken + (urlWithToken.includes('?') ? '&' : '?') + 'vcodec=h264&acodec=aac';
-              console.log('🎥 Tentativa 3: Codec forçado H264:', fallbackUrl);
+              debugLog('🎥 Tentativa 3: Codec forçado H264:', fallbackUrl);
             }
             
             setTimeout(() => {
@@ -429,7 +370,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 hlsRef.current?.loadSource(fallbackUrl);
                 setRetryCount(prev => prev + 1);
               } catch (e) {
-                console.warn(`Falha na tentativa ${retryCount + 1}:`, e);
+                debugWarn(`Falha na tentativa ${retryCount + 1}:`, e);
               }
             }, 1000);
           } else {
@@ -446,12 +387,12 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
               // Erros de fragmento - recuperação inteligente baseada na saúde da conexão
               if (hlsRef.current && retryCount < 3) {
                 const delay = connectionHealth === 'bad' ? 3000 : connectionHealth === 'poor' ? 2000 : 1000;
-                console.log(`🔄 Tentando recuperar fragmento (tentativa ${retryCount + 1}/3, conexão: ${connectionHealth})`);
+                debugLog(`🔄 Tentando recuperar fragmento (tentativa ${retryCount + 1}/3, conexão: ${connectionHealth})`);
                 setTimeout(() => {
                   try {
                     hlsRef.current?.startLoad();
                   } catch (e) {
-                    console.warn('Falha na recuperação de fragmento:', e);
+                    debugWarn('Falha na recuperação de fragmento:', e);
                   }
                 }, delay * (retryCount + 1));
                 setRetryCount(prev => prev + 1);
@@ -461,7 +402,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
               // Recuperação menos agressiva para buffer stalling
               if (hlsRef.current && videoRef.current && retryCount < 2) {
                 try {
-                  console.log('🔄 Recuperando buffer stalling (tentativa', retryCount + 1, '/2)');
+                  debugLog('🔄 Recuperando buffer stalling (tentativa', retryCount + 1, '/2)');
                   setTimeout(() => {
                     if (hlsRef.current) {
                       hlsRef.current.startLoad();
@@ -469,7 +410,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
                   }, 1000 * (retryCount + 1)); // Delay progressivo
                   setRetryCount(prev => prev + 1);
                 } catch (e) {
-                  console.warn('Falha na recuperação de stalling:', e);
+                  debugWarn('Falha na recuperação de stalling:', e);
                 }
               }
               return;
@@ -483,12 +424,12 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
               // Erro de manifesto - recuperação adaptativa
               if (hlsRef.current && retryCount < 2) {
                 const delay = connectionHealth === 'bad' ? 5000 : 2000;
-                console.log(`🔄 Recarregando manifesto (tentativa ${retryCount + 1}/2, conexão: ${connectionHealth})`);
+                debugLog(`🔄 Recarregando manifesto (tentativa ${retryCount + 1}/2, conexão: ${connectionHealth})`);
                 setTimeout(() => {
                   try {
                     hlsRef.current?.loadSource(urlWithToken);
                   } catch (e) {
-                    console.warn('Falha no recarregamento do manifesto:', e);
+                    debugWarn('Falha no recarregamento do manifesto:', e);
                   }
                 }, delay * (retryCount + 1));
                 setRetryCount(prev => prev + 1);
@@ -497,7 +438,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
             default:
               // Outros erros não fatais - log apenas em desenvolvimento
               if (process.env.NODE_ENV === 'development') {
-                console.warn('Erro HLS não fatal:', data.details);
+                debugWarn('Erro HLS não fatal:', data.details);
               }
               return;
           }
@@ -529,7 +470,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
               errorMessage = 'Erro ao decodificar stream';
               // Tentar recuperar automaticamente
               if (retryCount < maxRetries) {
-                console.log('🔄 Tentando recuperar erro de mídia...');
+                debugLog('🔄 Tentando recuperar erro de mídia...');
                 setTimeout(() => {
                   hls.recoverMediaError();
                   setRetryCount(prev => prev + 1);
@@ -543,19 +484,19 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
           
           // Tentar fallback para ZLMediaKit direto em caso de erro de autenticação
           if (shouldTryFallback && retryCount === 0) {
-            console.log('🔄 Tentando fallback para ZLMediaKit direto...');
+            debugLog('🔄 Tentando fallback para ZLMediaKit direto...');
             setRetryCount(prev => prev + 1);
             
             tryDirectZLM()
               .then(() => {
-                console.log('✅ Fallback ZLM bem-sucedido');
+                debugLog('✅ Fallback ZLM bem-sucedido');
                 setError(null);
                 setIsLoading(false);
                 onLoadEnd?.();
                 
                 if (autoPlay) {
                   video.play().catch(err => {
-                    console.warn('Autoplay falhou no fallback:', err);
+                    debugWarn('Autoplay falhou no fallback:', err);
                   });
                 }
               })
@@ -576,7 +517,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
           // Tentar reconectar automaticamente (apenas se não foi fallback)
           if (retryCount < maxRetries && data.type === Hls.ErrorTypes.NETWORK_ERROR && !shouldTryFallback) {
             setTimeout(() => {
-              console.log(`🔄 Tentativa de reconexão ${retryCount + 1}/${maxRetries}`);
+              debugLog(`🔄 Tentativa de reconexão ${retryCount + 1}/${maxRetries}`);
               setRetryCount(prev => prev + 1);
               initializeHLS();
             }, 2000 * (retryCount + 1));
@@ -586,7 +527,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
       hls.on(Hls.Events.FRAG_LOADED, () => {
         // Log silencioso para evitar spam no console
-        // console.log('📦 Fragmento HLS carregado');
+        // debugLog('📦 Fragmento HLS carregado');
       });
 
       // Carregar stream com URL que inclui token
@@ -595,13 +536,13 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       
     } else if (isHLS && video.canPlayType('application/vnd.apple.mpegurl')) {
       // Safari nativo suporta HLS
-      console.log('Usando suporte nativo HLS do Safari');
+      debugLog('Usando suporte nativo HLS do Safari');
       // Para Safari, não adicionar token na URL, usar apenas headers quando possível
       video.src = src;
       video.load();
     } else if (isMP4) {
       // Arquivo MP4 - reprodução nativa com token de autenticação
-      console.log('🎬 Configurando reprodução de MP4:', src);
+      debugLog('🎬 Configurando reprodução de MP4:', src);
       
       // Adicionar token para MP4 se disponível
       let urlWithToken = src;
@@ -615,7 +556,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
                           src.includes('X-Amz-Algorithm');
         
         if (isS3PresignedUrl) {
-          console.log('🔒 URL S3 presigned detectada no VideoPlayer, não adicionando token');
+          debugLog('🔒 URL S3 presigned detectada no VideoPlayer, não adicionando token');
           urlWithToken = src;
         } else {
           // Verificar se o token já está presente na URL (apenas para URLs locais)
@@ -623,12 +564,12 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
           const existingToken = urlObj.searchParams.get('token');
           
           if (existingToken) {
-            console.log('🔐 URL do MP4 já contém token, usando URL original');
+            debugLog('🔐 URL do MP4 já contém token, usando URL original');
             urlWithToken = src;
           } else {
             const separator = src.includes('?') ? '&' : '?';
             urlWithToken = `${src}${separator}token=${encodeURIComponent(validatedToken)}`;
-            console.log('🔐 Token adicionado à URL do MP4');
+            debugLog('🔐 Token adicionado à URL do MP4');
           }
         }
       } else {
@@ -650,7 +591,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
         if (!isS3PresignedUrl) {
           video.crossOrigin = 'anonymous';
         }
-        console.log('🎥 Configurado para stream MP4 em tempo real (H264 transcoding)');
+        debugLog('🎥 Configurado para stream MP4 em tempo real (H264 transcoding)');
       } else {
         // Arquivo MP4 estático - configurações padrão
         video.preload = 'metadata';
@@ -662,11 +603,11 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       
     } else {
       // Stream não-HLS ou fallback
-      console.log('Usando video nativo para:', src);
+      debugLog('Usando video nativo para:', src);
       video.src = src;
       video.load();
     }
-  }, [src, token, autoPlay, onError, onLoadEnd, retryCount, maxRetries, hlsSupported, cleanupHLS, tryDirectZLM]);
+  }, [src, validatedToken, autoPlay, onError, onLoadEnd, hlsSupported, cleanupHLS, tryDirectZLM, attemptAutoplay]);
 
   // Configurar video e event listeners
   useEffect(() => {
@@ -740,7 +681,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       
       // Para streams /play-web, tentar recarregar uma vez automaticamente
       if (src?.includes('/play-web') && retryCount === 0) {
-        console.log('🔄 Tentando recarregar stream de transcodificação...');
+        debugLog('🔄 Tentando recarregar stream de transcodificação...');
         setRetryCount(1);
         setTimeout(() => {
           if (videoRef.current) {
@@ -783,13 +724,13 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       if (!isS3Live) {
         video.crossOrigin = 'anonymous';
       }
-      console.log('🔴 Configurações de live stream aplicadas');
+      debugLog('🔴 Configurações de live stream aplicadas');
     }
     
     // Monitorar pausas apenas para debug
     video.addEventListener('pause', (e) => {
       if (src?.includes('/live/')) {
-        console.log('⏸️ Live stream pausado:', {
+        debugLog('⏸️ Live stream pausado:', {
           userTriggered: e.isTrusted,
           documentHidden: document.hidden,
           currentTime: video.currentTime
@@ -799,11 +740,11 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
     
     // Detectar stalling e tentar recuperar
     video.addEventListener('waiting', () => {
-      console.log('⏳ Buffer stalling detectado');
+      debugLog('⏳ Buffer stalling detectado');
       if (src?.includes('/live/') && hlsRef.current) {
         setTimeout(() => {
           if (video.readyState < 3 && hlsRef.current) {
-            console.log('🔄 Recuperando de stalling');
+            debugLog('🔄 Recuperando de stalling');
             hlsRef.current.startLoad();
           }
         }, 1000);
@@ -820,7 +761,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
         if (isPlaying) {
           setWasPlayingBeforeHidden(true);
           video.pause();
-          console.log('🔇 Pausando vídeo - aba inativa');
+          debugLog('🔇 Pausando vídeo - aba inativa');
         }
       } else {
         // Página ficou visível - retomar se estava reproduzindo
@@ -829,9 +770,9 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
           const playPromise = video.play();
           if (playPromise !== undefined) {
             playPromise.then(() => {
-              console.log('🔊 Retomando vídeo - aba ativa');
+              debugLog('🔊 Retomando vídeo - aba ativa');
             }).catch(err => {
-              console.warn('Falha ao retomar reprodução:', err.name);
+              debugWarn('Falha ao retomar reprodução:', err.name);
             });
           }
         }
@@ -1033,13 +974,13 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
               </button>
 
               {/* Connection Health Indicator */}
-              <div className="flex items-center space-x-1">
+              <div className="flex items-center space-x-1" title={connectionHealth === 'good' ? 'Conexão estável' : connectionHealth === 'poor' ? 'Conexão instável' : 'Conexão ruim'}>
                 {connectionHealth === 'good' ? (
-                  <Wifi className="h-4 w-4 text-green-500" title="Conexão estável" />
+                  <Wifi className="h-4 w-4 text-green-500" />
                 ) : connectionHealth === 'poor' ? (
-                  <Wifi className="h-4 w-4 text-yellow-500" title="Conexão instável" />
+                  <Wifi className="h-4 w-4 text-yellow-500" />
                 ) : (
-                  <WifiOff className="h-4 w-4 text-red-500" title="Conexão ruim" />
+                  <WifiOff className="h-4 w-4 text-red-500" />
                 )}
                 {retryCount > 0 && (
                   <span className="text-xs text-gray-300">({retryCount})</span>

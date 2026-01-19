@@ -27,7 +27,9 @@ const rateLimitConfig = {
 // Configuração específica para autenticação (mais restritiva)
 const authRateLimitConfig = {
   windowMs: 15 * 60 * 1000, // 15 minutos
-  max: parseInt(process.env.MAX_LOGIN_ATTEMPTS) || 50, // máximo 50 tentativas de login (aumentado para desenvolvimento)
+  max: process.env.NODE_ENV === 'development'
+    ? 1000 // Desenvolvimento: 1000 tentativas
+    : (parseInt(process.env.MAX_LOGIN_ATTEMPTS) || 100), // Produção: 100 tentativas (aumentado de 50)
   message: {
     error: 'Muitas tentativas de login',
     message: 'Você excedeu o limite de tentativas de login. Tente novamente em 15 minutos.',
@@ -36,7 +38,13 @@ const authRateLimitConfig = {
   standardHeaders: true,
   legacyHeaders: false,
   skipSuccessfulRequests: true, // Não conta requests bem-sucedidos
-  skipFailedRequests: false // Conta requests que falharam
+  skipFailedRequests: false, // Conta requests que falharam
+  skip: (req) => {
+    // Skip em desenvolvimento ou para health checks
+    return req.path === '/health' ||
+           req.path === '/api/health' ||
+           process.env.NODE_ENV === 'development';
+  }
 };
 
 // Configuração de slow down (reduz velocidade gradualmente)

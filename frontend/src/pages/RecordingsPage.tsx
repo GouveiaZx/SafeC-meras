@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -12,12 +12,14 @@ import {
   Cloud,
   RefreshCw,
   AlertCircle,
-  CheckCircle,
   Upload,
   Database,
   Play,
   Clock,
-  HardDrive
+  HardDrive,
+  ChevronLeft,
+  ChevronRight,
+  Calendar
 } from 'lucide-react';
 import MetricCard from '@/components/dashboard/MetricCard';
 import LineChart from '@/components/charts/LineChart';
@@ -80,10 +82,13 @@ interface Recording {
   filename: string;
   startTime: string;
   endTime: string;
+  start_time?: string;
+  end_time?: string;
   duration: number;
   size: number;
-  status: 'recording' | 'completed' | 'uploading' | 'uploaded' | 'failed';
-  uploadStatus: 'pending' | 'queued' | 'uploading' | 'uploaded' | 'failed' | 'completed';
+  file_size?: number;
+  status: string;
+  uploadStatus: string;
   uploadProgress?: number;
   localPath?: string;
   s3Url?: string;
@@ -95,6 +100,7 @@ interface Recording {
     codec: string;
     bitrate: number;
   };
+  displayStatus?: string;
 }
 
 interface RecordingSegment {
@@ -129,11 +135,29 @@ interface RecordingStats {
   };
 }
 
+interface ZLMActiveRecording {
+  camera_id: string;
+  camera_name: string;
+  camera_location: string;
+  is_recording: boolean;
+  source?: 'ZLMediaKit' | 'SRS-DVR';
+  stream_alive_seconds: number;
+  viewers: number;
+  current_file_size: number;
+  current_file_name: string | null;
+  recording_started_at: string;
+  segment_elapsed_seconds?: number;
+  segment_remaining_seconds?: number;
+  segment_duration?: number;
+  video_fps?: number;
+}
+
 const RecordingsPage: React.FC = () => {
-  
+
   const [recordings, setRecordings] = useState<Recording[]>([]);
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [stats, setStats] = useState<RecordingStats | null>(null);
+  const [zlmActiveRecordings, setZlmActiveRecordings] = useState<ZLMActiveRecording[]>([]);
   const [loading, setLoading] = useState(true);
   const [, setError] = useState<string | null>(null);
   const [selectedCamera, setSelectedCamera] = useState<string>('all');
@@ -144,10 +168,16 @@ const RecordingsPage: React.FC = () => {
   const { token } = useAuth();
 
   const [dateRange, setDateRange] = useState({ start: '', end: '' });
+  const [availableDates, setAvailableDates] = useState<string[]>([]);
+  const [calendarMonth, setCalendarMonth] = useState(new Date());
+  const [showCalendar, setShowCalendar] = useState(false);
   const [selectedRecording, setSelectedRecording] = useState<Recording | null>(null);
   const [isPlayerOpen, setIsPlayerOpen] = useState(false);
 
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
+
+  // ✅ Ref para debouncing de atualizações de status via WebSocket
+  const statusUpdateTimeoutsRef = useRef<Record<string, NodeJS.Timeout>>({});
 
   // Definir funções primeiro para evitar erro de inicialização
   const fetchStats = useCallback(async () => {
@@ -156,6 +186,37 @@ const RecordingsPage: React.FC = () => {
       setStats(data.data);
     } catch (err: unknown) {
       console.error('Erro ao buscar estatísticas:', err);
+    }
+  }, []);
+
+  // Buscar datas que têm gravações (para indicadores no calendário)
+  const fetchAvailableDates = useCallback(async () => {
+    try {
+      const params: Record<string, string> = {};
+      if (selectedCamera !== 'all') params.camera_id = selectedCamera;
+
+      const data = await api.get<{success: boolean; data: string[]}>('/recordings/available-dates', params);
+      if (data.success && Array.isArray(data.data)) {
+        setAvailableDates(data.data);
+      }
+    } catch (err: unknown) {
+      console.error('Erro ao buscar datas disponíveis:', err);
+    }
+  }, [selectedCamera]);
+
+  // Buscar gravações ativas diretamente do ZLMediaKit (fonte da verdade)
+  const fetchZlmActiveRecordings = useCallback(async () => {
+    try {
+      const data = await api.get<{success: boolean; data: ZLMActiveRecording[]; count: number}>('/recordings/zlm-active');
+      if (data.success && Array.isArray(data.data)) {
+        setZlmActiveRecordings(data.data);
+        console.log(`📹 ZLM Active: ${data.count} câmeras gravando`);
+      } else {
+        setZlmActiveRecordings([]);
+      }
+    } catch (err: unknown) {
+      console.error('Erro ao buscar gravações ativas do ZLM:', err);
+      setZlmActiveRecordings([]);
     }
   }, []);
 
@@ -215,13 +276,14 @@ const RecordingsPage: React.FC = () => {
             }
             
             // Extrair nome da câmera corretamente
-            const cameraName = recording.camera_name || 
-                              recording.cameras?.name || 
+            const cameraName = recording.camera_name ||
+                              recording.cameras?.name ||
                               `Câmera ${recording.camera_id?.substring(0, 8) || 'Desconhecida'}`;
-            
-            // Buscar segmentos da gravação
-            const segments = await fetchRecordingSegments(recording.id);
-            
+
+            // Segments são carregados sob demanda quando usuário clica na gravação
+            // Removido: const segments = await fetchRecordingSegments(recording.id);
+            const segments: RecordingSegment[] = [];
+
             return {
               id: recording.id,
               cameraId: recording.camera_id,
@@ -263,28 +325,40 @@ const RecordingsPage: React.FC = () => {
   const { isConnected } = useSocket({
     recording_status_changed: useCallback((data: any) => {
       console.log('📊 WebSocket - Status da gravação alterado:', data);
-      
-      // Atualizar a gravação específica na lista
-      setRecordings(prev => 
-        prev.map(recording => 
-          recording.id === data.recording_id 
-            ? {
-                ...recording,
-                status: data.status,
-                uploadStatus: data.upload_status,
-                uploadProgress: data.upload_progress || 0,
-                s3Key: data.s3_key,
-                s3Url: data.s3_url,
-                displayStatus: data.display_status
-              }
-            : recording
-        )
-      );
-      
-      // Atualizar estatísticas
-      fetchStats();
-      
-      setLastUpdate(new Date());
+
+      // ✅ DEBOUNCING: Cancelar timeout anterior para este recording_id
+      const recordingId = data.recording_id;
+      if (statusUpdateTimeoutsRef.current[recordingId]) {
+        clearTimeout(statusUpdateTimeoutsRef.current[recordingId]);
+      }
+
+      // ✅ Criar novo timeout de 300ms antes de atualizar
+      statusUpdateTimeoutsRef.current[recordingId] = setTimeout(() => {
+        // Atualizar a gravação específica na lista
+        setRecordings(prev =>
+          prev.map(recording =>
+            recording.id === recordingId
+              ? {
+                  ...recording,
+                  status: data.status,
+                  uploadStatus: data.upload_status,
+                  uploadProgress: data.upload_progress || 0,
+                  s3Key: data.s3_key,
+                  s3Url: data.s3_url,
+                  displayStatus: data.display_status
+                }
+              : recording
+          )
+        );
+
+        // Atualizar estatísticas
+        fetchStats();
+
+        setLastUpdate(new Date());
+
+        // Limpar timeout do ref após execução
+        delete statusUpdateTimeoutsRef.current[recordingId];
+      }, 300); // 300ms de debounce para evitar flickering
     }, [fetchStats]),
 
     upload_progress: useCallback((data: any) => {
@@ -386,7 +460,7 @@ const RecordingsPage: React.FC = () => {
 
   const loadCameras = useCallback(async () => {
     try {
-      const response = await api.get<CamerasResponse>(endpoints.cameras.getAll());
+      const response = await api.get<CamerasResponse>(endpoints.cameras.getAll(), { limit: '100' });
       const camerasData = response.data || [];
       setCameras(camerasData);
     } catch (err) {
@@ -398,10 +472,10 @@ const RecordingsPage: React.FC = () => {
 
   const handleRefresh = useCallback(async () => {
     setLoading(true);
-    await Promise.all([fetchRecordings(), fetchStats(), fetchUploadTrends()]);
+    await Promise.all([fetchRecordings(), fetchStats(), fetchUploadTrends(), fetchZlmActiveRecordings()]);
     setLoading(false);
     setLastUpdate(new Date());
-  }, [fetchRecordings, fetchStats, fetchUploadTrends]);
+  }, [fetchRecordings, fetchStats, fetchUploadTrends, fetchZlmActiveRecordings]);
 
 
 
@@ -417,20 +491,18 @@ const RecordingsPage: React.FC = () => {
   const handleRetryUpload = async (recordingId: string, segmentId?: string) => {
     try {
       const endpoint = segmentId 
-        ? `/api/recordings/${recordingId}/segments/${segmentId}/retry-upload`
-        : `/api/recordings/${recordingId}/retry-upload`;
+        ? endpoints.recordings.retrySegmentUpload(recordingId, segmentId)
+        : endpoints.recordings.retryUpload(recordingId);
       
-      const response = await api.post(endpoint);
+      const response = await api.post<{ success: boolean; message?: string }>(endpoint);
       
-      if (response.data.success) {
-        // Atualizar lista de gravações
-        handleRefresh();
+      if (response.success) {
+        await handleRefresh();
       } else {
-        console.error('Erro ao tentar novamente o upload:', response.data.message);
+        console.error('Erro ao tentar novamente o upload:', response.message);
       }
     } catch (error: unknown) {
-      console.error('Erro ao tentar novamente o upload:', error);
-      const errorMessage = (error as any)?.response?.data?.message || 'Erro ao tentar novamente o upload';
+      const errorMessage = (error as any)?.message || 'Erro ao tentar novamente o upload';
       console.error(errorMessage);
     }
   };
@@ -470,17 +542,21 @@ const RecordingsPage: React.FC = () => {
       if (!loading) {
         fetchRecordings();
         fetchStats();
+        fetchZlmActiveRecordings();
       }
     }, refreshInterval);
 
     return () => clearInterval(autoRefreshInterval);
-  }, [fetchRecordings, fetchStats, isConnected, loading]);
+  }, [fetchRecordings, fetchStats, fetchZlmActiveRecordings, isConnected, loading]);
 
   useEffect(() => {
     loadCameras();
   }, [loadCameras]);
 
-
+  // Buscar datas disponíveis quando componente monta ou câmera muda
+  useEffect(() => {
+    fetchAvailableDates();
+  }, [fetchAvailableDates]);
 
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return '0 B';
@@ -498,11 +574,22 @@ const RecordingsPage: React.FC = () => {
   };
 
   const getStatusBadge = (status: string, uploadStatus?: string, uploadProgress?: number) => {
-    // Determinar status atual baseado na prioridade
+    // ✅ CORREÇÃO: Priorizar status de gravação ativa sobre upload_status
     let currentStatus = status;
     let label = '';
-    
-    if (uploadStatus) {
+
+    // PRIORIDADE 1: Se está gravando ativamente, sempre mostrar "Gravando"
+    if (status === 'recording') {
+      currentStatus = 'recording';
+      label = 'Gravando';
+    }
+    // PRIORIDADE 2: Se gravação falhou, mostrar erro
+    else if (status === 'failed') {
+      currentStatus = 'failed';
+      label = 'Falhou';
+    }
+    // PRIORIDADE 3: Se gravação completa, verificar status de upload
+    else if (status === 'completed' && uploadStatus) {
       switch (uploadStatus) {
         case 'pending':
           currentStatus = 'pending';
@@ -528,21 +615,16 @@ const RecordingsPage: React.FC = () => {
           currentStatus = uploadStatus;
           label = uploadStatus;
       }
-    } else {
-      // Status da gravação
-      switch (status) {
-        case 'recording':
-          label = 'Gravando';
-          break;
-        case 'completed':
-          label = 'Local';
-          break;
-        case 'failed':
-          label = 'Falhou';
-          break;
-        default:
-          label = status;
-      }
+    }
+    // PRIORIDADE 4: Se gravação completa sem upload_status, mostrar "Local"
+    else if (status === 'completed') {
+      currentStatus = 'completed';
+      label = 'Local';
+    }
+    // FALLBACK: Status desconhecido
+    else {
+      currentStatus = status;
+      label = status;
     }
     
     const statusConfig = {
@@ -569,11 +651,11 @@ const RecordingsPage: React.FC = () => {
 
   const getStorageIcon = (recording: {s3Url?: string; localPath?: string}) => {
     if (recording.s3Url) {
-      return <Cloud className="h-4 w-4 text-green-600" title="Armazenado no Wasabi S3" />;
+      return <span title="Armazenado no Wasabi S3"><Cloud className="h-4 w-4 text-green-600" /></span>;
     } else if (recording.localPath) {
-      return <Database className="h-4 w-4 text-blue-600" title="Armazenado localmente" />;
+      return <span title="Armazenado localmente"><Database className="h-4 w-4 text-blue-600" /></span>;
     }
-    return <AlertCircle className="h-4 w-4 text-red-600" title="Local de armazenamento desconhecido" />;
+    return <span title="Local de armazenamento desconhecido"><AlertCircle className="h-4 w-4 text-red-600" /></span>;
   };
 
   const filteredRecordings = useMemo(() => {
@@ -641,25 +723,25 @@ const RecordingsPage: React.FC = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <MetricCard
           title="Gravações Ativas"
-          value={stats?.activeRecordings || 0}
+          value={zlmActiveRecordings.length}
           icon={Video}
-          color="red"
+          color={zlmActiveRecordings.length > 0 ? "red" : "gray"}
         />
-        
+
         <MetricCard
           title="Total de Gravações"
           value={stats?.totalRecordings || 0}
           icon={Database}
           color="blue"
         />
-        
+
         <MetricCard
           title="Uploads Pendentes"
           value={stats?.pendingUploads || 0}
           icon={Upload}
           color="yellow"
         />
-        
+
         <MetricCard
           title="Armazenamento S3"
           value={formatBytes(stats?.storageUsed?.s3 || 0)}
@@ -667,6 +749,33 @@ const RecordingsPage: React.FC = () => {
           color="green"
         />
       </div>
+
+      {/* Resumo Compacto de Gravações em Andamento */}
+      {zlmActiveRecordings.length > 0 && (
+        <div className="flex items-center gap-3 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+          <div className="flex items-center gap-2">
+            <Video className="w-5 h-5 text-red-500 animate-pulse" />
+            <span className="font-medium text-red-600 dark:text-red-400">
+              {zlmActiveRecordings.length} {zlmActiveRecordings.length === 1 ? 'câmera gravando' : 'câmeras gravando'}
+            </span>
+          </div>
+          <div className="flex-1 flex flex-wrap gap-2">
+            {zlmActiveRecordings.map((rec) => (
+              <Badge
+                key={rec.camera_id}
+                variant="outline"
+                className="bg-white dark:bg-gray-800 border-red-300 text-xs"
+              >
+                <span className="w-2 h-2 bg-red-500 rounded-full mr-1.5 animate-pulse"></span>
+                {rec.camera_name}
+              </Badge>
+            ))}
+          </div>
+          <span className="text-xs text-gray-500 hidden sm:inline">
+            Clique na câmera para ver detalhes
+          </span>
+        </div>
+      )}
 
       {/* Gráfico de Tendência de Uploads */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -766,6 +875,173 @@ const RecordingsPage: React.FC = () => {
             placeholder="Data final"
             className="px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-transparent"
           />
+        </div>
+
+        {/* Atalhos rápidos e calendário com indicadores */}
+        <div className="mt-4 pt-4 border-t border-gray-200">
+          {/* Atalhos rápidos */}
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
+            <span className="text-sm text-gray-600 font-medium">Filtros rápidos:</span>
+            <button
+              onClick={() => {
+                const today = new Date().toISOString().split('T')[0];
+                setDateRange({ start: today, end: today });
+              }}
+              className={`px-3 py-1 text-xs rounded-full border transition-colors ${
+                dateRange.start === new Date().toISOString().split('T')[0] && dateRange.end === new Date().toISOString().split('T')[0]
+                  ? 'bg-primary-500 text-white border-primary-500'
+                  : 'bg-gray-50 text-gray-700 border-gray-300 hover:bg-gray-100'
+              }`}
+            >
+              Hoje
+            </button>
+            <button
+              onClick={() => {
+                const today = new Date();
+                const weekAgo = new Date(today);
+                weekAgo.setDate(today.getDate() - 7);
+                setDateRange({
+                  start: weekAgo.toISOString().split('T')[0],
+                  end: today.toISOString().split('T')[0]
+                });
+              }}
+              className="px-3 py-1 text-xs rounded-full border bg-gray-50 text-gray-700 border-gray-300 hover:bg-gray-100 transition-colors"
+            >
+              7 dias
+            </button>
+            <button
+              onClick={() => {
+                const today = new Date();
+                const monthAgo = new Date(today);
+                monthAgo.setDate(today.getDate() - 30);
+                setDateRange({
+                  start: monthAgo.toISOString().split('T')[0],
+                  end: today.toISOString().split('T')[0]
+                });
+              }}
+              className="px-3 py-1 text-xs rounded-full border bg-gray-50 text-gray-700 border-gray-300 hover:bg-gray-100 transition-colors"
+            >
+              30 dias
+            </button>
+            {dateRange.start && (
+              <button
+                onClick={() => setDateRange({ start: '', end: '' })}
+                className="px-3 py-1 text-xs rounded-full border bg-red-50 text-red-600 border-red-200 hover:bg-red-100 transition-colors"
+              >
+                Limpar
+              </button>
+            )}
+            <button
+              onClick={() => setShowCalendar(!showCalendar)}
+              className={`ml-auto px-3 py-1 text-xs rounded-full border flex items-center gap-1 transition-colors ${
+                showCalendar
+                  ? 'bg-primary-500 text-white border-primary-500'
+                  : 'bg-gray-50 text-gray-700 border-gray-300 hover:bg-gray-100'
+              }`}
+            >
+              <Calendar className="w-3 h-3" />
+              {availableDates.length} dias com gravações
+            </button>
+          </div>
+
+          {/* Mini-calendário expansível */}
+          {showCalendar && availableDates.length > 0 && (
+            <div className="bg-gray-50 rounded-lg p-4 mt-2">
+              {/* Navegação do mês */}
+              <div className="flex items-center justify-between mb-3">
+                <button
+                  onClick={() => setCalendarMonth(prev => {
+                    const newDate = new Date(prev);
+                    newDate.setMonth(prev.getMonth() - 1);
+                    return newDate;
+                  })}
+                  className="p-1 hover:bg-gray-200 rounded transition-colors"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                <span className="text-sm font-medium text-gray-700">
+                  {calendarMonth.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}
+                </span>
+                <button
+                  onClick={() => setCalendarMonth(prev => {
+                    const newDate = new Date(prev);
+                    newDate.setMonth(prev.getMonth() + 1);
+                    return newDate;
+                  })}
+                  className="p-1 hover:bg-gray-200 rounded transition-colors"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Grid do calendário */}
+              <div className="grid grid-cols-7 gap-1 text-center">
+                {/* Cabeçalho dias da semana */}
+                {['D', 'S', 'T', 'Q', 'Q', 'S', 'S'].map((day, i) => (
+                  <div key={i} className="text-xs font-medium text-gray-500 py-1">{day}</div>
+                ))}
+
+                {/* Dias do mês */}
+                {(() => {
+                  const year = calendarMonth.getFullYear();
+                  const month = calendarMonth.getMonth();
+                  const firstDay = new Date(year, month, 1).getDay();
+                  const daysInMonth = new Date(year, month + 1, 0).getDate();
+                  const days = [];
+
+                  // Dias vazios antes do primeiro dia
+                  for (let i = 0; i < firstDay; i++) {
+                    days.push(<div key={`empty-${i}`} className="py-1"></div>);
+                  }
+
+                  // Dias do mês
+                  for (let day = 1; day <= daysInMonth; day++) {
+                    const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                    const hasRecording = availableDates.includes(dateStr);
+                    const isSelected = dateRange.start === dateStr || dateRange.end === dateStr;
+                    const isInRange = dateRange.start && dateRange.end && dateStr >= dateRange.start && dateStr <= dateRange.end;
+                    const isToday = dateStr === new Date().toISOString().split('T')[0];
+
+                    days.push(
+                      <button
+                        key={day}
+                        onClick={() => hasRecording && setDateRange({ start: dateStr, end: dateStr })}
+                        disabled={!hasRecording}
+                        className={`
+                          py-1 text-xs rounded transition-colors relative
+                          ${isSelected ? 'bg-primary-500 text-white' : ''}
+                          ${isInRange && !isSelected ? 'bg-primary-100 text-primary-700' : ''}
+                          ${hasRecording && !isSelected && !isInRange ? 'hover:bg-green-100 text-gray-700 font-medium' : ''}
+                          ${!hasRecording ? 'text-gray-300 cursor-default' : 'cursor-pointer'}
+                          ${isToday && !isSelected ? 'ring-1 ring-primary-400' : ''}
+                        `}
+                        title={hasRecording ? `Clique para filtrar ${dateStr}` : 'Sem gravações'}
+                      >
+                        {day}
+                        {hasRecording && !isSelected && (
+                          <span className="absolute bottom-0 left-1/2 transform -translate-x-1/2 w-1 h-1 bg-green-500 rounded-full"></span>
+                        )}
+                      </button>
+                    );
+                  }
+
+                  return days;
+                })()}
+              </div>
+
+              {/* Legenda */}
+              <div className="flex items-center gap-4 mt-3 pt-3 border-t border-gray-200 text-xs text-gray-500">
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+                  Com gravações
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="w-4 h-4 bg-primary-500 rounded text-white text-[10px] flex items-center justify-center">1</span>
+                  Selecionado
+                </span>
+              </div>
+            </div>
+          )}
         </div>
       </Card>
 

@@ -42,18 +42,20 @@ import hookRoutes from './routes/hooks.js';
 import healthRoutes from './routes/health.js';
 import testWebSocketRoutes from './routes/testWebSocket.js';
 import segmentationRoutes, { injectSegmentationService } from './routes/segmentation.js';
+import rtmpPoolRoutes from './routes/rtmpPool.js';
+import srsWebhookRoutes from './routes/srsWebhooks.js';
+import uploadQueueRoutes from './routes/uploadQueue.js';
 
 // Importar serviços
 import streamingService from './services/StreamingService.js';
 import cameraMonitoringService from './services/CameraMonitoringService.js';
+import streamStatusSyncService from './services/StreamStatusSyncService.js';
 import MetricsService from './services/MetricsService.js';
-import SegmentationService from './services/SegmentationService.js';
 import RecordingMonitorService from './services/RecordingMonitorService.js';
-import recordingFinalizationService from './services/RecordingFinalizationService.js';
 import UploadQueueService from './services/UploadQueueService.js';
-import OrphanFileMonitor from './services/OrphanFileMonitor.js';
 import UploadFallbackService from './services/UploadFallbackService.js';
 import ValidationRecoveryService from './services/ValidationRecoveryService.js';
+import RecordingSyncService from './services/RecordingSyncService.js';
 import UploadWorker from './workers/UploadWorker.js';
 import { initializeSocket } from './controllers/socketController.js';
 
@@ -73,28 +75,23 @@ const io = new Server(server, {
   transports: ['websocket', 'polling']
 });
 
+// Configurar trust proxy para funcionar corretamente atrás do Nginx
+// Aceita apenas proxy do localhost (Nginx local)
+app.set('trust proxy', 'loopback');
+
 // Configurar CORS usando a configuração completa
 app.use(cors(corsConfig));
 
 // Middlewares de segurança
 app.use(helmet({
   crossOriginEmbedderPolicy: false,
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrc: ["'self'"],
-      imgSrc: ["'self'", "data:", "blob:"],
-      mediaSrc: ["'self'", "blob:", "http://localhost:3010", "http://127.0.0.1:3010", "http://localhost:3002", "http://127.0.0.1:3002", "http://localhost:3000", "http://127.0.0.1:3000"],
-      connectSrc: ["'self'", "ws:", "wss:", "http://localhost:3010", "http://127.0.0.1:3010", "http://localhost:3002", "http://127.0.0.1:3002"],
-    },
-  },
+  contentSecurityPolicy: false
 }));
 
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
-  max: NODE_ENV === 'production' ? 100 : 10000, // Limite muito alto para desenvolvimento
+  max: process.env.RATE_LIMIT_MAX ? parseInt(process.env.RATE_LIMIT_MAX) : 100, // Configurável via env
   message: {
     error: 'Muitas requisições deste IP, tente novamente em 15 minutos.'
   },
@@ -117,8 +114,24 @@ app.use('/api/', limiter);
 
 // Middlewares gerais
 app.use(compression());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({
+  limit: '1mb',
+  verify: (req, res, buf, encoding) => {
+    // This will trigger automatic 413 if payload exceeds limit
+    if (buf.length > 1024 * 1024) {
+      throw new Error('entity.too.large');
+    }
+  }
+}));
+app.use(express.urlencoded({
+  extended: true,
+  limit: '1mb',
+  verify: (req, res, buf, encoding) => {
+    if (buf.length > 1024 * 1024) {
+      throw new Error('entity.too.large');
+    }
+  }
+}));
 app.use(requestLogger);
 
 // Middleware de autenticação para rotas protegidas
@@ -149,6 +162,8 @@ app.use('/api/logs', authenticateToken);
 app.use('/api/discovery', authenticateToken);
 // app.use('/api/worker', authenticateToken); // REMOVIDO: Worker usa seu próprio sistema de autenticação
 app.use('/api/segmentation', authenticateToken);
+app.use('/api/rtmp', authenticateToken); // RTMP Pool management (authenticated)
+// Nota: /api/srs/webhook NÃO tem autenticação JWT (callbacks externos do SRS)
 
 // Rota de health check (sem autenticação)
 app.get('/health', (req, res) => {
@@ -166,6 +181,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/recordings', recordingRoutes); // Movido para antes de cameras para evitar conflito de rotas
 app.use('/api/recording-files', recordingFilesRoutes); // Rota para servir arquivos MP4 diretamente
+app.use('/api/upload-queue', uploadQueueRoutes); // Rota para gerenciar fila de upload S3
 app.use('/api/cameras', cameraRoutes);
 app.use('/api/streams', streamRoutes);
 app.use('/api/dashboard', dashboardRoutes);
@@ -179,6 +195,8 @@ app.use('/api/hook', hookRoutes);
 app.use('/api/health', healthRoutes);
 app.use('/api', testWebSocketRoutes);
 app.use('/api/segmentation', segmentationRoutes);
+app.use('/api/rtmp', rtmpPoolRoutes);
+app.use('/api/srs/webhook', srsWebhookRoutes);
 
 // REMOVIDO POR SEGURANÇA: Exposição estática de streams sem autenticação
 // Streams devem ser servidos através da API com autenticação adequada
@@ -201,10 +219,6 @@ app.set('io', io);
 UploadQueueService.setSocketIO(io);
 app.set('uploadQueueService', UploadQueueService);
 
-// Inicializar OrphanFileMonitor para detectar arquivos não associados
-const orphanFileMonitor = new OrphanFileMonitor();
-app.set('orphanFileMonitor', orphanFileMonitor);
-
 // Inicializar UploadFallbackService para retry automático de uploads
 const uploadFallbackService = new UploadFallbackService();
 app.set('uploadFallbackService', uploadFallbackService);
@@ -219,9 +233,6 @@ const uploadWorker = new UploadWorker({
   pollInterval: parseInt(process.env.UPLOAD_POLL_INTERVAL) || 30000
 });
 app.set('uploadWorker', uploadWorker);
-
-// Variável global para o serviço de segmentação
-let globalSegmentationService = null;
 
 // Função para inicializar serviços
 async function initializeServices() {
@@ -247,28 +258,26 @@ async function initializeServices() {
     console.error('❌ Erro ao inicializar CameraMonitoringService:', error);
   }
 
-  // DESABILITADO: RecordingMonitorService (serviço redundante)
+  // Inicializar serviço de sincronização de status de streaming
   try {
-    console.log('⚠️ RecordingMonitorService DESABILITADO - usando apenas RecordingService');
-    // await RecordingMonitorService.start();
-    // console.log('✅ RecordingMonitorService inicializado (automação de 30s ativa)');
-    
-    // Adicionar ao contexto global para uso em rotas se necessário
-    // app.locals.recordingMonitor = RecordingMonitorService;
+    streamStatusSyncService.start();
+    console.log('✅ StreamStatusSyncService inicializado (sincronização a cada 30s)');
+
+    // Adicionar ao contexto global para monitoramento
+    app.locals.streamStatusSyncService = streamStatusSyncService;
   } catch (error) {
-    console.error('❌ Erro ao inicializar RecordingMonitorService:', error);
+    console.error('❌ Erro ao inicializar StreamStatusSyncService:', error);
   }
 
-  // DESABILITADO: RecordingFinalizationService (serviço redundante)
+  // RecordingMonitorService - Auto-recovery para gravações (detecta streams sem gravação)
   try {
-    console.log('⚠️ RecordingFinalizationService DESABILITADO - usando apenas RecordingService');
-    // recordingFinalizationService.start();
-    // console.log('✅ RecordingFinalizationService inicializado');
-    
+    await RecordingMonitorService.start();
+    console.log('✅ RecordingMonitorService inicializado (automação de 30s ativa)');
+
     // Adicionar ao contexto global para uso em rotas se necessário
-    // app.locals.recordingFinalizationService = recordingFinalizationService;
+    app.locals.recordingMonitor = RecordingMonitorService;
   } catch (error) {
-    console.error('❌ Erro ao inicializar RecordingFinalizationService:', error);
+    console.error('❌ Erro ao inicializar RecordingMonitorService:', error);
   }
 
   // Iniciar coleta de métricas
@@ -395,19 +404,13 @@ async function initializeServices() {
     console.error('Erro ao inicializar serviço de gravação:', error);
   }
 
-  // Inicializar OrphanFileMonitor
+  // Inicializar RecordingSyncService - PRINCIPAL para sincronização de arquivos órfãos
   try {
-    console.log('🔍 Iniciando OrphanFileMonitor...');
-    orphanFileMonitor.start(io);
-    console.log('✅ OrphanFileMonitor iniciado com sucesso');
-    
-    // Limpar cache a cada 4 horas
-    setInterval(() => {
-      orphanFileMonitor.clearProcessedCache();
-    }, 4 * 60 * 60 * 1000);
-    
+    console.log('🔄 Iniciando RecordingSyncService...');
+    await RecordingSyncService.start();
+    console.log('✅ RecordingSyncService iniciado - sincronização a cada 60s');
   } catch (error) {
-    console.error('❌ Erro ao inicializar OrphanFileMonitor:', error);
+    console.error('❌ Erro ao inicializar RecordingSyncService:', error);
   }
 
   // Inicializar UploadFallbackService
@@ -503,9 +506,8 @@ process.on('unhandledRejection', (reason, promise) => {
 process.on('SIGTERM', () => {
   console.log('Recebido SIGTERM, encerrando servidor...');
   MetricsService.stopCollection();
-  if (globalSegmentationService) {
-    globalSegmentationService.stop();
-  }
+  streamStatusSyncService.stop();
+  RecordingMonitorService.stop();
   server.close(() => {
     console.log('Servidor encerrado.');
     process.exit(0);
@@ -515,9 +517,8 @@ process.on('SIGTERM', () => {
 process.on('SIGINT', () => {
   console.log('Recebido SIGINT, encerrando servidor...');
   MetricsService.stopCollection();
-  if (globalSegmentationService) {
-    globalSegmentationService.stop();
-  }
+  streamStatusSyncService.stop();
+  RecordingMonitorService.stop();
   server.close(() => {
     console.log('Servidor encerrado.');
     process.exit(0);
@@ -525,4 +526,3 @@ process.on('SIGINT', () => {
 });
 
 export { app, server, io };
-// Restart trigger

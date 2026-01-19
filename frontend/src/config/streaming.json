@@ -1,19 +1,39 @@
-{
-  "streaming": {
-    "server": "zlm",
-    "baseUrl": "http://localhost:8000",
-    "apiUrl": "http://localhost:8000/index/api",
-    "disableSimulation": true,
-    "forceZLM": true,
-    "hlsUrl": "http://localhost:8000/live/{id}.live.m3u8",
-    "flvUrl": "http://localhost:8000/live/{id}.live.flv",
-    "wsUrl": "ws://localhost:8000/live/{id}.live.flv",
-    "thumbnailUrl": "http://localhost:8000/live/{id}.live.jpg",
-    "directHlsUrl": "http://localhost:8000/live/{id}.live.m3u8",
-    "proxyHlsUrl": "http://localhost:3002/api/streams/{id}/hls"
+﻿{
+  "development": {
+    "streaming": {
+      "server": "zlm",
+      "baseUrl": "http://localhost:8000",
+      "apiUrl": "http://localhost:8000/index/api",
+      "disableSimulation": true,
+      "forceZLM": true,
+      "hlsUrl": "http://localhost:8000/live/{id}/hls.m3u8",
+      "flvUrl": "http://localhost:8000/live/{id}.live.flv",
+      "wsUrl": "ws://localhost:8000/live/{id}.live.flv",
+      "thumbnailUrl": "http://localhost:8000/live/{id}.live.jpg",
+      "directHlsUrl": "http://localhost:8000/live/{id}/hls.m3u8",
+      "proxyHlsUrl": "http://localhost:3002/api/streams/{id}/hls"
+    },
+    "backend": {
+      "baseUrl": "http://localhost:3002/api"
+    }
   },
-  "backend": {
-    "baseUrl": "http://localhost:3002/api"
+  "production": {
+    "streaming": {
+      "server": "zlm",
+      "baseUrl": "http://186.233.4.8:8000",
+      "apiUrl": "http://186.233.4.8:8000/index/api",
+      "disableSimulation": true,
+      "forceZLM": true,
+      "hlsUrl": "http://186.233.4.8:8000/live/{id}/hls.m3u8",
+      "flvUrl": "http://186.233.4.8:8000/live/{id}.live.flv",
+      "wsUrl": "ws://186.233.4.8:8000/live/{id}.live.flv",
+      "thumbnailUrl": "http://186.233.4.8:8000/live/{id}.live.jpg",
+      "directHlsUrl": "http://186.233.4.8:8000/live/{id}/hls.m3u8",
+      "proxyHlsUrl": "http://186.233.4.8/api/streams/{id}/hls"
+    },
+    "backend": {
+      "baseUrl": "http://186.233.4.8/api"
+    }
   },
-  "timestamp": "2025-08-19T22:00:00.000Z"
+  "timestamp": "2025-12-02T00:00:00.000Z"
 }
