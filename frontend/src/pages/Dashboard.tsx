@@ -87,8 +87,9 @@ interface Metrics {
 
 const Dashboard: React.FC = () => {
   const { user } = useAuth();
-  // Verificar se é cliente - ocultar métricas de servidor para clientes
-  const isClient = user?.userType === 'CLIENT';
+  // Verificar se pode ver métricas de servidor (apenas ADMIN e INTEGRATOR)
+  // Se user não carregou ainda, ocultar por padrão (segurança)
+  const canViewServerMetrics = user?.userType === 'ADMIN' || user?.userType === 'INTEGRATOR';
 
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -295,9 +296,9 @@ const Dashboard: React.FC = () => {
       )}
 
       {/* Métricas Principais */}
-      <div className={`grid grid-cols-1 md:grid-cols-2 ${!isClient ? 'lg:grid-cols-4' : ''} gap-6`}>
+      <div className={`grid grid-cols-1 md:grid-cols-2 ${canViewServerMetrics ? 'lg:grid-cols-4' : ''} gap-6`}>
         {/* CPU - Ocultar para cliente */}
-        {!isClient && (
+        {canViewServerMetrics && (
           <MetricCard
             title="CPU"
             value={metrics?.system.cpu || 0}
@@ -313,7 +314,7 @@ const Dashboard: React.FC = () => {
         )}
 
         {/* Memória - Ocultar para cliente */}
-        {!isClient && (
+        {canViewServerMetrics && (
           <MetricCard
             title="Memória"
             value={metrics?.system.memory.percentage || 0}
@@ -346,7 +347,7 @@ const Dashboard: React.FC = () => {
       </div>
 
       {/* Gráficos e Métricas Detalhadas - Ocultar para cliente */}
-      {!isClient && (
+      {canViewServerMetrics && (
         <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
           {/* Gráfico de CPU e Memória */}
           <div className="xl:col-span-2">
@@ -372,7 +373,7 @@ const Dashboard: React.FC = () => {
         </div>
       )}
 
-      <div className={`grid grid-cols-1 ${!isClient ? 'lg:grid-cols-2' : ''} gap-6`}>
+      <div className={`grid grid-cols-1 ${canViewServerMetrics ? 'lg:grid-cols-2' : ''} gap-6`}>
         {/* Status das Câmeras - Visível para todos */}
         <BarChart
           data={cameraStats}
@@ -382,7 +383,7 @@ const Dashboard: React.FC = () => {
         />
 
         {/* Métricas de Sistema - Ocultar para cliente */}
-        {!isClient && (
+        {canViewServerMetrics && (
           <Card className="p-6">
             <h3 className="text-lg font-semibold mb-4 flex items-center">
               <Cpu className="w-5 h-5 mr-2 text-primary-500" />

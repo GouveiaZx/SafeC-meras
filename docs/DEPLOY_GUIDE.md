@@ -4,10 +4,34 @@
 Este documento contém instruções completas para deploy do sistema NewCAM no servidor, incluindo frontend, backend, worker e todas as configurações necessárias.
 
 ## Estrutura do Sistema
-- **Frontend**: Porta 5173
-- **Backend**: Porta 3002  
+- **Frontend**: Porta 5173 (servido pelo Nginx)
+- **Backend**: Porta 3002
 - **Worker**: Porta 3003
-- **Docker**: Containers para serviços auxiliares
+- **Docker**: Containers para serviços auxiliares (SRS, Redis, PostgreSQL)
+
+## Estrutura de Diretórios no Servidor
+
+O servidor possui duas estruturas de diretórios com propósitos diferentes:
+
+### `/root/NewCAM/` (Projeto Completo - ~6.7GB)
+Contém todo o projeto incluindo:
+- `backend/` - Código fonte e dependências do backend
+- `worker/` - Código fonte e dependências do worker
+- `frontend/` - Código fonte do frontend (incluindo `dist/` após build)
+- `storage/` - Arquivos de gravações e uploads
+- `docker/` - Configurações Docker
+- Scripts e configurações
+
+### `/var/www/newcam/` (Frontend Build - ~5MB)
+Contém apenas os arquivos estáticos do frontend (build):
+- `index.html`
+- `assets/` - JS, CSS e imagens compiladas
+- Este é o diretório que o **Nginx serve** para os usuários
+
+### Por que dois diretórios?
+- O projeto principal fica em `/root/NewCAM/` para desenvolvimento e builds
+- O Nginx serve apenas os arquivos estáticos de `/var/www/newcam/`
+- Após cada build do frontend, os arquivos devem ser copiados para `/var/www/newcam/`
 
 ## Pré-requisitos no Servidor
 - Node.js 18+ instalado
@@ -422,6 +446,40 @@ docker-compose down
 echo "✅ Todos os serviços parados!"
 ```
 
+#### 5.4 deploy-frontend.sh (IMPORTANTE)
+Este script deve ser usado SEMPRE após fazer build do frontend:
+```bash
+#!/bin/bash
+# Script localizado em: /root/NewCAM/deploy-frontend.sh
+
+echo "🚀 Deploy do Frontend NewCAM"
+echo "=============================="
+
+# Copiar arquivos do build para o diretório do Nginx
+echo "📦 Copiando arquivos..."
+cp -r /root/NewCAM/frontend/dist/* /var/www/newcam/
+
+# Ajustar permissões
+echo "🔐 Ajustando permissões..."
+chown -R www-data:www-data /var/www/newcam/
+
+# Recarregar Nginx
+echo "🔄 Recarregando Nginx..."
+systemctl reload nginx
+
+echo "✅ Deploy concluído!"
+echo "Verifique: http://186.233.4.8"
+```
+
+**Uso:**
+```bash
+# Após fazer alterações no frontend:
+cd /root/NewCAM/frontend
+npm run build
+cd ..
+./deploy-frontend.sh
+```
+
 ### 6. Comandos de Deploy
 
 #### 6.1 Preparação do Pacote Local
@@ -517,6 +575,24 @@ df -h
 
 #### 9.1 Problemas Comuns
 
+**Frontend não atualiza após build:**
+Este é o erro mais comum! O build do frontend fica em `/root/NewCAM/frontend/dist/` mas o Nginx serve de `/var/www/newcam/`.
+
+```bash
+# Verificar qual arquivo o navegador está carregando (DevTools > Network)
+# Comparar com o arquivo no servidor:
+ls -la /var/www/newcam/assets/index-*.js
+ls -la /root/NewCAM/frontend/dist/assets/index-*.js
+
+# Se forem diferentes, executar o deploy:
+./deploy-frontend.sh
+
+# Ou manualmente:
+cp -r /root/NewCAM/frontend/dist/* /var/www/newcam/
+chown -R www-data:www-data /var/www/newcam/
+systemctl reload nginx
+```
+
 **Erro de permissão:**
 ```bash
 sudo chown -R www-data:www-data /var/newcam
@@ -570,16 +646,17 @@ docker system prune -f
 
 ## Checklist Final
 
-- [ ] Frontend rodando na porta 5173
-- [ ] Backend rodando na porta 3002
-- [ ] Worker rodando na porta 3003
-- [ ] PostgreSQL funcionando
-- [ ] Redis funcionando
-- [ ] SRS (streaming) funcionando
-- [ ] Nginx configurado
-- [ ] Logs sendo gerados
-- [ ] Permissões corretas
+- [ ] Frontend rodando na porta 5173 (Nginx)
+- [ ] Backend rodando na porta 3002 (PM2)
+- [ ] Worker rodando na porta 3003 (PM2)
+- [ ] PostgreSQL funcionando (Docker)
+- [ ] Redis funcionando (Docker)
+- [ ] SRS (streaming) funcionando (Docker)
+- [ ] Nginx configurado e servindo `/var/www/newcam/`
+- [ ] Logs sendo gerados em `/var/log/newcam/`
+- [ ] Permissões corretas (www-data)
 - [ ] Backup configurado
+- [ ] Script `deploy-frontend.sh` disponível em `/root/NewCAM/`
 
 ## Contatos de Suporte
 
@@ -592,5 +669,5 @@ Para problemas durante o deploy, verificar:
 
 ---
 
-**Última atualização:** $(date)
-**Versão:** 1.0.0
+**Última atualização:** 19/01/2026
+**Versão:** 1.1.0
