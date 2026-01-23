@@ -359,13 +359,21 @@ const CameraDetailsModal: React.FC<CameraDetailsModalProps> = ({
                     <div className="flex-1 min-w-0">
                       <p className="font-medium text-sm text-gray-900 truncate">
                         {recording.startTime
-                          ? new Date(recording.startTime).toLocaleString('pt-BR')
+                          ? new Date(recording.startTime).toLocaleDateString('pt-BR')
                           : 'Data desconhecida'
                         }
                       </p>
+                      <p className="text-xs text-gray-600">
+                        Inicio: {recording.startTime
+                          ? new Date(recording.startTime).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                          : '--:--:--'
+                        } | Fim: {recording.endTime
+                          ? new Date(recording.endTime).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                          : '--:--:--'
+                        }
+                      </p>
                       <p className="text-xs text-gray-500">
-                        Duracao: {formatDuration(recording.duration)} |
-                        Tamanho: {formatBytes(recording.size)}
+                        Duracao: {formatDuration(recording.duration)} | Tamanho: {formatBytes(recording.size)}
                       </p>
                     </div>
                     <Button

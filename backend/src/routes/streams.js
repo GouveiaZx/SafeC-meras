@@ -280,19 +280,32 @@ router.get('/:stream_id/hls/*', authenticateHLS, asyncHandler(async (req, res) =
         const SRS_API_URL = process.env.SRS_API_URL || 'http://127.0.0.1:1985/api/v1';
         logger.info(`[HLS FALLBACK] Consultando SRS em: ${SRS_API_URL}/streams/`);
         try {
-          const srsResponse = await fetch(`${SRS_API_URL}/streams/`, { signal: AbortSignal.timeout(3000) });
+          const srsResponse = await fetch(`${SRS_API_URL}/streams/`, { signal: AbortSignal.timeout(5000) });
           const srsData = await srsResponse.json();
           const srsStreams = srsData.streams || [];
-          logger.info(`[HLS FALLBACK] SRS retornou ${srsStreams.length} streams`);
+          logger.info(`[HLS FALLBACK] SRS retornou ${srsStreams.length} streams: ${JSON.stringify(srsStreams.map(s => ({ name: s.name, publish: s.publish })))}`);
 
           // Buscar câmera para obter stream_key
           const { Camera } = await import('../models/Camera.js');
           const camera = await Camera.findById(stream_id);
-          logger.info(`[HLS FALLBACK] Camera encontrada: ${camera ? camera.name : 'NÃO'}, stream_key: ${camera?.stream_key}`);
+          logger.info(`[HLS FALLBACK] Camera encontrada: ${camera ? camera.name : 'NÃO'}, stream_key: ${camera?.stream_key}, rtmp_url: ${camera?.rtmp_url}`);
 
           if (camera) {
-            const streamKey = camera.stream_key || stream_id;
-            const srsStream = srsStreams.find(s => s.publish?.active && s.name === streamKey);
+            // Extrair stream key do rtmp_url se não estiver definido
+            const rtmpMatch = camera.rtmp_url ? camera.rtmp_url.match(/\/live\/([^/]+)$/) : null;
+            const streamKey = camera.stream_key || (rtmpMatch ? rtmpMatch[1] : stream_id);
+
+            // Busca mais flexível: verifica nome OU se publish existe (mesmo sem active)
+            let srsStream = srsStreams.find(s => s.name === streamKey && s.publish?.active);
+
+            // Fallback: verificar só pelo nome se não encontrou com publish.active
+            if (!srsStream) {
+              srsStream = srsStreams.find(s => s.name === streamKey);
+              if (srsStream) {
+                logger.info(`[HLS FALLBACK] Stream ${streamKey} encontrado no SRS mas publish.active não confirmado, tentando proxy mesmo assim`);
+              }
+            }
+
             logger.info(`[HLS FALLBACK] Buscando stream_key=${streamKey} no SRS: ${srsStream ? 'ENCONTRADO' : 'NÃO ENCONTRADO'}`);
 
             if (srsStream) {
@@ -307,10 +320,42 @@ router.get('/:stream_id/hls/*', authenticateHLS, asyncHandler(async (req, res) =
               };
               // Popular Map para futuras requisições
               streamingService.activeStreams.set(stream_id, activeStream);
+            } else if (camera.stream_key && camera.is_streaming) {
+              // Se a câmera tem stream_key e está marcada como streaming, tentar proxy direto
+              logger.info(`[HLS FALLBACK] Camera ${camera.name} marcada como streaming, tentando proxy direto para ${camera.stream_key}`);
+              activeStream = {
+                id: stream_id,
+                camera_id: stream_id,
+                status: 'active',
+                server: 'srs',
+                stream_key: camera.stream_key,
+                urls: { hls: `/api/streams/${stream_id}/hls` }
+              };
+              streamingService.activeStreams.set(stream_id, activeStream);
             }
           }
         } catch (srsErr) {
           logger.warn(`[HLS FALLBACK] ❌ Erro ao consultar SRS: ${srsErr.message}`);
+
+          // Último fallback: se a câmera tem stream_key, tentar proxy direto mesmo sem confirmar SRS
+          try {
+            const { Camera } = await import('../models/Camera.js');
+            const camera = await Camera.findById(stream_id);
+            if (camera && camera.stream_key && camera.rtmp_server_type === 'srs') {
+              logger.info(`[HLS FALLBACK] SRS API falhou, mas câmera tem stream_key=${camera.stream_key}, tentando proxy direto`);
+              activeStream = {
+                id: stream_id,
+                camera_id: stream_id,
+                status: 'active',
+                server: 'srs',
+                stream_key: camera.stream_key,
+                urls: { hls: `/api/streams/${stream_id}/hls` }
+              };
+              streamingService.activeStreams.set(stream_id, activeStream);
+            }
+          } catch (fallbackErr) {
+            logger.error(`[HLS FALLBACK] Erro no último fallback: ${fallbackErr.message}`);
+          }
         }
       }
     } catch (fallbackErr) {

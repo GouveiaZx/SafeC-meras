@@ -1156,6 +1156,18 @@ router.post('/on_record_mp4', async (req, res) => {
     const isTemporary = effectiveFileName && effectiveFileName.startsWith('.');
     logger.info(`🔍 Tipo de arquivo: ${isTemporary ? 'TEMPORÁRIO (com ponto)' : 'FINAL'}`);
 
+    // NOVO: Filtrar arquivos muito pequenos (< 500KB) - são fragmentos de desconexão
+    const MIN_FILE_SIZE = 500 * 1024; // 500KB
+    if (file_size && file_size < MIN_FILE_SIZE) {
+      logger.warn(`⚠️ Arquivo ignorado (muito pequeno): ${effectiveFileName} - ${Math.round(file_size/1024)}KB < 500KB mínimo`, {
+        webhookId,
+        file_size,
+        file_name: effectiveFileName,
+        reason: 'Fragmento de desconexão de stream'
+      });
+      return res.json({ code: 0, msg: 'ignored - file too small (stream fragment)' });
+    }
+
     // ========== NOTA: Verificação de isRecording REMOVIDA ==========
     // MOTIVO: Para gravações segmentadas de 30 minutos, quando o ZLM finaliza um
     // segmento e inicia o próximo, isRecording=true para o próximo segmento.

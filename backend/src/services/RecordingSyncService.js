@@ -13,6 +13,7 @@ import { supabaseAdmin } from '../config/database.js';
 import path from 'path';
 import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
+import videoMetadata from '../utils/videoMetadata.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -22,7 +23,7 @@ class RecordingSyncService {
     this.logger = createModuleLogger('RecordingSync');
     this.isRunning = false;
     this.interval = null;
-    this.storageBasePath = path.resolve(process.cwd(), 'storage/www/record/live');
+    this.storageBasePath = path.resolve(process.cwd(), '../storage/www/record/live');
     
     this.logger.info('🔄 RecordingSyncService inicializado');
   }
@@ -157,7 +158,14 @@ class RecordingSyncService {
                 if (filename.endsWith('.mp4') && !filename.startsWith('.')) {
                   const fullPath = path.join(datePath, filename);
                   const stats = await fs.stat(fullPath);
-                  
+
+                  // NOVO: Ignorar arquivos muito pequenos (< 500KB) - são fragmentos de desconexão
+                  const MIN_FILE_SIZE = 500 * 1024; // 500KB
+                  if (stats.size < MIN_FILE_SIZE) {
+                    this.logger.debug(`⏭️ Ignorando arquivo pequeno: ${filename} (${Math.round(stats.size/1024)}KB < 500KB)`);
+                    continue;
+                  }
+
                   files.push({
                     cameraId: cameraFolder,
                     date: dateFolder,
@@ -257,13 +265,55 @@ class RecordingSyncService {
    */
   async createRecordForOrphanFile(fileInfo, fileTime) {
     try {
-      // Estimar duração baseada no tamanho do arquivo
-      // Assumindo ~500KB por segundo para vídeo H264/HEVC típico
-      const estimatedDuration = Math.max(Math.round(fileInfo.size / (500 * 1024)), 10);
+      // Tentar extrair duração real usando FFprobe
+      let duration = null;
+      let durationSource = 'unknown';
+
+      try {
+        const fullPath = path.join(this.storageBasePath, fileInfo.cameraId, fileInfo.date, fileInfo.filename);
+        const metadata = await videoMetadata.extractBasicInfo(fullPath);
+        if (metadata.duration && metadata.duration > 0) {
+          duration = Math.round(metadata.duration);
+          durationSource = 'ffprobe';
+          this.logger.info(`📊 Duração extraída via FFprobe: ${duration}s para ${fileInfo.filename}`);
+        }
+      } catch (ffprobeError) {
+        this.logger.warn(`⚠️ FFprobe falhou para ${fileInfo.filename}: ${ffprobeError.message}`);
+      }
+
+      // Se FFprobe falhou, deixar duration como null (NÃO estimar)
+      if (!duration) {
+        this.logger.warn(`⚠️ Duração não disponível para ${fileInfo.filename}, será atualizada posteriormente`);
+        durationSource = 'pending';
+      }
+
+      // NOVO: Filtrar gravações com menos de 30 minutos (1800 segundos)
+      const MIN_DURATION_SECONDS = 1800; // 30 minutos
+      if (duration && duration < MIN_DURATION_SECONDS) {
+        this.logger.warn(`⏭️ Ignorando gravação curta: ${fileInfo.filename} - ${Math.floor(duration/60)}:${String(Math.round(duration%60)).padStart(2,'0')} < 30 min`);
+        return false;
+      }
+
+      // NOVO: Validar razão duração/tamanho para detectar durações absurdas do FFprobe
+      // Vídeo típico: 50KB/s a 2MB/s. Abaixo de 10KB/s é suspeito.
+      if (duration && fileInfo.size) {
+        const bytesPerSecond = fileInfo.size / duration;
+        const MIN_BYTES_PER_SEC = 10000; // 10 KB/s mínimo
+
+        if (bytesPerSecond < MIN_BYTES_PER_SEC) {
+          const hrs = Math.floor(duration / 3600);
+          const mins = Math.floor((duration % 3600) / 60);
+          const sizeMB = (fileInfo.size / (1024 * 1024)).toFixed(1);
+          this.logger.warn(`⏭️ Duração suspeita (FFprobe incorreto): ${fileInfo.filename} - ${hrs}h${mins}m para ${sizeMB}MB (${Math.round(bytesPerSecond/1024)}KB/s < 10KB/s mínimo)`);
+          return false;
+        }
+      }
 
       // Calcular end_time baseado no modified time do arquivo
       const endTime = fileInfo.modified;
-      const startTime = new Date(endTime.getTime() - (estimatedDuration * 1000));
+      const startTime = duration
+        ? new Date(endTime.getTime() - (duration * 1000))
+        : new Date(endTime.getTime() - (30 * 60 * 1000)); // Default 30 min se sem duração
 
       // Normalizar path para formato relativo
       let relativePath = fileInfo.relativePath;
@@ -277,7 +327,8 @@ class RecordingSyncService {
       this.logger.info(`📝 Criando registro para arquivo órfão: ${fileInfo.filename}`, {
         cameraId: fileInfo.cameraId,
         size: fileInfo.size,
-        estimatedDuration,
+        duration,
+        durationSource,
         relativePath
       });
 
@@ -290,7 +341,7 @@ class RecordingSyncService {
           local_path: relativePath,
           size: fileInfo.size,
           file_size: fileInfo.size,
-          duration: estimatedDuration,
+          duration: duration, // Usa duração real do FFprobe ou null
           start_time: startTime.toISOString(),
           end_time: endTime.toISOString(),
           status: 'completed',
@@ -300,7 +351,7 @@ class RecordingSyncService {
             created_by: 'RecordingSyncService',
             created_at: new Date().toISOString(),
             file_modified: fileInfo.modified.toISOString(),
-            estimated_duration: true,
+            duration_source: durationSource, // 'ffprobe' ou 'pending'
             source: 'orphan_file_scan'
           }
         })

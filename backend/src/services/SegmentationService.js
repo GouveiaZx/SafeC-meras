@@ -13,7 +13,7 @@ class SegmentationService {
     );
     this.zlmApiUrl = process.env.ZLM_API_URL || 'http://localhost:8000';
     this.zlmSecret = process.env.ZLM_SECRET || '9QqL3M2K7vHQexkbfp6RvbCUB3GkV4MK';
-    this.segmentationInterval = process.env.SEGMENTATION_INTERVAL_MINUTES || 1; // 1 minuto por padrão
+    this.segmentationInterval = parseInt(process.env.SEGMENTATION_INTERVAL_MINUTES) || 30; // 30 minutos por padrão
     this.isRunning = false;
     this.activeStreams = new Map();
     this.recordingService = RecordingService;

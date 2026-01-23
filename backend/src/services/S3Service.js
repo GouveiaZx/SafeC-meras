@@ -673,6 +673,131 @@ class S3Service {
       throw error;
     }
   }
+
+  /**
+   * Get a readable stream directly from S3 object
+   * Used for proxying S3 content through the backend (avoids CORS issues)
+   * @param {string} key - S3 object key
+   * @param {object} options - Options like range for partial content
+   * @returns {object} { stream, metadata }
+   */
+  getObjectStream(key, options = {}) {
+    if (!this.isConfigured) {
+      throw new Error('S3 not configured');
+    }
+
+    const { range = null } = options;
+
+    const params = {
+      Bucket: this.bucketName,
+      Key: key
+    };
+
+    // Add range header for partial content requests
+    if (range) {
+      params.Range = range;
+    }
+
+    logger.debug(`Creating S3 stream for: ${key}`, { range });
+
+    const request = this.s3.getObject(params);
+    const stream = request.createReadStream();
+
+    // Get metadata from the request
+    const metadataPromise = request.promise().then(data => ({
+      contentLength: data.ContentLength,
+      contentType: data.ContentType,
+      contentRange: data.ContentRange,
+      acceptRanges: data.AcceptRanges,
+      lastModified: data.LastModified,
+      etag: data.ETag
+    })).catch(err => {
+      logger.warn(`Failed to get S3 metadata for ${key}:`, err.message);
+      return null;
+    });
+
+    return {
+      stream,
+      metadataPromise
+    };
+  }
+
+  /**
+   * Get S3 object as a readable stream with range support (for video streaming)
+   * Uses createReadStream for efficient memory usage with large files
+   * @param {string} key - S3 object key
+   * @param {string} range - HTTP Range header value (e.g., "bytes=0-1000")
+   * @returns {object} { stream, contentLength, contentRange, statusCode }
+   */
+  getObjectStream(key, range = null) {
+    if (!this.isConfigured) {
+      throw new Error('S3 not configured');
+    }
+
+    const params = {
+      Bucket: this.bucketName,
+      Key: key
+    };
+
+    if (range) {
+      params.Range = range;
+    }
+
+    logger.debug(`Creating S3 read stream for: ${key}`, { range });
+
+    // Create request and get stream directly (no .promise() = no full download)
+    const request = this.s3.getObject(params);
+    const stream = request.createReadStream();
+
+    // Handle stream errors
+    stream.on('error', (err) => {
+      logger.error(`S3 stream error for ${key}:`, err);
+    });
+
+    return {
+      stream,
+      request
+    };
+  }
+
+  /**
+   * Get S3 object with full download (for small files only)
+   * @param {string} key - S3 object key
+   * @param {string} range - HTTP Range header value
+   * @returns {Promise<object>}
+   */
+  async getObjectWithRange(key, range = null) {
+    if (!this.isConfigured) {
+      throw new Error('S3 not configured');
+    }
+
+    const params = {
+      Bucket: this.bucketName,
+      Key: key
+    };
+
+    if (range) {
+      params.Range = range;
+    }
+
+    try {
+      const data = await this.s3.getObject(params).promise();
+
+      return {
+        body: data.Body,
+        contentLength: data.ContentLength,
+        contentType: data.ContentType || 'video/mp4',
+        contentRange: data.ContentRange,
+        acceptRanges: data.AcceptRanges || 'bytes',
+        lastModified: data.LastModified,
+        etag: data.ETag,
+        statusCode: range ? 206 : 200
+      };
+    } catch (error) {
+      logger.error(`Failed to get S3 object ${key}:`, error);
+      throw error;
+    }
+  }
 }
 
 export default new S3Service();

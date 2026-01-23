@@ -25,6 +25,7 @@ import srsIntegrationService from '../services/SRSIntegrationService.js';
 import { supabaseAdmin, TABLES } from '../config/database.js';
 import { createModuleLogger } from '../config/logger.js';
 import { AppError } from '../middleware/errorHandler.js';
+import videoMetadata from '../utils/videoMetadata.js';
 
 const router = express.Router();
 const logger = createModuleLogger('SRSWebhooks');
@@ -644,27 +645,52 @@ router.post('/on-dvr', async (req, res, next) => {
         ? new Date(parseInt(timestampMatch[1])).toISOString()
         : new Date().toISOString();
 
-      // Get actual file size from disk (using SRS Docker volume path)
+      // Get actual file size and duration from disk (using SRS Docker volume path)
       let fileSize = 0;
-      let duration = 1800; // Default 30 minutes
+      let duration = null; // Will be extracted via FFprobe
+      let durationSource = 'pending';
+
       try {
         const stats = await fs.stat(physicalPath);
         fileSize = stats.size;
         logger.info('[SRS] Got file size from disk', { physicalPath, fileSize });
 
-        // Estimate duration from file size (approximate ~500KB/s for RTMP streams)
-        if (fileSize > 0) {
-          const estimatedDuration = Math.round(fileSize / (500 * 1024));
-          if (estimatedDuration > 0 && estimatedDuration < 7200) { // Cap at 2 hours
+        // Use FFprobe to get REAL duration (not estimation!)
+        try {
+          const metadata = await videoMetadata.extractBasicInfo(physicalPath);
+          if (metadata && metadata.duration && metadata.duration > 0) {
+            duration = Math.round(metadata.duration);
+            durationSource = 'ffprobe';
+            logger.info(`[SRS] ✅ Duração real via FFprobe: ${duration}s (${Math.round(duration/60)} min) para ${filename}`);
+          }
+        } catch (ffprobeError) {
+          logger.warn(`[SRS] ⚠️ FFprobe falhou para ${filename}: ${ffprobeError.message}`);
+        }
+
+        // Fallback: if FFprobe failed, estimate from file size (but mark as estimated)
+        if (!duration && fileSize > 0) {
+          // Use a more conservative estimate (300KB/s for better accuracy)
+          const estimatedDuration = Math.round(fileSize / (300 * 1024));
+          if (estimatedDuration > 0 && estimatedDuration < 7200) {
             duration = estimatedDuration;
+            durationSource = 'estimated';
+            logger.warn(`[SRS] ⚠️ Usando duração estimada: ${duration}s para ${filename}`);
           }
         }
+
+        // Final fallback
+        if (!duration) {
+          duration = 1800; // Default 30 minutes
+          durationSource = 'default';
+        }
       } catch (statError) {
-        logger.warn('[SRS] Could not get file size, using 0', {
+        logger.warn('[SRS] Could not get file size, using defaults', {
           physicalPath,
           relativePath,
           error: statError.message
         });
+        duration = 1800;
+        durationSource = 'default';
       }
 
       // Save recording to database
@@ -683,7 +709,11 @@ router.post('/on-dvr', async (req, res, next) => {
           start_time: startTime,
           end_time: new Date(new Date(startTime).getTime() + duration * 1000).toISOString(),
           created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
+          metadata: {
+            duration_source: durationSource,
+            source: 'srs_dvr_webhook'
+          }
         })
         .select()
         .single();
@@ -697,6 +727,7 @@ router.post('/on-dvr', async (req, res, next) => {
           recordingId: recording.id,
           fileSize,
           duration,
+          durationSource,
           physicalPath,
           uploadStatus: 'queued'
         });

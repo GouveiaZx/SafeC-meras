@@ -23,18 +23,15 @@ function shouldPreferS3() {
 }
 
 /**
- * Unified streaming endpoint with S3 presigned URL fallback
- * GET /:recordingId/stream - Smart routing between S3 and local
+ * Unified streaming endpoint - ALWAYS prefer local file (much faster than S3)
+ * GET /:recordingId/stream - Smart routing between local and S3
  */
 router.get('/:recordingId/stream', authenticateToken, async (req, res) => {
   try {
     const { recordingId } = req.params;
-    const { force_local = false } = req.query;
-    
-    logger.info(`📹 Unified stream request: ${recordingId}`, {
-      force_local,
-      prefer_s3: shouldPreferS3()
-    });
+    const { force_s3 = false } = req.query;
+
+    logger.info(`📹 Unified stream request: ${recordingId}`, { force_s3 });
 
     // Get recording details
     const recording = await RecordingService.getRecordingById(recordingId);
@@ -42,50 +39,38 @@ router.get('/:recordingId/stream', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Recording not found' });
     }
 
-    // Try S3 first if available and not forced local
-    if (!force_local && recording.s3_key && recording.upload_status === 'uploaded') {
+    // ALWAYS try local first (much faster than S3 proxy)
+    if (!force_s3) {
       try {
-        // ✅ VALIDAÇÃO: Verificar se s3_key bate com filename
-        const s3Filename = recording.s3_key.split('/').pop();
-
-        if (recording.filename && s3Filename !== recording.filename) {
-          logger.warn(`⚠️ S3_KEY inconsistente para ${recordingId}:`, {
-            recording_filename: recording.filename,
-            s3_filename: s3Filename,
-            s3_key: recording.s3_key
-          });
-
-          // Forçar uso de arquivo local quando dados estão inconsistentes
-          logger.info(`💾 Forçando stream local devido a inconsistência de s3_key`);
+        const localFile = await RecordingService.findRecordingFile(recording);
+        if (localFile && localFile.exists) {
+          logger.info(`💾 Using local stream (fast): ${recordingId}`);
           return await serveLocalFile(req, res, recordingId, 'stream');
         }
-
-        logger.info(`🌐 Attempting S3 stream for: ${recordingId}`);
-
-        // Generate presigned URL for streaming
-        const presignedUrl = await S3Service.getSignedUrl(recording.s3_key, {
-          expiresIn: 3600, // 1 hour
-          responseHeaders: {
-            contentType: 'video/mp4',
-            cacheControl: 'max-age=3600'
-          }
-        });
-
-        logger.info(`✅ S3 presigned URL generated for: ${recordingId}`);
-
-        // Return 302 redirect to presigned URL
-        return res.redirect(302, presignedUrl);
-
-      } catch (s3Error) {
-        logger.warn(`⚠️ S3 streaming failed for ${recordingId}, falling back to local:`, s3Error.message);
-        // Fall through to local streaming
+      } catch (localError) {
+        logger.debug(`Local file not available for ${recordingId}: ${localError.message}`);
       }
     }
 
-    // Fall back to local streaming
-    logger.info(`💾 Using local stream for: ${recordingId}`);
-    return await serveLocalFile(req, res, recordingId, 'stream');
-    
+    // Fall back to S3 only if local not available
+    if (recording.s3_key && recording.upload_status === 'uploaded') {
+      try {
+        const s3Filename = recording.s3_key.split('/').pop();
+        if (recording.filename && s3Filename !== recording.filename) {
+          logger.warn(`⚠️ S3_KEY inconsistente para ${recordingId}`);
+          return res.status(404).json({ error: 'Recording file not found (S3 key mismatch)' });
+        }
+
+        logger.info(`🌐 Falling back to S3 stream for: ${recordingId}`);
+        return await serveS3File(req, res, recording, 'stream');
+
+      } catch (s3Error) {
+        logger.error(`S3 streaming failed for ${recordingId}:`, s3Error.message);
+      }
+    }
+
+    return res.status(404).json({ error: 'Recording file not found' });
+
   } catch (error) {
     logger.error('Error in unified stream endpoint:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -93,18 +78,15 @@ router.get('/:recordingId/stream', authenticateToken, async (req, res) => {
 });
 
 /**
- * Unified download endpoint with S3 presigned URL fallback
- * GET /:recordingId/download - Smart routing between S3 and local
+ * Unified download endpoint - ALWAYS prefer local file (much faster than S3)
+ * GET /:recordingId/download - Smart routing between local and S3
  */
 router.get('/:recordingId/download', authenticateToken, async (req, res) => {
   try {
     const { recordingId } = req.params;
-    const { force_local = false } = req.query;
-    
-    logger.info(`📥 Unified download request: ${recordingId}`, {
-      force_local,
-      prefer_s3: shouldPreferS3()
-    });
+    const { force_s3 = false } = req.query;
+
+    logger.info(`📥 Unified download request: ${recordingId}`, { force_s3 });
 
     // Get recording details
     const recording = await RecordingService.getRecordingById(recordingId);
@@ -112,50 +94,38 @@ router.get('/:recordingId/download', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Recording not found' });
     }
 
-    // Try S3 first if available and not forced local
-    if (!force_local && recording.s3_key && recording.upload_status === 'uploaded') {
+    // ALWAYS try local first (much faster than S3)
+    if (!force_s3) {
       try {
-        // ✅ VALIDAÇÃO: Verificar se s3_key bate com filename
-        const s3Filename = recording.s3_key.split('/').pop();
-
-        if (recording.filename && s3Filename !== recording.filename) {
-          logger.warn(`⚠️ S3_KEY inconsistente para ${recordingId}:`, {
-            recording_filename: recording.filename,
-            s3_filename: s3Filename,
-            s3_key: recording.s3_key
-          });
-
-          // Forçar uso de arquivo local quando dados estão inconsistentes
-          logger.info(`💾 Forçando download local devido a inconsistência de s3_key`);
+        const localFile = await RecordingService.findRecordingFile(recording);
+        if (localFile && localFile.exists) {
+          logger.info(`💾 Using local download (fast): ${recordingId}`);
           return await serveLocalFile(req, res, recordingId, 'download');
         }
-
-        logger.info(`🌐 Attempting S3 download for: ${recordingId}`);
-
-        // Generate presigned URL for download
-        const presignedUrl = await S3Service.getSignedUrl(recording.s3_key, {
-          expiresIn: 3600, // 1 hour
-          responseHeaders: {
-            contentDisposition: `attachment; filename="${recording.filename}"`,
-            contentType: 'video/mp4'
-          }
-        });
-
-        logger.info(`✅ S3 presigned download URL generated for: ${recordingId}`);
-
-        // Return 302 redirect to presigned URL
-        return res.redirect(302, presignedUrl);
-        
-      } catch (s3Error) {
-        logger.warn(`⚠️ S3 download failed for ${recordingId}, falling back to local:`, s3Error.message);
-        // Fall through to local download
+      } catch (localError) {
+        logger.debug(`Local file not available for ${recordingId}: ${localError.message}`);
       }
     }
 
-    // Fall back to local download
-    logger.info(`💾 Using local download for: ${recordingId}`);
-    return await serveLocalFile(req, res, recordingId, 'download');
-    
+    // Fall back to S3 only if local not available
+    if (recording.s3_key && recording.upload_status === 'uploaded') {
+      try {
+        const s3Filename = recording.s3_key.split('/').pop();
+        if (recording.filename && s3Filename !== recording.filename) {
+          logger.warn(`⚠️ S3_KEY inconsistente para ${recordingId}`);
+          return res.status(404).json({ error: 'Recording file not found (S3 key mismatch)' });
+        }
+
+        logger.info(`🌐 Falling back to S3 download for: ${recordingId}`);
+        return await serveS3File(req, res, recording, 'download');
+
+      } catch (s3Error) {
+        logger.error(`S3 download failed for ${recordingId}:`, s3Error.message);
+      }
+    }
+
+    return res.status(404).json({ error: 'Recording file not found' });
+
   } catch (error) {
     logger.error('Error in unified download endpoint:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -273,6 +243,103 @@ async function serveLocalFile(req, res, recordingId, mode = 'stream') {
     
     const stream = RecordingService.createFileStream(filePath);
     stream.pipe(res);
+  }
+}
+
+/**
+ * Helper function to serve files from S3 via proxy (avoids CORS issues)
+ * Uses STREAMING to avoid loading entire file into memory
+ * @private
+ */
+async function serveS3File(req, res, recording, mode = 'stream') {
+  const range = req.headers.range;
+
+  try {
+    // First, get file metadata from S3
+    const s3Info = await S3Service.headObject(recording.s3_key);
+
+    if (!s3Info.exists) {
+      logger.warn(`S3 object not found: ${recording.s3_key}`);
+      throw new Error('S3 object not found');
+    }
+
+    const totalSize = s3Info.size;
+
+    // Set base headers
+    const headers = {
+      'Content-Type': s3Info.contentType || 'video/mp4',
+      'Accept-Ranges': 'bytes',
+      'X-Storage-Location': 's3',
+      'Cache-Control': 'max-age=3600'
+    };
+
+    // Add download-specific headers
+    if (mode === 'download') {
+      headers['Content-Disposition'] = `attachment; filename="${recording.filename}"`;
+    }
+
+    // Handle range requests for streaming
+    if (range && mode === 'stream') {
+      const parts = range.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : totalSize - 1;
+      const chunksize = (end - start) + 1;
+
+      logger.info(`📥 S3 range stream: bytes ${start}-${end}/${totalSize} (${(chunksize/1024/1024).toFixed(2)}MB)`);
+
+      // Get S3 stream directly (no full download!)
+      const { stream } = S3Service.getObjectStream(recording.s3_key, `bytes=${start}-${end}`);
+
+      res.writeHead(206, {
+        ...headers,
+        'Content-Range': `bytes ${start}-${end}/${totalSize}`,
+        'Content-Length': chunksize
+      });
+
+      // Pipe S3 stream directly to response
+      stream.pipe(res);
+
+      // Handle stream completion
+      stream.on('end', () => {
+        logger.info(`✅ S3 range stream completed for: ${recording.filename}`);
+      });
+
+      stream.on('error', (err) => {
+        logger.error(`S3 stream error for ${recording.filename}:`, err);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Stream error' });
+        }
+      });
+
+    } else {
+      // Full file response (also use streaming!)
+      logger.info(`📥 S3 full stream: ${(totalSize/1024/1024).toFixed(2)}MB`);
+
+      const { stream } = S3Service.getObjectStream(recording.s3_key, null);
+
+      res.writeHead(200, {
+        ...headers,
+        'Content-Length': totalSize
+      });
+
+      // Pipe S3 stream directly to response
+      stream.pipe(res);
+
+      stream.on('end', () => {
+        logger.info(`✅ S3 full stream completed for: ${recording.filename}`);
+      });
+
+      stream.on('error', (err) => {
+        logger.error(`S3 stream error for ${recording.filename}:`, err);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Stream error' });
+        }
+      });
+    }
+
+  } catch (error) {
+    logger.error(`Failed to serve S3 file ${recording.s3_key}:`, error);
+    throw error;
   }
 }
 
