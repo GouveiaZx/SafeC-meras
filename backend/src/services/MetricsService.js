@@ -334,6 +334,8 @@ class MetricsService {
         avgDuration: Math.round(avgDuration)
       };
 
+      logger.info(`📊 [MetricsService] Recordings: total=${totalRecordings}, today=${todayRecordings}`);
+
     } catch (error) {
       logger.error('Erro ao coletar métricas das gravações:', error);
       this.metrics.recordings = {

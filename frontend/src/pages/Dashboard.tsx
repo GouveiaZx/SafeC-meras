@@ -373,8 +373,9 @@ const Dashboard: React.FC = () => {
         </div>
       )}
 
-      <div className={`grid grid-cols-1 ${canViewServerMetrics ? 'lg:grid-cols-2' : ''} gap-6`}>
-        {/* Status das Câmeras - Visível para todos */}
+      {canViewServerMetrics && (
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Status das Câmeras - Apenas admin/integrador */}
         <BarChart
           data={cameraStats}
           height={250}
@@ -382,36 +383,35 @@ const Dashboard: React.FC = () => {
           bars={[{ dataKey: 'value', name: 'Quantidade', color: '#8b5cf6' }]}
         />
 
-        {/* Métricas de Sistema - Ocultar para cliente */}
-        {canViewServerMetrics && (
-          <Card className="p-6">
-            <h3 className="text-lg font-semibold mb-4 flex items-center">
-              <Cpu className="w-5 h-5 mr-2 text-primary-500" />
-              Sistema
-            </h3>
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-600">Uptime</span>
-                <span className="font-medium">{formatUptime(metrics?.system.uptime || 0)}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-600">Conexões de Rede</span>
-                <span className="font-medium">{metrics?.network.connections || 0}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-600">Arquivos S3</span>
-                <span className="font-medium">{metrics?.storage.s3.files || 0}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-600">Tamanho S3</span>
-                <span className="font-medium">
-                  {formatBytes(metrics?.storage.s3.used || 0)}
-                </span>
-              </div>
+        {/* Métricas de Sistema */}
+        <Card className="p-6">
+          <h3 className="text-lg font-semibold mb-4 flex items-center">
+            <Cpu className="w-5 h-5 mr-2 text-primary-500" />
+            Sistema
+          </h3>
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">Uptime</span>
+              <span className="font-medium">{formatUptime(metrics?.system.uptime || 0)}</span>
             </div>
-          </Card>
-        )}
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">Conexões de Rede</span>
+              <span className="font-medium">{metrics?.network.connections || 0}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">Arquivos S3</span>
+              <span className="font-medium">{metrics?.storage.s3.files || 0}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">Tamanho S3</span>
+              <span className="font-medium">
+                {formatBytes(metrics?.storage.s3.used || 0)}
+              </span>
+            </div>
+          </div>
+        </Card>
       </div>
+      )}
 
       {/* Informações de Atualização */}
       <div className="text-center text-sm text-gray-500">

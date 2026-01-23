@@ -164,8 +164,9 @@ const RecordingsPage: React.FC = () => {
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
 
-  // Adicionar hook de autenticação para obter token
-  const { token } = useAuth();
+  // Adicionar hook de autenticação para obter token e verificar permissões
+  const { token, user } = useAuth();
+  const isAdmin = user?.userType === 'ADMIN';
 
   const [dateRange, setDateRange] = useState({ start: '', end: '' });
   const [availableDates, setAvailableDates] = useState<string[]>([]);
@@ -777,48 +778,50 @@ const RecordingsPage: React.FC = () => {
         </div>
       )}
 
-      {/* Gráfico de Tendência de Uploads */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2">
-          <LineChart
-            data={uploadTrendData}
-            height={300}
-            title="Tendência de Uploads (Últimas 24h)"
-            lines={[
-              { dataKey: 'uploads', name: 'Uploads', color: '#3b82f6', unit: '' },
-              { dataKey: 'failures', name: 'Falhas', color: '#ef4444', unit: '' }
-            ]}
-          />
-        </div>
-        
-        {/* Estatísticas da Fila de Upload */}
-        <Card className="p-6">
-          <h3 className="text-lg font-semibold mb-4 flex items-center">
-            <Upload className="w-5 h-5 mr-2 text-primary-500" />
-            Fila de Upload
-          </h3>
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-600">Pendentes</span>
-              <span className="font-medium text-yellow-600">{stats?.uploadQueue?.pending || 0}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-600">Processando</span>
-              <span className="font-medium text-primary-600">{stats?.uploadQueue?.processing || 0}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-600">Falharam</span>
-              <span className="font-medium text-red-600">{stats?.uploadQueue?.failed || 0}</span>
-            </div>
-            <div className="pt-2 border-t">
+      {/* Gráfico de Tendência de Uploads - Apenas Admin */}
+      {isAdmin && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2">
+            <LineChart
+              data={uploadTrendData}
+              height={300}
+              title="Tendência de Uploads (Últimas 24h)"
+              lines={[
+                { dataKey: 'uploads', name: 'Uploads', color: '#3b82f6', unit: '' },
+                { dataKey: 'failures', name: 'Falhas', color: '#ef4444', unit: '' }
+              ]}
+            />
+          </div>
+
+          {/* Estatísticas da Fila de Upload */}
+          <Card className="p-6">
+            <h3 className="text-lg font-semibold mb-4 flex items-center">
+              <Upload className="w-5 h-5 mr-2 text-primary-500" />
+              Fila de Upload
+            </h3>
+            <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-600">Total de Segmentos</span>
-                <span className="font-medium">{stats?.totalSegments || 0}</span>
+                <span className="text-sm text-gray-600">Pendentes</span>
+                <span className="font-medium text-yellow-600">{stats?.uploadQueue?.pending || 0}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-600">Processando</span>
+                <span className="font-medium text-primary-600">{stats?.uploadQueue?.processing || 0}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-600">Falharam</span>
+                <span className="font-medium text-red-600">{stats?.uploadQueue?.failed || 0}</span>
+              </div>
+              <div className="pt-2 border-t">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600">Total de Segmentos</span>
+                  <span className="font-medium">{stats?.totalSegments || 0}</span>
+                </div>
               </div>
             </div>
-          </div>
-        </Card>
-      </div>
+          </Card>
+        </div>
+      )}
 
       {/* Filtros */}
       <Card className="p-4">
@@ -1058,31 +1061,31 @@ const RecordingsPage: React.FC = () => {
           ) : (
             <div className="space-y-4">
               {filteredRecordings.map((recording) => (
-                <div key={recording.id} className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
-                  <div className="flex items-center justify-between mb-3">
-                    <div 
-                      className="flex items-center space-x-3 cursor-pointer flex-1"
+                <div key={recording.id} className="border border-gray-200 rounded-lg p-3 sm:p-4 hover:shadow-md transition-shadow overflow-hidden">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3">
+                    <div
+                      className="flex items-center space-x-3 cursor-pointer min-w-0"
                       onClick={() => handlePlayRecording(recording)}
                     >
                       <div className="relative">
                         <Video className="w-5 h-5 text-primary-500" />
-                        <Play className="w-3 h-3 absolute -bottom-1 -right-1 bg-white rounded-full p-0.5 text-primary-600" />
+                        <Play className="w-3 h-3 absolute bottom-0 right-0 bg-white rounded-full p-0.5 text-primary-600" />
                       </div>
                       <div>
                         <h4 className="font-medium hover:text-primary-600 transition-colors">{recording.filename}</h4>
                         <p className="text-sm text-gray-600">{recording.cameraName}</p>
                         <p className="text-xs text-gray-500">
-                          {new Date(recording.startTime).toLocaleString('pt-BR')}
+                          {new Date(recording.startTime).toLocaleDateString('pt-BR')} | Início: {new Date(recording.startTime).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} - Fim: {recording.endTime ? new Date(recording.endTime).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '--:--:--'}
                         </p>
                       </div>
                     </div>
-                    <div className="flex items-center space-x-2">
+                    <div className="flex flex-wrap items-center gap-2 justify-end sm:justify-start">
                       {/* Ícone de armazenamento */}
                       <div className="flex items-center space-x-1">
                         {getStorageIcon(recording)}
                         {getStatusBadge(recording.status, recording.uploadStatus, recording.uploadProgress)}
                       </div>
-                      <div className="flex space-x-1">
+                      <div className="flex flex-wrap gap-1">
                         {/* Botão de reprodução destacado */}
                         {(recording.localPath || recording.s3Url || (recording.status === 'completed' && recording.size > 0)) && (
                           <Button
@@ -1125,18 +1128,20 @@ const RecordingsPage: React.FC = () => {
                             <Download className="w-4 h-4" />
                           </Button>
                         )}
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleDeleteRecording(recording.id)}
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </Button>
+                        {isAdmin && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleDeleteRecording(recording.id)}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        )}
                       </div>
                     </div>
                   </div>
                   
-                  <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-4 text-sm">
                     <div>
                       <span className="text-gray-600">Duração:</span>
                       <p className="font-medium">

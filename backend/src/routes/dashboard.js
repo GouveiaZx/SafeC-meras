@@ -240,6 +240,8 @@ router.get('/stats',
       await metricsService.collectMetrics();
       const metrics = metricsService.getMetrics();
 
+      logger.info(`📊 [Dashboard] User: ${req.user.email}, Role: ${req.user.role}, camera_access: ${JSON.stringify(userCameras)}, recordings.today: ${metrics.recordings?.today}`);
+
       // FILTRAR MÉTRICAS POR CAMERA_ACCESS DO USUÁRIO (se não for admin)
       if (userCameras && userCameras.length > 0) {
         // Buscar contagem de câmeras do usuário
@@ -369,16 +371,17 @@ async function getUsersOverview() {
 async function getRecordingsOverview(userCameras = null) {
   const last24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
-  // Calcular início do dia atual (meia-noite no fuso local)
-  const now = new Date();
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+  // Calcular início do dia atual (meia-noite UTC)
+  const startOfToday = new Date();
+  startOfToday.setUTCHours(0, 0, 0, 0);
+  const startOfTodayISO = startOfToday.toISOString();
 
   let query = supabase
     .from('recordings')
-    .select('type, status, file_size, duration, created_at')
+    .select('event_type, status, file_size, duration, created_at')
     .gte('created_at', last24h);
 
-  if (userCameras) {
+  if (userCameras && userCameras.length > 0) {
     query = query.in('camera_id', userCameras);
   }
 
@@ -386,8 +389,8 @@ async function getRecordingsOverview(userCameras = null) {
 
   if (!recordings) return { total: 0, today: 0, size_gb: 0 };
 
-  // Filtrar gravações de HOJE (desde meia-noite)
-  const todayRecordings = recordings.filter(r => r.created_at >= startOfToday);
+  // Filtrar gravações de HOJE (desde meia-noite UTC)
+  const todayRecordings = recordings.filter(r => r.created_at >= startOfTodayISO);
 
   const totalSize = recordings.reduce((sum, r) => sum + (r.file_size || 0), 0);
   const totalDuration = recordings.reduce((sum, r) => sum + (r.duration || 0), 0);
@@ -399,9 +402,9 @@ async function getRecordingsOverview(userCameras = null) {
     recording: recordings.filter(r => r.status === 'recording').length,
     failed: recordings.filter(r => r.status === 'failed').length,
     by_type: {
-      manual: recordings.filter(r => r.type === 'manual').length,
-      scheduled: recordings.filter(r => r.type === 'scheduled').length,
-      motion: recordings.filter(r => r.type === 'motion').length
+      manual: recordings.filter(r => r.event_type === 'manual').length,
+      scheduled: recordings.filter(r => r.event_type === 'scheduled').length,
+      motion: recordings.filter(r => r.event_type === 'motion').length
     },
     storage: {
       total_size_gb: (totalSize / (1024 * 1024 * 1024)).toFixed(2),
@@ -463,8 +466,8 @@ async function getCamerasDetailedStats(userCameras, period) {
   
   // Buscar dados das câmeras com estatísticas detalhadas
   let query = supabase.from('cameras').select('*');
-  
-  if (userCameras) {
+
+  if (userCameras && userCameras.length > 0) {
     query = query.in('id', userCameras);
   }
 
@@ -537,7 +540,7 @@ async function getRecordingsDetailedStats(userCameras, period) {
     .gte('created_at', timeRange.start)
     .lte('created_at', timeRange.end);
 
-  if (userCameras) {
+  if (userCameras && userCameras.length > 0) {
     query = query.in('camera_id', userCameras);
   }
 
@@ -565,9 +568,9 @@ async function getRecordingsDetailedStats(userCameras, period) {
     total: recordings.length,
     by_hour: byHour,
     by_type: {
-      manual: recordings.filter(r => r.type === 'manual').length,
-      scheduled: recordings.filter(r => r.type === 'scheduled').length,
-      motion: recordings.filter(r => r.type === 'motion').length
+      manual: recordings.filter(r => r.event_type === 'manual').length,
+      scheduled: recordings.filter(r => r.event_type === 'scheduled').length,
+      motion: recordings.filter(r => r.event_type === 'motion').length
     },
     by_status: {
       completed: recordings.filter(r => r.status === 'completed').length,
@@ -1433,7 +1436,7 @@ async function getCameraStatsData(userCameras) {
     // Buscar câmeras com is_streaming para considerar como online mesmo após restart
     let query = supabase.from('cameras').select('status, active, is_streaming');
 
-    if (userCameras) {
+    if (userCameras && userCameras.length > 0) {
       query = query.in('id', userCameras);
     }
 
