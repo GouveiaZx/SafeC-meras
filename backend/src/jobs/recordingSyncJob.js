@@ -15,8 +15,8 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Configuração
-const SYNC_INTERVAL = 60000; // 60 segundos
+// Configuração (alterado de 60s para 180s para reduzir Egress)
+const SYNC_INTERVAL = 180000; // 180 segundos (3 minutos)
 const STORAGE_PATHS = [
   path.join(__dirname, '../../../storage/www/record/live'),
   path.join(__dirname, '../../../storage/www/record')

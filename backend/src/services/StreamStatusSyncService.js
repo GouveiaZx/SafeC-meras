@@ -17,8 +17,8 @@ const logger = createModuleLogger('StreamStatusSync');
 const ZLM_API_URL = process.env.ZLM_API_URL || 'http://localhost:8000/index/api';
 const ZLM_SECRET = process.env.ZLM_SECRET || '9QqL3M2K7vHQexkbfp6RvbCUB3GkV4MK';
 
-// Intervalo de sincronizacao (30 segundos)
-const SYNC_INTERVAL = 30000;
+// Intervalo de sincronizacao (90 segundos - alterado de 30s para reduzir Egress)
+const SYNC_INTERVAL = 90000;
 
 class StreamStatusSyncService {
   constructor() {

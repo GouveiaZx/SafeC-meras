@@ -45,8 +45,8 @@ import segmentationRoutes, { injectSegmentationService } from './routes/segmenta
 import rtmpPoolRoutes from './routes/rtmpPool.js';
 import srsWebhookRoutes from './routes/srsWebhooks.js';
 import uploadQueueRoutes from './routes/uploadQueue.js';
-import reportsRoutes from './routes/reports.js';
-import filesRoutes from './routes/files.js';
+// import reportsRoutes from './routes/reports.js';
+// import filesRoutes from './routes/files.js';
 
 // Importar serviços
 import streamingService from './services/StreamingService.js';
@@ -199,8 +199,8 @@ app.use('/api', testWebSocketRoutes);
 app.use('/api/segmentation', segmentationRoutes);
 app.use('/api/rtmp', rtmpPoolRoutes);
 app.use('/api/srs/webhook', srsWebhookRoutes);
-app.use('/api/reports', reportsRoutes);
-app.use('/api/files', filesRoutes);
+// app.use('/api/reports', reportsRoutes);
+// app.use('/api/files', filesRoutes);
 
 // REMOVIDO POR SEGURANÇA: Exposição estática de streams sem autenticação
 // Streams devem ser servidos através da API com autenticação adequada
@@ -286,7 +286,7 @@ async function initializeServices() {
 
   // Iniciar coleta de métricas
   try {
-    await MetricsService.startCollection(5000);
+    await MetricsService.startCollection(60000); // Alterado de 5s para 60s para reduzir consumo de Egress
     console.log(`📈 Coleta de métricas iniciada`);
   } catch (error) {
     console.error('Erro ao iniciar coleta de métricas:', error);
@@ -473,15 +473,17 @@ async function initializeServices() {
 // Iniciar servidor
 async function startServer() {
   try {
-    // Primeiro inicializar todos os serviços
-    await initializeServices();
-    
-    // Depois iniciar o servidor
+    // Inicializar serviços em background (não bloqueante) para não travar o server.listen()
+    initializeServices().catch(err => {
+      console.error('❌ Erro ao inicializar serviços (background):', err);
+    });
+
+    // Iniciar o servidor imediatamente
     server.listen(PORT, () => {
       console.log(`🚀 Servidor NewCAM Backend rodando na porta ${PORT}`);
       console.log(`📊 Ambiente: ${NODE_ENV}`);
       console.log(`🔗 Health check: http://localhost:${PORT}/health`);
-      
+
       if (NODE_ENV === 'development') {
         console.log(`📝 Documentação da API: http://localhost:${PORT}/api/docs`);
       }

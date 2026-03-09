@@ -56,16 +56,16 @@ class RecordingMonitorService {
     // Executar primeira verificação imediatamente
     await this.runAutomationCycle();
 
-    // Configurar intervalo de 30 segundos para automação
+    // Configurar intervalo de 90 segundos para automação (alterado de 30s para reduzir Egress)
     this.interval = setInterval(async () => {
       try {
         await this.runAutomationCycle();
       } catch (error) {
         this.logger.error('❌ Erro no ciclo de automação:', error);
       }
-    }, 30000);
+    }, 90000);
 
-    this.logger.info('✅ RecordingMonitorService iniciado - ciclo de 30s');
+    this.logger.info('✅ RecordingMonitorService iniciado - ciclo de 90s');
   }
 
   async stop() {

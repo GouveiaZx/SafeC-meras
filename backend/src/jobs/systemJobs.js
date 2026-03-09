@@ -59,7 +59,8 @@ class SystemJobs {
    * Agendar coleta de métricas do sistema
    */
   scheduleMetricsCollection() {
-    const job = cron.schedule('*/5 * * * * *', async () => {
+    // Alterado de 5 segundos para 60 segundos para reduzir Egress do Supabase
+    const job = cron.schedule('*/60 * * * * *', async () => {
       try {
         if (metricsService.isCollecting) {
           await metricsService.collectMetrics();
@@ -74,7 +75,7 @@ class SystemJobs {
 
     this.jobs.set('metrics-collection', job);
     job.start();
-    logger.info('Job de coleta de métricas agendado (a cada 5 segundos)');
+    logger.info('Job de coleta de métricas agendado (a cada 60 segundos)');
   }
 
   /**
@@ -122,7 +123,8 @@ class SystemJobs {
    * Agendar monitoramento de câmeras
    */
   scheduleCameraMonitoring() {
-    const job = cron.schedule('*/30 * * * * *', async () => {
+    // Alterado de 30 segundos para 90 segundos para reduzir Egress do Supabase
+    const job = cron.schedule('*/90 * * * * *', async () => {
       try {
         if (cameraMonitoringService.isRunning) {
           await cameraMonitoringService.checkAllCameras();
@@ -137,7 +139,7 @@ class SystemJobs {
 
     this.jobs.set('camera-monitoring', job);
     job.start();
-    logger.info('Job de monitoramento de câmeras agendado (a cada 30 segundos)');
+    logger.info('Job de monitoramento de câmeras agendado (a cada 90 segundos)');
   }
 
   /**
